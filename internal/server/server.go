@@ -12,20 +12,21 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/threads"
@@ -43,28 +44,25 @@ type HealthOutput struct {
 // in production); Version is the server build identity, sent on every
 // response. A nil Logger discards request-level events.
 type Options struct {
-	Verify    func(authorization string) bool
-	Version   string
-	Logger    *slog.Logger
-	Terminals *terminals.Service
-	Projects  *projects.Service
-	Agents    *agents.Service
-	Threads   *threads.Service
-	Events    *events.Hub
+	Verify       func(authorization string) bool
+	Version      string
+	Logger       *slog.Logger
+	Terminals    *terminals.Service
+	Projects     *projects.Service
+	Integrations *integrations.Service
+	Threads      *threads.Service
+	Events       *events.Hub
 	// InternalRoutes are handlers mounted outside the public /v1 contract
 	// and outside bearer auth (ATC-255): each authenticates itself — the
 	// Claude hook route validates its per-launch secret, and the bearer
 	// token is deliberately never used for hook delivery. Keys are
 	// http.ServeMux patterns, e.g. "POST /internal/claude/hooks".
 	InternalRoutes map[string]http.Handler
-	// TerminalCleanups run after a terminal delete commits: each clears
-	// per-terminal state owned outside the terminals domain — the agent
-	// hook secret registrations and their files. Each must be a barrier
-	// (hookauth Deregister's contract): it returns only once no delivery
-	// can mutate state on the launch's behalf, so the delete route can
-	// converge the threads view afterwards without racing late evidence.
-	// Wired by the composition root so the domains stay decoupled.
-	TerminalCleanups []func(terminalID string)
+	// Coordinator runs the cross-domain workflows (terminal and space
+	// deletion, project mutations); required with Terminals or Projects.
+	// Wired by the composition root so the domains stay decoupled and
+	// every entry point runs one workflow.
+	Coordinator *application.Coordinator
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
 }
@@ -87,12 +85,15 @@ func NewHandler(opts Options) http.Handler {
 		opts.HeartbeatInterval = defaultHeartbeatInterval
 	}
 	mux := http.NewServeMux()
-
 	config := huma.DefaultConfig("ATC API", opts.Version)
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth": {Type: "http", Scheme: "bearer"},
 	}
-	// Declared globally so the generated document tells adapter authors
+	// A merge-patch Optional[T] is exactly a nullable T on the wire; the
+	// document says so instead of describing the Go wrapper.
+	config.Components.Schemas.RegisterTypeAlias(reflect.TypeFor[api.Optional[string]](), reflect.TypeFor[*string]())
+	config.Components.Schemas.RegisterTypeAlias(reflect.TypeFor[api.Optional[bool]](), reflect.TypeFor[*bool]())
+	// Declared globally so the generated document tells client authors
 	// every operation needs the token; enforcement is the middleware's.
 	config.Security = []map[string][]string{{"bearerAuth": {}}}
 	humaAPI := humago.New(mux, config)
@@ -107,23 +108,27 @@ func NewHandler(opts Options) http.Handler {
 		return &HealthOutput{Body: api.Health{Status: "ok", Version: opts.Version}}, nil
 	})
 
+	if (opts.Terminals != nil || opts.Projects != nil) && opts.Coordinator == nil {
+		panic("server.NewHandler: Coordinator must accompany Terminals and Projects")
+	}
 	if opts.Terminals != nil {
-		registerTerminals(humaAPI, opts.Terminals, opts.Agents, opts.Threads, opts.TerminalCleanups)
+		registerTerminals(humaAPI, opts.Terminals, opts.Threads, opts.Coordinator)
+		registerSpaces(humaAPI, opts.Terminals, opts.Coordinator)
 	}
 	if opts.Projects != nil {
-		registerProjects(humaAPI, opts.Projects, opts.Threads)
+		registerProjects(humaAPI, opts.Projects, opts.Coordinator)
 	}
-	if opts.Agents != nil {
-		registerAgents(humaAPI, opts.Agents)
+	if opts.Integrations != nil {
+		registerIntegrations(humaAPI, opts.Integrations)
 	}
 	if opts.Threads != nil {
-		registerThreads(humaAPI, opts.Threads, opts.Agents)
+		registerThreads(humaAPI, opts.Threads)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)
 	}
 
-	handler := withAuth(opts.Verify, withWriteDeadlines(mux))
+	handler := withAuth(opts.Verify, withWriteDeadlines(problemMux(mux)))
 	if len(opts.InternalRoutes) > 0 {
 		root := http.NewServeMux()
 		for pattern, route := range opts.InternalRoutes {
@@ -158,13 +163,7 @@ func withAuth(verify func(authorization string) bool, next http.Handler) http.Ha
 			// Same RFC 7807 shape Huma uses for its own errors, emitted from
 			// the shared struct, so clients see one error contract regardless
 			// of which layer rejected.
-			w.Header().Set("Content-Type", "application/problem+json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(api.Problem{
-				Title:  "Unauthorized",
-				Status: http.StatusUnauthorized,
-				Detail: "invalid or missing bearer token",
-			})
+			writeProblem(w, problem(http.StatusUnauthorized, api.CodeUnauthorized, "invalid or missing bearer token"))
 			return
 		}
 		next.ServeHTTP(w, r)

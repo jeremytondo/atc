@@ -25,6 +25,24 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	}
 }
 
+func TestRootHelpScopesConfigurationPrecedence(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if err := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	help := stdout.String()
+	text := strings.Join(strings.Fields(help), " ")
+	for _, want := range []string{
+		"For `atc server run`, configuration precedence is:",
+		"flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults",
+		"Supervised server commands read config.toml and defaults",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("root help missing %q:\n%s", want, help)
+		}
+	}
+}
+
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr strings.Builder
 	if err := run(context.Background(), []string{"version"}, strings.NewReader(""), &stdout, &stderr); err != nil {

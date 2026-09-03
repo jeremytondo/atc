@@ -15,9 +15,10 @@ func TestThreadsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/home/x")
+	insertSpace(t, s, "spce-aaaaa", "/home/x")
 	if ok, err := s.Terminals().Insert(ctx, TerminalRecord{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Claude Code", Directory: "/home/x",
-		Agent: "claude", CreatedAt: at(0), UpdatedAt: at(0),
+		ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Claude Code", Directory: "/home/x",
+		AppID: "claude/tui", CreatedAt: at(0), UpdatedAt: at(0),
 	}); err != nil || !ok {
 		t.Fatalf("planting terminal = %v, %v", ok, err)
 	}
@@ -25,20 +26,20 @@ func TestThreadsRoundTrip(t *testing.T) {
 	evidence := at(3)
 	records := []ThreadRecord{
 		{
-			ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
+			ID: "thrd-aaaaa", IntegrationID: "claude", AgentID: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
 			Title: "fix the build", Model: "claude-opus-5", Effort: "high",
 			Cwd: "/home/x", PermissionMode: "default",
 			Status: "idle", LastEvidenceAt: &evidence,
 			CreatedAt: at(1), UpdatedAt: at(3),
 		},
 		{
-			ID: "thrd-bbbbb", Adapter: "codex", Agent: "codex", ProjectID: "proj-aaaaa",
+			ID: "thrd-bbbbb", IntegrationID: "codex", AgentID: "codex", ProjectID: "proj-aaaaa",
 			Status: "unknown", CreatedAt: at(2), UpdatedAt: at(2),
 		},
 	}
 	for _, record := range records {
 		if ok, err := threads.InsertObserved(ctx, record, ThreadIdentity{
-			Adapter: record.Adapter, ProviderConversationID: "sess-" + record.ID, ThreadID: record.ID,
+			IntegrationID: record.IntegrationID, ProviderConversationID: "sess-" + record.ID, ThreadID: record.ID,
 		}); err != nil || !ok {
 			t.Fatalf("InsertObserved = %v, %v; want true", ok, err)
 		}
@@ -54,24 +55,24 @@ func TestThreadsRoundTrip(t *testing.T) {
 
 	// Insertion is the ID collision check.
 	if ok, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", Status: "unknown",
+		ID: "thrd-aaaaa", IntegrationID: "claude", AgentID: "claude", ProjectID: "proj-aaaaa", Status: "unknown",
 		CreatedAt: at(9), UpdatedAt: at(9),
-	}, ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-x", ThreadID: "thrd-aaaaa"}); err != nil || ok {
+	}, ThreadIdentity{IntegrationID: "claude", ProviderConversationID: "sess-x", ThreadID: "thrd-aaaaa"}); err != nil || ok {
 		t.Fatalf("InsertObserved(collision) = %v, %v; want false", ok, err)
 	}
 
 	// A thread referencing a missing project or terminal is refused by the
 	// schema, surfaced as the typed foreign-key error.
 	if _, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-ccccc", Adapter: "claude", Agent: "claude", ProjectID: "proj-nope", Status: "unknown",
+		ID: "thrd-ccccc", IntegrationID: "claude", AgentID: "claude", ProjectID: "proj-nope", Status: "unknown",
 		CreatedAt: at(4), UpdatedAt: at(4),
-	}, ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-c", ThreadID: "thrd-ccccc"}); !errorsIsForeignKey(err) {
+	}, ThreadIdentity{IntegrationID: "claude", ProviderConversationID: "sess-c", ThreadID: "thrd-ccccc"}); !errorsIsForeignKey(err) {
 		t.Errorf("InsertObserved(missing project) error = %v; want ErrForeignKeyViolation", err)
 	}
 	if _, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-ddddd", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-nope"),
+		ID: "thrd-ddddd", IntegrationID: "claude", AgentID: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-nope"),
 		Status: "unknown", CreatedAt: at(4), UpdatedAt: at(4),
-	}, ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-d", ThreadID: "thrd-ddddd"}); !errorsIsForeignKey(err) {
+	}, ThreadIdentity{IntegrationID: "claude", ProviderConversationID: "sess-d", ThreadID: "thrd-ddddd"}); !errorsIsForeignKey(err) {
 		t.Errorf("InsertObserved(missing terminal) error = %v; want ErrForeignKeyViolation", err)
 	}
 
@@ -117,19 +118,19 @@ func TestInsertObservedIsAtomic(t *testing.T) {
 	insertProject(t, s, "proj-aaaaa", "/")
 
 	record := ThreadRecord{
-		ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", Status: "idle",
+		ID: "thrd-aaaaa", IntegrationID: "claude", AgentID: "claude", ProjectID: "proj-aaaaa", Status: "idle",
 		CreatedAt: at(0), UpdatedAt: at(0),
 	}
-	identity := ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"}
+	identity := ThreadIdentity{IntegrationID: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"}
 	if ok, err := threads.InsertObserved(ctx, record, identity); err != nil || !ok {
 		t.Fatalf("InsertObserved = %v, %v; want true", ok, err)
 	}
 
 	// An ID collision inserts neither half.
 	collision := record
-	collision.Adapter = "codex"
+	collision.IntegrationID = "codex"
 	if ok, err := threads.InsertObserved(ctx, collision, ThreadIdentity{
-		Adapter: "codex", ProviderConversationID: "sess-2", ThreadID: "thrd-aaaaa",
+		IntegrationID: "codex", ProviderConversationID: "sess-2", ThreadID: "thrd-aaaaa",
 	}); err != nil || ok {
 		t.Fatalf("InsertObserved(collision) = %v, %v; want false", ok, err)
 	}
@@ -159,15 +160,15 @@ func TestThreadIdentities(t *testing.T) {
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/")
 
-	// The identity key is (adapter, provider conversation id): the same
-	// provider id under another adapter is a distinct identity.
+	// The identity key is (integration, provider conversation id): the same
+	// provider id under another integration is a distinct identity.
 	identities := []ThreadIdentity{
-		{Adapter: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"},
-		{Adapter: "codex", ProviderConversationID: "sess-1", ThreadID: "thrd-bbbbb"},
+		{IntegrationID: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"},
+		{IntegrationID: "codex", ProviderConversationID: "sess-1", ThreadID: "thrd-bbbbb"},
 	}
 	for _, identity := range identities {
 		if ok, err := threads.InsertObserved(ctx, ThreadRecord{
-			ID: identity.ThreadID, Adapter: identity.Adapter, Agent: identity.Adapter, ProjectID: "proj-aaaaa", Status: "idle",
+			ID: identity.ThreadID, IntegrationID: identity.IntegrationID, AgentID: identity.IntegrationID, ProjectID: "proj-aaaaa", Status: "idle",
 			CreatedAt: at(0), UpdatedAt: at(0),
 		}, identity); err != nil || !ok {
 			t.Fatalf("InsertObserved = %v, %v", ok, err)
@@ -196,24 +197,25 @@ func TestThreadIdentities(t *testing.T) {
 }
 
 // The referential lifecycle lives in the schema: terminal deletion clears
-// thread linkage, project deletion cascades thread records and their
-// identity mappings.
+// thread linkage, project deletion clears the association — the thread
+// and its identity mapping survive unassigned.
 func TestThreadReferentialLifecycle(t *testing.T) {
 	s, _ := openStore(t)
 	ctx := context.Background()
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/")
+	insertSpace(t, s, "spce-aaaaa", "/")
 	if ok, err := s.Terminals().Insert(ctx, TerminalRecord{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Claude Code", Directory: "/",
+		ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Claude Code", Directory: "/",
 		CreatedAt: at(0), UpdatedAt: at(0),
 	}); err != nil || !ok {
 		t.Fatalf("planting terminal = %v, %v", ok, err)
 	}
 	if ok, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
+		ID: "thrd-aaaaa", IntegrationID: "claude", AgentID: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
 		Status: "idle", CreatedAt: at(1), UpdatedAt: at(1),
 	}, ThreadIdentity{
-		Adapter: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa",
+		IntegrationID: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa",
 	}); err != nil || !ok {
 		t.Fatalf("InsertObserved = %v, %v", ok, err)
 	}
@@ -230,7 +232,7 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 		t.Fatalf("after terminal delete: %+v; want one record with nil TerminalID", records)
 	}
 
-	// ON DELETE CASCADE: the project takes its threads and mappings with it.
+	// ON DELETE SET NULL: the project leaves its threads unassigned.
 	if ok, err := s.Projects().Delete(ctx, "proj-aaaaa"); err != nil || !ok {
 		t.Fatalf("project Delete = %v, %v", ok, err)
 	}
@@ -242,7 +244,7 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 0 || len(identities) != 0 {
-		t.Errorf("after project delete: %d records, %d identities; want none", len(records), len(identities))
+	if len(records) != 1 || records[0].ProjectID != "" || len(identities) != 1 {
+		t.Errorf("after project delete: %+v, %d identities; want one unassigned record and its mapping", records, len(identities))
 	}
 }

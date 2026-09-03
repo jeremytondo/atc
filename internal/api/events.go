@@ -17,11 +17,14 @@ const (
 	EventThreadCreated   = "thread.created"
 	EventThreadUpdated   = "thread.updated"
 	EventThreadDeleted   = "thread.deleted"
-	// EventAgentAdapterUpdated fires when an observing adapter's connection
-	// state changes (ATC-285) — on transitions only, never per reconnect
-	// attempt.
-	EventAgentAdapterUpdated = "agent_adapter.updated"
-	EventResync              = "resync"
+	EventSpaceCreated    = "space.created"
+	EventSpaceUpdated    = "space.updated"
+	EventSpaceDeleted    = "space.deleted"
+	// EventIntegrationUpdated fires when an Integration's connection state
+	// changes (ATC-285) — on transitions only, never per reconnect attempt.
+	// Executable availability is probed at read time and emits nothing.
+	EventIntegrationUpdated = "integration.updated"
+	EventResync             = "resync"
 )
 
 // ChangeEvent is the payload of every change event: what changed, by kind
@@ -62,9 +65,19 @@ type ThreadUpdatedEvent struct{ ChangeEvent }
 // ThreadDeletedEvent is the thread.deleted payload.
 type ThreadDeletedEvent struct{ ChangeEvent }
 
-// AgentAdapterUpdatedEvent is the agent_adapter.updated payload; the id is
-// the adapter's.
-type AgentAdapterUpdatedEvent struct{ ChangeEvent }
+// SpaceCreatedEvent is the space.created payload.
+type SpaceCreatedEvent struct{ ChangeEvent }
+
+// SpaceUpdatedEvent is the space.updated payload.
+type SpaceUpdatedEvent struct{ ChangeEvent }
+
+// SpaceDeletedEvent is the space.deleted payload; its terminals' own
+// terminal.deleted events precede it.
+type SpaceDeletedEvent struct{ ChangeEvent }
+
+// IntegrationUpdatedEvent is the integration.updated payload; the id is
+// the Integration's.
+type IntegrationUpdatedEvent struct{ ChangeEvent }
 
 // ResyncEvent tells a reconnecting client its cursor has fallen off the
 // backlog: refetch snapshots once, then resume from the live stream.

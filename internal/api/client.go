@@ -59,8 +59,10 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	return health, err
 }
 
-// CreateTerminal creates a terminal and starts its session, returning the
-// resource once its status has settled.
+// CreateTerminal creates a terminal and starts its session — a shell, a
+// command, an App, or a thread's resume — returning the resource once
+// its status has settled; a thread resume returns the terminal already
+// holding the thread when one is running.
 func (c *Client) CreateTerminal(ctx context.Context, params TerminalCreateParams) (Terminal, error) {
 	var terminal Terminal
 	err := c.do(ctx, http.MethodPost, "/v1/terminals", params, &terminal)
@@ -75,18 +77,18 @@ func (c *Client) Terminal(ctx context.Context, id string) (Terminal, error) {
 }
 
 // Terminals lists every terminal, exited and missing ones included. A
-// non-empty projectID filters to that project's terminals.
-func (c *Client) Terminals(ctx context.Context, projectID string) ([]Terminal, error) {
+// non-empty spaceID filters to that space's terminals.
+func (c *Client) Terminals(ctx context.Context, spaceID string) ([]Terminal, error) {
 	path := "/v1/terminals"
-	if projectID != "" {
-		path += "?project=" + url.QueryEscape(projectID)
+	if spaceID != "" {
+		path += "?space=" + url.QueryEscape(spaceID)
 	}
 	var list TerminalList
 	err := c.do(ctx, http.MethodGet, path, nil, &list)
 	return list.Terminals, err
 }
 
-// UpdateTerminal renames a terminal; name is the only mutable field.
+// UpdateTerminal applies a merge patch: rename, move to another space.
 func (c *Client) UpdateTerminal(ctx context.Context, id string, params TerminalUpdateParams) (Terminal, error) {
 	var terminal Terminal
 	err := c.do(ctx, http.MethodPatch, "/v1/terminals/"+id, params, &terminal)
@@ -98,36 +100,56 @@ func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/terminals/"+id, nil, nil)
 }
 
-// Agents lists the launchable agents, availability probed against the
-// server's machine at request time.
-func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
-	var list AgentList
-	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &list)
-	return list.Agents, err
+// CreateSpace registers a space for terminals to belong to.
+func (c *Client) CreateSpace(ctx context.Context, params SpaceCreateParams) (Space, error) {
+	var space Space
+	err := c.do(ctx, http.MethodPost, "/v1/spaces", params, &space)
+	return space, err
 }
 
-// Agent fetches one agent by id. The id is user-typed on the CLI, so it
-// is escaped: reserved characters make an unknown id, not a different
-// route.
-func (c *Client) Agent(ctx context.Context, id string) (Agent, error) {
-	var agent Agent
-	err := c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(id), nil, &agent)
-	return agent, err
+// Space fetches one space by ID.
+func (c *Client) Space(ctx context.Context, id string) (Space, error) {
+	var space Space
+	err := c.do(ctx, http.MethodGet, "/v1/spaces/"+id, nil, &space)
+	return space, err
 }
 
-// AgentAdapters lists the adapters that produce threads, with their
-// availability or live connection.
-func (c *Client) AgentAdapters(ctx context.Context) ([]AgentAdapter, error) {
-	var list AgentAdapterList
-	err := c.do(ctx, http.MethodGet, "/v1/agents/adapters", nil, &list)
-	return list.Adapters, err
+// Spaces lists every space, the Default one included.
+func (c *Client) Spaces(ctx context.Context) ([]Space, error) {
+	var list SpaceList
+	err := c.do(ctx, http.MethodGet, "/v1/spaces", nil, &list)
+	return list.Spaces, err
 }
 
-// AgentAdapter fetches one adapter by id.
-func (c *Client) AgentAdapter(ctx context.Context, id string) (AgentAdapter, error) {
-	var adapter AgentAdapter
-	err := c.do(ctx, http.MethodGet, "/v1/agents/adapters/"+url.PathEscape(id), nil, &adapter)
-	return adapter, err
+// UpdateSpace applies a merge patch to a space's name and directory.
+func (c *Client) UpdateSpace(ctx context.Context, id string, params SpaceUpdateParams) (Space, error) {
+	var space Space
+	err := c.do(ctx, http.MethodPatch, "/v1/spaces/"+id, params, &space)
+	return space, err
+}
+
+// DeleteSpace deletes a space and every terminal in it; the Default
+// space is refused.
+func (c *Client) DeleteSpace(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/spaces/"+id, nil, nil)
+}
+
+// Integrations lists the compiled-in Integrations with their Apps, agents,
+// and evidence-based health, probed against the server's machine at
+// request time.
+func (c *Client) Integrations(ctx context.Context) ([]Integration, error) {
+	var list IntegrationList
+	err := c.do(ctx, http.MethodGet, "/v1/integrations", nil, &list)
+	return list.Integrations, err
+}
+
+// Integration fetches one Integration by id. The id is user-typed on the
+// CLI, so it is escaped: reserved characters make an unknown id, not a
+// different route.
+func (c *Client) Integration(ctx context.Context, id string) (Integration, error) {
+	var integration Integration
+	err := c.do(ctx, http.MethodGet, "/v1/integrations/"+url.PathEscape(id), nil, &integration)
+	return integration, err
 }
 
 // Threads lists threads, newest-created last. Non-empty projectID and
@@ -159,20 +181,13 @@ func (c *Client) Thread(ctx context.Context, id string) (Thread, error) {
 	return thread, err
 }
 
-// UpdateThread mutates a thread's title and/or archived flag — archive
-// and unarchive are this PATCH, there are no action routes.
+// UpdateThread merge-patches a thread's title, archived flag, and project
+// (an explicit null clears the project) — archive and unarchive are this
+// PATCH, there are no action routes.
 func (c *Client) UpdateThread(ctx context.Context, id string, params ThreadUpdateParams) (Thread, error) {
 	var thread Thread
 	err := c.do(ctx, http.MethodPatch, "/v1/threads/"+id, params, &thread)
 	return thread, err
-}
-
-// OpenThread resolves the thread to one terminal — a running terminal
-// that holds it, or a new one resuming it — for the caller to attach to.
-func (c *Client) OpenThread(ctx context.Context, id string) (ThreadOpen, error) {
-	var open ThreadOpen
-	err := c.do(ctx, http.MethodPost, "/v1/threads/"+id+"/open", nil, &open)
-	return open, err
 }
 
 // DeleteThread removes ATC's record of the conversation; the
@@ -202,15 +217,14 @@ func (c *Client) Projects(ctx context.Context) ([]Project, error) {
 	return list.Projects, err
 }
 
-// UpdateProject renames a project; name is the only mutable field.
+// UpdateProject applies a merge patch to a project's name and directory.
 func (c *Client) UpdateProject(ctx context.Context, id string, params ProjectUpdateParams) (Project, error) {
 	var project Project
 	err := c.do(ctx, http.MethodPatch, "/v1/projects/"+id, params, &project)
 	return project, err
 }
 
-// DeleteProject removes an empty project; a project that still holds
-// terminals is refused.
+// DeleteProject removes a project; its threads survive unassigned.
 func (c *Client) DeleteProject(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/projects/"+id, nil, nil)
 }

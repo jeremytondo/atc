@@ -3,11 +3,14 @@ package terminals
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,14 +19,15 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
-// fakeAdapter is a hand-written in-memory session backend. Create births a
+// fakeDriver is a hand-written in-memory session backend. Create births a
 // reachable session unless told otherwise; Kill removes it unless killErr
 // is set (the "zmx unhealthy" condition).
-type fakeAdapter struct {
+type fakeDriver struct {
 	mu        sync.Mutex
 	sessions  map[string]bool // name → reachable
 	invErr    error
@@ -33,13 +37,21 @@ type fakeAdapter struct {
 	// onCreate observes the create, e.g. to assert the record already
 	// exists or to plant a fast-failure marker instead of a session.
 	onCreate func(id string, spec CreateSpec)
+	// commands records what each session was created with.
+	commands map[string]string
 }
 
-func newFakeAdapter() *fakeAdapter {
-	return &fakeAdapter{sessions: map[string]bool{}}
+func (a *fakeDriver) createdCommand(id string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.commands[id]
 }
 
-func (a *fakeAdapter) Inventory(context.Context) ([]Session, error) {
+func newFakeDriver() *fakeDriver {
+	return &fakeDriver{sessions: map[string]bool{}}
+}
+
+func (a *fakeDriver) Inventory(context.Context) ([]Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.invErr != nil {
@@ -52,7 +64,7 @@ func (a *fakeAdapter) Inventory(context.Context) ([]Session, error) {
 	return inventory, nil
 }
 
-func (a *fakeAdapter) Create(_ context.Context, id string, spec CreateSpec) error {
+func (a *fakeDriver) Create(_ context.Context, id string, spec CreateSpec) error {
 	a.mu.Lock()
 	createErr, onCreate := a.createErr, a.onCreate
 	a.mu.Unlock()
@@ -64,11 +76,15 @@ func (a *fakeAdapter) Create(_ context.Context, id string, spec CreateSpec) erro
 	}
 	a.mu.Lock()
 	a.sessions[id] = true
+	if a.commands == nil {
+		a.commands = map[string]string{}
+	}
+	a.commands[id] = spec.Command
 	a.mu.Unlock()
 	return nil
 }
 
-func (a *fakeAdapter) Kill(_ context.Context, id string) error {
+func (a *fakeDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.killed = append(a.killed, id)
@@ -79,41 +95,41 @@ func (a *fakeAdapter) Kill(_ context.Context, id string) error {
 	return nil
 }
 
-func (a *fakeAdapter) killedNames() []string {
+func (a *fakeDriver) killedNames() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.killed...)
 }
 
-func (a *fakeAdapter) set(name string, reachable bool) {
+func (a *fakeDriver) set(name string, reachable bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions[name] = reachable
 }
 
-func (a *fakeAdapter) remove(name string) {
+func (a *fakeDriver) remove(name string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sessions, name)
 }
 
-func (a *fakeAdapter) setInvErr(err error) {
+func (a *fakeDriver) setInvErr(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.invErr = err
 }
 
-// fixture wires a Service over a real temp-file store, the fake adapter, a
-// real marker directory, and a fake clock, with one project (rooted at a
-// real temp directory) for terminals to belong to.
+// fixture wires a Service over a real temp-file store, the fake driver, a
+// real marker directory, and a fake clock. home is the fixture's "server
+// user's home", a real temp directory the Default space is rooted at.
 type fixture struct {
-	service    *Service
-	adapter    *fakeAdapter
-	hub        *events.Hub
-	markers    string
-	clock      *fakeClock
-	projectID  string
-	projectDir string
+	service *Service
+	store   *store.Store
+	driver  *fakeDriver
+	hub     *events.Hub
+	markers string
+	clock   *fakeClock
+	home    string
 }
 
 type fakeClock struct {
@@ -135,36 +151,53 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	adapter := newFakeAdapter()
+	driver := newFakeDriver()
 	markers := t.TempDir()
 	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)}
-	projectDir := t.TempDir()
-	projectID := "proj-aaaaa"
-	if ok, err := s.Projects().Insert(context.Background(), store.ProjectRecord{
-		ID: projectID, Name: "p", Directory: projectDir, CreatedAt: clock.Now(), UpdatedAt: clock.Now(),
-	}); err != nil || !ok {
-		t.Fatalf("planting project = %v, %v", ok, err)
-	}
+	home := canonicalTempDir(t)
 	service := NewService(Options{
 		Repository: s.Terminals(),
-		Adapter:    adapter,
-		Projects:   s.Projects(),
+		Driver:     driver,
+		Spaces:     s.Spaces(),
+		HomeDir:    home,
 		MarkerDir:  markers,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        clock.Now,
 	})
 	service.verifyInterval = time.Millisecond
-	return &fixture{service: service, adapter: adapter, hub: service.hub, markers: markers,
-		clock: clock, projectID: projectID, projectDir: projectDir}
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return &fixture{service: service, store: s, driver: driver, hub: service.hub, markers: markers, clock: clock, home: home}
 }
 
-// create is Create against the fixture's project.
-func (f *fixture) create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
-	if params.ProjectID == "" {
-		params.ProjectID = f.projectID
+// canonicalTempDir is a temp directory in canonical form — on macOS the
+// temp root is a symlink, and directories are stored resolved.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := paths.CanonicalDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
+	return dir
+}
+
+// create is Create in the Default space.
+func (f *fixture) create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
 	return f.service.Create(ctx, params)
+}
+
+// defaultSpace is the fixture's Default space.
+func (f *fixture) defaultSpace(t *testing.T) api.Space {
+	t.Helper()
+	for _, space := range f.service.ListSpaces() {
+		if space.IsDefault {
+			return space
+		}
+	}
+	t.Fatal("no Default space")
+	return api.Space{}
 }
 
 func plantExitMarker(t *testing.T, dir, id string, code int, exited bool) {
@@ -189,7 +222,7 @@ func TestCreateHappyPath(t *testing.T) {
 	// Record-first invariant: when the backend is asked to start the
 	// session, the record must already be durable.
 	var recordExisted bool
-	f.adapter.onCreate = func(id string, _ CreateSpec) {
+	f.driver.onCreate = func(id string, _ CreateSpec) {
 		records, err := f.service.repository.List(ctx)
 		if err != nil {
 			t.Error(err)
@@ -212,20 +245,38 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Error("session started before the record was persisted")
 	}
 	want := terminal
-	want.Name, want.ProjectID, want.Directory, want.Command, want.Status = "hx", f.projectID, f.projectDir, "hx", api.TerminalRunning
+	want.Name, want.SpaceID, want.Directory, want.Command, want.Status = filepath.Base(f.home), f.defaultSpace(t).ID, f.home, "hx", api.TerminalRunning
 	if diff := cmp.Diff(want, terminal); diff != "" {
 		t.Errorf("terminal (-want +got):\n%s", diff)
 	}
 }
 
+// Defaults: the Default space, its directory, and the directory's basename
+// as the name; an explicit directory is stored canonical and names the
+// terminal.
 func TestCreateDefaults(t *testing.T) {
 	f := newFixture(t)
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if terminal.Name != "Shell" || terminal.Directory != f.projectDir || terminal.Command != "" {
-		t.Errorf("defaults = %q %q %q, want Shell %q \"\"", terminal.Name, terminal.Directory, terminal.Command, f.projectDir)
+	if terminal.Name != filepath.Base(f.home) || terminal.Directory != f.home || terminal.Command != "" || terminal.SpaceID != f.defaultSpace(t).ID {
+		t.Errorf("defaults = %+v, want the Default space, %q, and its basename", terminal, f.home)
+	}
+	sub := filepath.Join(f.home, "sub dir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(f.home, "link")
+	if err := os.Symlink(sub, link); err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := f.create(context.Background(), api.TerminalCreateParams{Directory: link, Name: "  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Directory != sub || explicit.Name != "sub dir" {
+		t.Errorf("explicit directory = %+v, want canonical %q named by basename", explicit, sub)
 	}
 }
 
@@ -233,8 +284,8 @@ func TestCreateDefaults(t *testing.T) {
 // the evidence and create reports exited with it — no separate error path.
 func TestCreateFastFailingCommand(t *testing.T) {
 	f := newFixture(t)
-	f.adapter.createErr = errors.New("client exited before the session settled")
-	f.adapter.onCreate = func(id string, _ CreateSpec) {
+	f.driver.createErr = errors.New("client exited before the session settled")
+	f.driver.onCreate = func(id string, _ CreateSpec) {
 		plantExitMarker(t, f.markers, id, 127, true)
 	}
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{Command: "no-such-tool"})
@@ -253,7 +304,7 @@ func TestCreateFastFailingCommand(t *testing.T) {
 // the terminal reports missing rather than inventing an error.
 func TestCreateNeverSettles(t *testing.T) {
 	f := newFixture(t)
-	f.adapter.createErr = errors.New("session never settled")
+	f.driver.createErr = errors.New("session never settled")
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
@@ -308,11 +359,11 @@ func TestReconcileDecisionTable(t *testing.T) {
 				plantExitMarker(t, f.markers, id, code3, tc.markerExited)
 			}
 			if tc.present {
-				f.adapter.set(id, tc.reachable)
+				f.driver.set(id, tc.reachable)
 			} else {
-				f.adapter.remove(id)
+				f.driver.remove(id)
 			}
-			f.adapter.setInvErr(tc.invErr)
+			f.driver.setInvErr(tc.invErr)
 
 			f.service.Reconcile(ctx)
 			got, err := f.service.Get(id)
@@ -339,16 +390,16 @@ func TestExitedIsStickyAndStaysListed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(terminal.ID)
+	f.driver.remove(terminal.ID)
 	plantExitMarker(t, f.markers, terminal.ID, 3, true)
 	f.service.Reconcile(ctx)
 
 	if err := exitmarker.Remove(f.markers, terminal.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.setInvErr(errors.New("zmx down"))
+	f.driver.setInvErr(errors.New("zmx down"))
 	f.service.Reconcile(ctx)
-	f.adapter.setInvErr(nil)
+	f.driver.setInvErr(nil)
 	f.service.Reconcile(ctx)
 
 	list := f.service.List("")
@@ -364,15 +415,22 @@ func TestUpdateName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := f.service.UpdateName(ctx, terminal.ID, "build watcher")
+	renamed, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Some("build watcher")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if renamed.Name != "build watcher" {
 		t.Errorf("name = %q", renamed.Name)
 	}
-	if _, err := f.service.UpdateName(ctx, "term-zzzzz", "x"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("UpdateName(absent) = %v, want ErrNotFound", err)
+	// A merge patch: an empty patch changes nothing, null is refused.
+	if same, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{}); err != nil || same.Name != "build watcher" {
+		t.Errorf("empty patch = %+v, %v", same, err)
+	}
+	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Clear[string]()}); !errors.Is(err, ErrInvalidUpdate) {
+		t.Errorf("null name = %v, want ErrInvalidUpdate", err)
+	}
+	if _, err := f.service.Update(ctx, "term-zzzzz", api.TerminalUpdateParams{Name: api.Some("x")}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Update(absent) = %v, want ErrNotFound", err)
 	}
 }
 
@@ -388,9 +446,9 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	}
 	id := terminal.ID
 
-	f.adapter.mu.Lock()
-	f.adapter.killErr = errors.New("session still present after inventory passes")
-	f.adapter.mu.Unlock()
+	f.driver.mu.Lock()
+	f.driver.killErr = errors.New("session still present after inventory passes")
+	f.driver.mu.Unlock()
 	if err := f.service.Delete(ctx, id); err != nil {
 		t.Fatalf("Delete under failing kill = %v, want nil", err)
 	}
@@ -399,37 +457,37 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	}
 
 	// Inventory down: cleanup must refuse to act.
-	f.adapter.mu.Lock()
-	f.adapter.killErr = nil
-	f.adapter.killed = nil
-	f.adapter.invErr = errors.New("zmx down")
-	f.adapter.mu.Unlock()
+	f.driver.mu.Lock()
+	f.driver.killErr = nil
+	f.driver.killed = nil
+	f.driver.invErr = errors.New("zmx down")
+	f.driver.mu.Unlock()
 	f.service.reconcile(ctx, true)
-	if killed := f.adapter.killedNames(); len(killed) != 0 {
+	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup acted without a complete inventory: %v", killed)
 	}
 
 	// The request-path Reconcile never reaps: kill verification is bounded
 	// but slow, and must not block HTTP handlers.
-	f.adapter.setInvErr(nil)
+	f.driver.setInvErr(nil)
 	f.service.Reconcile(ctx)
-	if killed := f.adapter.killedNames(); len(killed) != 0 {
+	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("request-path reconcile reaped: %v", killed)
 	}
 
 	// The background pass with the session reachable: provably ours, reaped.
 	f.service.reconcile(ctx, true)
-	if killed := f.adapter.killedNames(); len(killed) != 1 || killed[0] != id {
+	if killed := f.driver.killedNames(); len(killed) != 1 || killed[0] != id {
 		t.Fatalf("orphan not reaped: killed = %v", killed)
 	}
 
 	// An unreachable recordless session is preserved.
-	f.adapter.set("term-ghost", false)
-	f.adapter.mu.Lock()
-	f.adapter.killed = nil
-	f.adapter.mu.Unlock()
+	f.driver.set("term-ghost", false)
+	f.driver.mu.Lock()
+	f.driver.killed = nil
+	f.driver.mu.Unlock()
 	f.service.reconcile(ctx, true)
-	if killed := f.adapter.killedNames(); len(killed) != 0 {
+	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup killed an unreachable session: %v", killed)
 	}
 }
@@ -502,7 +560,7 @@ func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(terminal.ID)
+	f.driver.remove(terminal.ID)
 	// The marker's exit predates the record's creation (fixture clock
 	// starts 2026-08-27T12:00) — a leftover from a dead incarnation.
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -534,13 +592,14 @@ func TestLoadRebuildsView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(gone.ID)
+	f.driver.remove(gone.ID)
 
 	// A "restarted" service over the same database and backend.
 	restarted := NewService(Options{
 		Repository: f.service.repository,
-		Adapter:    f.adapter,
-		Projects:   f.service.projects,
+		Driver:     f.driver,
+		Spaces:     f.service.spaces,
+		HomeDir:    f.home,
 		MarkerDir:  f.markers,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -550,6 +609,18 @@ func TestLoadRebuildsView(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted.Reconcile(ctx)
+	// The Default space is stable across restarts: one, the same id.
+	if spaces := restarted.ListSpaces(); len(spaces) != 1 || spaces[0].ID != f.defaultSpace(t).ID || !spaces[0].IsDefault {
+		t.Errorf("spaces after restart = %+v, want the one Default space", spaces)
+	}
+	// A home that is no usable directory fails the boot.
+	broken := NewService(Options{
+		Repository: f.service.repository, Driver: f.driver, Spaces: f.service.spaces,
+		HomeDir: filepath.Join(f.home, "nope"), MarkerDir: f.markers, Hub: events.NewHub(64), Now: f.clock.Now,
+	})
+	if err := broken.Load(ctx); err == nil {
+		t.Error("Load with an unusable home succeeded")
+	}
 
 	byName := map[string]api.TerminalStatus{}
 	for _, terminal := range restarted.List("") {
@@ -573,10 +644,10 @@ func TestEventsEmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.UpdateName(ctx, terminal.ID, "renamed"); err != nil {
+	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Some("renamed")}); err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(terminal.ID)
+	f.driver.remove(terminal.ID)
 	f.service.Reconcile(ctx) // running → missing
 	if err := f.service.Delete(ctx, terminal.ID); err != nil {
 		t.Fatal(err)
@@ -604,21 +675,29 @@ func TestEventsEmitted(t *testing.T) {
 	}
 }
 
-// The ATC-256 create contract: the project must exist, and its directory
-// must exist at that moment — refused before any record is written.
-func TestCreateRequiresLiveProject(t *testing.T) {
+// The create contract: the space must exist and not be deleting, and the
+// directory must exist at that moment — refused before any record is
+// written.
+func TestCreateRequiresLiveSpaceAndDirectory(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	if _, err := f.service.Create(ctx, api.TerminalCreateParams{ProjectID: "proj-zzzzz"}); !errors.Is(err, ErrProjectUnknown) {
-		t.Errorf("Create(unknown project) = %v, want ErrProjectUnknown", err)
+	if _, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: "spce-zzzzz"}); !errors.Is(err, ErrSpaceNotFound) {
+		t.Errorf("Create(unknown space) = %v, want ErrSpaceNotFound", err)
 	}
-
-	if err := os.RemoveAll(f.projectDir); err != nil {
+	if _, err := f.create(ctx, api.TerminalCreateParams{Directory: filepath.Join(f.home, "nope")}); !errors.Is(err, ErrDirectoryInvalid) {
+		t.Errorf("Create(missing directory) = %v, want ErrDirectoryInvalid", err)
+	}
+	gone := canonicalTempDir(t)
+	space, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: gone})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.create(ctx, api.TerminalCreateParams{}); !errors.Is(err, ErrProjectDirectoryMissing) {
-		t.Errorf("Create(vanished directory) = %v, want ErrProjectDirectoryMissing", err)
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.create(ctx, api.TerminalCreateParams{SpaceID: space.ID}); !errors.Is(err, ErrDirectoryInvalid) {
+		t.Errorf("Create(vanished space directory) = %v, want ErrDirectoryInvalid", err)
 	}
 
 	// Refused means refused: no terminal row was written and nothing is
@@ -632,48 +711,48 @@ func TestCreateRequiresLiveProject(t *testing.T) {
 	}
 }
 
-// List's project filter scopes the view; unfiltered returns everything.
-func TestListFiltersByProject(t *testing.T) {
+// List's space filter scopes the view; unfiltered returns everything. A
+// terminal in a selected space starts in that space's directory.
+func TestListFiltersBySpace(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	otherDir := t.TempDir()
-	if ok, err := f.service.projects.Insert(ctx, store.ProjectRecord{
-		ID: "proj-bbbbb", Name: "other", Directory: otherDir,
-		CreatedAt: f.clock.Now(), UpdatedAt: f.clock.Now(),
-	}); err != nil || !ok {
-		t.Fatalf("planting project = %v, %v", ok, err)
+	otherDir := canonicalTempDir(t)
+	space, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: otherDir, Name: "other"})
+	if err != nil {
+		t.Fatal(err)
 	}
 	mine, err := f.create(ctx, api.TerminalCreateParams{Name: "mine"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := f.service.Create(ctx, api.TerminalCreateParams{ProjectID: "proj-bbbbb", Name: "other"})
+	other, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: space.ID, Name: "other"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if all := f.service.List(""); len(all) != 2 {
 		t.Errorf("unfiltered list = %+v, want both terminals", all)
 	}
-	filtered := f.service.List("proj-bbbbb")
+	filtered := f.service.List(space.ID)
 	if len(filtered) != 1 || filtered[0].ID != other.ID {
 		t.Errorf("filtered list = %+v, want only %s", filtered, other.ID)
 	}
-	if other.Directory != otherDir || mine.Directory != f.projectDir {
-		t.Errorf("directories not copied from projects: %q %q", mine.Directory, other.Directory)
+	if other.Directory != otherDir || mine.Directory != f.home {
+		t.Errorf("directories not taken from spaces: %q %q", mine.Directory, other.Directory)
 	}
 }
 
-// An agent launch's Prepare runs with the resolved directory before any
+// An App launch's Prepare runs with the resolved directory before any
 // record exists and outside the commit lock; a refusal there creates
 // nothing, and a create that fails after it aborts the preparation.
-// Compose then sees the minted id and the same directory.
-func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
+// Compose then sees the minted id and the same directory, and the
+// composed command stays off the wire.
+func TestCreateForAppPreparesBeforeTheRecord(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	var prepared, composedDir, composedID string
 	aborted, prepares := false, 0
-	launch := AgentLaunch{
-		Agent: "alpha",
+	launch := AppLaunch{
+		AppID: "alpha/tui",
 		Prepare: func(_ context.Context, directory string) (func(), error) {
 			prepared = directory
 			prepares++
@@ -691,18 +770,21 @@ func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
 			return "alpha --for " + terminalID, nil
 		},
 	}
-	terminal, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, launch)
+	terminal, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{}, launch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared != f.projectDir || composedDir != f.projectDir || composedID != terminal.ID ||
-		terminal.Command != "alpha --for "+terminal.ID || terminal.Agent != "alpha" || aborted {
+	if prepared != f.home || composedDir != f.home || composedID != terminal.ID ||
+		terminal.Command != "" || terminal.AppID != "alpha/tui" || aborted {
 		t.Errorf("prepared %q, composed (%q, %q), terminal %+v, aborted %v", prepared, composedID, composedDir, terminal, aborted)
+	}
+	if got := f.driver.createdCommand(terminal.ID); got != "alpha --for "+terminal.ID {
+		t.Errorf("driver ran %q, want the composed command", got)
 	}
 
 	refused := launch
 	refused.Prepare = func(context.Context, string) (func(), error) { return nil, errors.New("not now") }
-	if _, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, refused); err == nil || err.Error() != "not now" {
+	if _, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{}, refused); err == nil || err.Error() != "not now" {
 		t.Fatalf("refused prepare: err = %v", err)
 	}
 	if records, _ := f.service.repository.List(ctx); len(records) != 1 {
@@ -711,10 +793,252 @@ func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
 
 	failing := launch
 	failing.Compose = func(string, string) (string, error) { return "", errors.New("cannot compose") }
-	if _, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, failing); err == nil {
+	if _, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{}, failing); err == nil {
 		t.Fatal("create succeeded though compose failed")
 	}
 	if !aborted {
 		t.Error("a failed create did not abort the preparation")
+	}
+}
+
+// Spaces (ATC-296): the Default space exists at boot, rooted at the
+// server user's home, and refuses update and deletion; regular spaces
+// canonicalize their directory, default the name from its basename, may
+// share directories, and are editable — a directory change affects only
+// later terminals.
+func TestSpacesModel(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	sub := f.hub.Subscribe(0, false)
+	defer sub.Close()
+
+	def := f.defaultSpace(t)
+	if def.Name != DefaultSpaceName || def.Directory != f.home || !strings.HasPrefix(def.ID, "spce-") {
+		t.Errorf("Default space = %+v", def)
+	}
+	if _, err := f.service.UpdateSpace(ctx, def.ID, api.SpaceUpdateParams{Name: api.Some("x")}); !errors.Is(err, ErrDefaultSpace) {
+		t.Errorf("update Default = %v, want ErrDefaultSpace", err)
+	}
+	if err := f.service.DeleteSpace(ctx, def.ID, nil); !errors.Is(err, ErrDefaultSpace) {
+		t.Errorf("delete Default = %v, want ErrDefaultSpace", err)
+	}
+
+	// Create: home by default; a symlinked path stores canonical; the name
+	// defaults to the basename; the same directory twice is fine.
+	dir := filepath.Join(f.home, "work dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(f.home, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	homeSpace, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Name: "  named  "})
+	if err != nil || homeSpace.Directory != f.home || homeSpace.Name != "named" || homeSpace.IsDefault {
+		t.Fatalf("CreateSpace(no directory) = %+v, %v", homeSpace, err)
+	}
+	linked, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: link})
+	if err != nil || linked.Directory != dir || linked.Name != "work dir" {
+		t.Fatalf("CreateSpace(link) = %+v, %v", linked, err)
+	}
+	if _, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: dir}); err != nil {
+		t.Errorf("CreateSpace(duplicate directory) = %v, want allowed", err)
+	}
+	if _, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: filepath.Join(f.home, "nope")}); !errors.Is(err, ErrSpaceDirectoryInvalid) {
+		t.Errorf("CreateSpace(missing) = %v, want ErrSpaceDirectoryInvalid", err)
+	}
+	if list := f.service.ListSpaces(); len(list) != 4 || list[0].ID != def.ID {
+		t.Errorf("ListSpaces = %+v, want Default first then three", list)
+	}
+
+	// Update: rename, move; existing terminals keep their directory, a
+	// later terminal takes the new one; null and empty are refused.
+	before, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: linked.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := canonicalTempDir(t)
+	updated, err := f.service.UpdateSpace(ctx, linked.ID, api.SpaceUpdateParams{Name: api.Some("moved"), Directory: api.Some(moved)})
+	if err != nil || updated.Name != "moved" || updated.Directory != moved {
+		t.Fatalf("UpdateSpace = %+v, %v", updated, err)
+	}
+	after, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: linked.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.service.Get(before.ID); got.Directory != dir || after.Directory != moved {
+		t.Errorf("directories after move: existing %q, later %q; want %q, %q", got.Directory, after.Directory, dir, moved)
+	}
+	if same, err := f.service.UpdateSpace(ctx, linked.ID, api.SpaceUpdateParams{}); err != nil || same.Name != "moved" {
+		t.Errorf("empty patch = %+v, %v", same, err)
+	}
+	for name, params := range map[string]api.SpaceUpdateParams{
+		"null name":         {Name: api.Clear[string]()},
+		"empty name":        {Name: api.Some(" ")},
+		"null directory":    {Directory: api.Clear[string]()},
+		"missing directory": {Directory: api.Some(filepath.Join(f.home, "nope"))},
+	} {
+		if _, err := f.service.UpdateSpace(ctx, linked.ID, params); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := f.service.UpdateSpace(ctx, "spce-zzzzz", api.SpaceUpdateParams{Name: api.Some("x")}); !errors.Is(err, ErrSpaceNotFound) {
+		t.Errorf("update unknown = %v, want ErrSpaceNotFound", err)
+	}
+
+	var events []string
+	for len(sub.C) > 0 {
+		change := <-sub.C
+		if strings.HasPrefix(change.Type, "space.") {
+			events = append(events, change.Type+" "+change.ID)
+		}
+	}
+	want := []string{"space.created " + homeSpace.ID, "space.created " + linked.ID, "space.created " + f.service.ListSpaces()[3].ID, "space.updated " + linked.ID}
+	if diff := cmp.Diff(want, events); diff != "" {
+		t.Errorf("space events (-want +got):\n%s", diff)
+	}
+}
+
+// A move changes the space and nothing else: the session, directory, and
+// App intent stay; a move into an unknown or deleting space is refused;
+// null is refused.
+func TestTerminalMoveBetweenSpaces(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	other, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: canonicalTempDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launched, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{Name: "tui"}, AppLaunch{
+		AppID:   "alpha/tui",
+		Compose: func(string, string) (string, error) { return "alpha", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := f.service.Update(ctx, launched.ID, api.TerminalUpdateParams{SpaceID: api.Some(other.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := launched
+	want.SpaceID, want.UpdatedAt = other.ID, moved.UpdatedAt
+	if diff := cmp.Diff(want, moved); diff != "" {
+		t.Errorf("moved (-want +got):\n%s", diff)
+	}
+	if f.driver.createdCommand(launched.ID) != "alpha" || len(f.driver.killedNames()) != 0 {
+		t.Error("a move touched the session")
+	}
+	if _, err := f.service.Update(ctx, launched.ID, api.TerminalUpdateParams{SpaceID: api.Some("spce-zzzzz")}); !errors.Is(err, ErrSpaceNotFound) {
+		t.Errorf("move to unknown = %v, want ErrSpaceNotFound", err)
+	}
+	if _, err := f.service.Update(ctx, launched.ID, api.TerminalUpdateParams{SpaceID: api.Clear[string]()}); !errors.Is(err, ErrInvalidUpdate) {
+		t.Errorf("null space = %v, want ErrInvalidUpdate", err)
+	}
+	// A move names its space exactly; "" is unknown, not Default.
+	if _, err := f.service.Update(ctx, launched.ID, api.TerminalUpdateParams{SpaceID: api.Some("")}); !errors.Is(err, ErrSpaceNotFound) {
+		t.Errorf("move to \"\" = %v, want ErrSpaceNotFound", err)
+	}
+}
+
+// Space deletion runs every terminal in the space through the supplied
+// deletion workflow — running, unreachable, exited, and missing alike —
+// then removes the space; a create or move into the space meanwhile is
+// refused, as is a move out of it; every terminal is attempted even when
+// one fails, and a failure leaves the space marked so a retry finishes
+// the job.
+func TestDeleteSpace(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	space, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: canonicalTempDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, name := range []string{"running", "unreachable", "exited", "missing"} {
+		terminal, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: space.ID, Name: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, terminal.ID)
+	}
+	f.driver.set(ids[1], false)
+	f.driver.remove(ids[2])
+	plantExitMarker(t, f.markers, ids[2], 0, true)
+	f.driver.remove(ids[3])
+	f.service.Reconcile(ctx)
+	elsewhere, err := f.service.Create(ctx, api.TerminalCreateParams{Name: "elsewhere"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The workflow sees every terminal, in id order, and can observe the
+	// space refusing members in and out while it runs.
+	var deleted []string
+	var refusedCreate, refusedMove, refusedLeave error
+	workflow := func(ctx context.Context, id string) error {
+		deleted = append(deleted, id)
+		if len(deleted) == 1 {
+			_, refusedCreate = f.service.Create(ctx, api.TerminalCreateParams{SpaceID: space.ID})
+			_, refusedMove = f.service.Update(ctx, elsewhere.ID, api.TerminalUpdateParams{SpaceID: api.Some(space.ID)})
+			_, refusedLeave = f.service.Update(ctx, ids[3], api.TerminalUpdateParams{SpaceID: api.Some(elsewhere.SpaceID)})
+		}
+		return f.service.Delete(ctx, id)
+	}
+	if err := f.service.DeleteSpace(ctx, space.ID, workflow); err != nil {
+		t.Fatalf("DeleteSpace = %v", err)
+	}
+	sorted := slices.Clone(ids)
+	slices.Sort(sorted)
+	if diff := cmp.Diff(sorted, deleted); diff != "" {
+		t.Errorf("deleted (-want +got):\n%s", diff)
+	}
+	if !errors.Is(refusedCreate, ErrSpaceDeleting) || !errors.Is(refusedMove, ErrSpaceDeleting) || !errors.Is(refusedLeave, ErrSpaceDeleting) {
+		t.Errorf("during deletion: create = %v, move in = %v, move out = %v; want ErrSpaceDeleting", refusedCreate, refusedMove, refusedLeave)
+	}
+	if _, err := f.service.GetSpace(space.ID); !errors.Is(err, ErrSpaceNotFound) {
+		t.Errorf("space after delete = %v, want gone", err)
+	}
+	if list := f.service.List(""); len(list) != 1 || list[0].ID != elsewhere.ID {
+		t.Errorf("terminals after delete = %+v, want only the other space's", list)
+	}
+	if err := f.service.DeleteSpace(ctx, space.ID, workflow); !errors.Is(err, ErrSpaceNotFound) {
+		t.Errorf("second delete = %v, want ErrSpaceNotFound", err)
+	}
+
+	// A failing terminal delete does not stop the others: every terminal
+	// is attempted, the failures are reported together, the space stays
+	// (marked), and the retry deletes what remains.
+	again, err := f.service.CreateSpace(ctx, api.SpaceCreateParams{Directory: canonicalTempDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: again.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := 0
+	failing := func(ctx context.Context, id string) error {
+		calls++
+		if calls <= 2 {
+			return fmt.Errorf("persistence down for %s", id)
+		}
+		return f.service.Delete(ctx, id)
+	}
+	err = f.service.DeleteSpace(ctx, again.ID, failing)
+	if err == nil || strings.Count(err.Error(), "persistence down") != 2 || calls != 3 {
+		t.Fatalf("DeleteSpace with failing deletes = %v after %d calls; want both failures reported and all three attempted", err, calls)
+	}
+	if list := f.service.List(again.ID); len(list) != 2 {
+		t.Errorf("terminals after the partial failure = %+v, want the two that failed", list)
+	}
+	if _, err := f.service.Create(ctx, api.TerminalCreateParams{SpaceID: again.ID}); !errors.Is(err, ErrSpaceDeleting) {
+		t.Errorf("create after a failed deletion = %v, want ErrSpaceDeleting (the mark holds)", err)
+	}
+	if err := f.service.DeleteSpace(ctx, again.ID, failing); err != nil {
+		t.Fatalf("retry = %v", err)
+	}
+	if list := f.service.List(again.ID); len(list) != 0 {
+		t.Errorf("terminals after retry = %+v", list)
 	}
 }

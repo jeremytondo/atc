@@ -72,12 +72,14 @@ func (p *Projects) List(ctx context.Context) ([]ProjectRecord, error) {
 	return records, nil
 }
 
-// UpdateName renames the project and returns the committed row in the
-// same operation (RETURNING), so a committed rename can never surface as
-// an error; false means no such record.
-func (p *Projects) UpdateName(ctx context.Context, id, name string, at time.Time) (ProjectRecord, bool, error) {
-	row, err := p.writes.UpdateProjectName(ctx, gen.UpdateProjectNameParams{
-		Name: name, UpdatedAt: formatTime(at), ID: id,
+// Update writes the name and directory and returns the committed row in
+// the same operation (RETURNING), so a committed write can never surface
+// as an error; false means no such record. A directory another project
+// holds surfaces as the UNIQUE constraint error — the domain pre-checks
+// it and this is the backstop.
+func (p *Projects) Update(ctx context.Context, id, name, directory string, at time.Time) (ProjectRecord, bool, error) {
+	row, err := p.writes.UpdateProject(ctx, gen.UpdateProjectParams{
+		Name: name, Directory: directory, UpdatedAt: formatTime(at), ID: id,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ProjectRecord{}, false, nil
@@ -89,12 +91,11 @@ func (p *Projects) UpdateName(ctx context.Context, id, name string, at time.Time
 	return record, err == nil, err
 }
 
-// Delete removes the record; false means no such record. A project that
-// still owns terminals fails with ErrForeignKeyViolation — the domain
-// refuses first and this is the backstop.
+// Delete removes the record; false means no such record. Threads that
+// referenced it are unassigned by the schema (ON DELETE SET NULL).
 func (p *Projects) Delete(ctx context.Context, id string) (bool, error) {
 	n, err := p.writes.DeleteProject(ctx, id)
-	return n > 0, foreignKeyError(err)
+	return n > 0, err
 }
 
 func projectFrom(row gen.Project) (ProjectRecord, error) {

@@ -9,19 +9,22 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/hookauth"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/hookauth"
 )
 
 // hookSecret digs this launch's secret out of its header file — the same
 // file the settings' curl command reads. The command carries only the
-// settings path; the header file sits beside it.
-func hookSecret(t *testing.T, terminal api.Terminal) string {
+// settings path; the header file sits beside it. The composed command is
+// private to the driver — it never rides the wire — so it is read from
+// the fake driver's record.
+func hookSecret(t *testing.T, f *fixture, terminal api.Terminal) string {
 	t.Helper()
-	match := regexp.MustCompile(`--settings '([^']+)\.json'`).FindStringSubmatch(terminal.Command)
+	command := f.driverCommand(terminal.ID)
+	match := regexp.MustCompile(`--settings '([^']+)\.json'`).FindStringSubmatch(command)
 	if match == nil {
-		t.Fatalf("launch command has no settings file: %q", terminal.Command)
+		t.Fatalf("launch command has no settings file: %q", command)
 	}
 	content, err := os.ReadFile(match[1] + ".header")
 	if err != nil {
@@ -55,12 +58,12 @@ func (f *fixture) postHook(t *testing.T, secret, body string) *httptest.Response
 func TestClaudeHooksDriveThreads(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"}))
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
 	}
 	terminal := decodeTerminal(t, rec)
-	secret := hookSecret(t, terminal)
+	secret := hookSecret(t, f, terminal)
 
 	// The internal route ignores the bearer token entirely: no token
 	// needed with a valid secret, and the bearer token is no substitute
@@ -68,7 +71,7 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	if rec := f.postHook(t, "", `{"session_id":"s1","hook_event_name":"SessionStart"}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("hook without secret: got %d, want 404", rec.Code)
 	}
-	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup","cwd":"/somewhere"}`); rec.Code != http.StatusNoContent {
+	if rec := f.postHook(t, secret, jsonBody(t, map[string]any{"session_id": "s1", "hook_event_name": "SessionStart", "source": "startup", "cwd": f.projectDir})); rec.Code != http.StatusNoContent {
 		t.Fatalf("hook delivery: got %d", rec.Code)
 	}
 
@@ -82,15 +85,15 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 
 	// The first prompt mints the thread — linked, working, titled — and
 	// the terminal projects it.
-	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build","cwd":"/somewhere"}`)
+	f.postHook(t, secret, jsonBody(t, map[string]any{"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": "fix the build", "cwd": f.projectDir}))
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
 	decodeInto(t, rec, &list)
 	if len(list.Threads) != 1 {
 		t.Fatalf("threads = %+v", list.Threads)
 	}
 	thread := list.Threads[0]
-	if thread.Agent != "claude" || thread.TerminalID != terminal.ID || thread.Status != api.ThreadWorking ||
-		thread.Title != "fix the build" || thread.Cwd != "/somewhere" {
+	if thread.IntegrationID != "claude" || thread.AppID != "claude/tui" || thread.AgentID != "claude" || thread.TerminalID != terminal.ID || thread.Status != api.ThreadWorking ||
+		thread.Title != "fix the build" || thread.Cwd != f.projectDir || thread.InitialDirectory != f.projectDir || thread.ProjectID != f.projectID {
 		t.Errorf("thread = %+v", thread)
 	}
 	if got := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")); got.ActiveThreadID != thread.ID {
@@ -133,12 +136,12 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 func TestTerminalDeleteRevokesHookSecret(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"}))
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
 	}
 	terminal := decodeTerminal(t, rec)
-	secret := hookSecret(t, terminal)
+	secret := hookSecret(t, f, terminal)
 	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("hook before delete: got %d", rec.Code)
 	}
@@ -149,7 +152,7 @@ func TestTerminalDeleteRevokesHookSecret(t *testing.T) {
 	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"Stop"}`); rec.Code != http.StatusNotFound {
 		t.Errorf("hook after delete: got %d, want 404", rec.Code)
 	}
-	settings := regexp.MustCompile(`--settings '([^']+)'`).FindStringSubmatch(terminal.Command)[1]
+	settings := regexp.MustCompile(`--settings '([^']+)'`).FindStringSubmatch(f.driverCommand(terminal.ID))[1]
 	for _, path := range []string{settings, strings.TrimSuffix(settings, ".json") + ".header"} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("per-launch file %s survived the delete", path)
@@ -185,4 +188,15 @@ func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 		t.Fatalf("decoding %q: %v", rec.Body, err)
 	}
+}
+
+// jsonBody marshals a body, so filesystem paths and other values are
+// escaped as JSON rather than spliced into a literal.
+func jsonBody(t *testing.T, value any) string {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }

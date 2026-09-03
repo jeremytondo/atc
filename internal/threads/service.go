@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
 )
 
@@ -18,18 +21,38 @@ import (
 var ErrNotFound = errors.New("thread not found")
 
 // ErrActive refuses archiving or deleting a thread some terminal has open
-// or some adapter's program still reports (deleting an active thread
+// or some Integration's program still reports (deleting an active thread
 // would silently re-mint a fresh record on the next evidence). The
 // message names the holder; the API layer maps it to 409.
 var ErrActive = errors.New("thread is active")
 
-// ErrProjectRequired refuses an adapter observation of an unknown
-// conversation that names no project to record it under.
-var ErrProjectRequired = errors.New("a first observation needs a project")
+// ErrNoLocalDirectory refuses an external observation of an unknown
+// conversation whose reported directory is not usable on this machine:
+// ATC represents work on its own machine, so the thread is not recorded
+// (the Integration counts it in its connection detail).
+var ErrNoLocalDirectory = errors.New("no usable local directory")
 
-// ErrResumeUnavailable refuses opening a dormant thread when the caller
-// supplies no Resumer (a server without an agent catalog).
-var ErrResumeUnavailable = errors.New("this server cannot resume conversations")
+// ErrProjectUnknown refuses assigning a thread to a project with no
+// record.
+var ErrProjectUnknown = errors.New("unknown project")
+
+// ErrInvalidUpdate refuses a PATCH that nulls a field that cannot be
+// cleared (title, archived).
+var ErrInvalidUpdate = errors.New("invalid update")
+
+// ErrLinkFailed reports a resume whose terminal was created but whose
+// association could not be persisted; the terminal was discarded.
+var ErrLinkFailed = errors.New("persisting the resumed terminal's association failed")
+
+// ErrCompensationFailed reports a resume whose terminal was created, could
+// not be linked, and could not be discarded either: a live terminal ATC
+// does not associate with the thread. The message names it.
+var ErrCompensationFailed = errors.New("discarding the unlinked resumed terminal failed")
+
+// ErrAppForeign refuses minting a thread whose App is not the observing
+// Integration's: provenance is Integration-scoped, so an App outside the
+// origin Integration cannot have started the conversation.
+var ErrAppForeign = errors.New("app does not belong to the observing integration")
 
 // Event-payload resource kinds. The service publishes terminal.updated
 // when a terminal's activeThreadId projection changes — the terminals
@@ -50,9 +73,13 @@ type TerminalReader interface {
 type Options struct {
 	Repository *store.Threads
 	Terminals  TerminalReader
-	Hub        *events.Hub
-	Logger     *slog.Logger
-	Now        func() time.Time
+	// Projects is read for classification (ATC-295): the projects a
+	// thread's initial directory is matched against at first observation
+	// and backfill, and the existence check behind explicit assignment.
+	Projects *store.Projects
+	Hub      *events.Hub
+	Logger   *slog.Logger
+	Now      func() time.Time
 }
 
 // Service owns the in-memory view and the observation policy. Construct
@@ -70,6 +97,7 @@ type Options struct {
 type Service struct {
 	repository *store.Threads
 	terminals  TerminalReader
+	projects   *store.Projects
 	hub        *events.Hub
 	logger     *slog.Logger
 	now        func() time.Time
@@ -82,7 +110,7 @@ type Service struct {
 	// here instead of racing it.
 	opening map[string]chan struct{}
 
-	// linkers derive deep links per adapter id at read time; set at
+	// linkers derive deep links per Integration id at read time; set at
 	// composition, before serving, and read without mu.
 	linkers map[string]Linker
 
@@ -97,7 +125,7 @@ type Service struct {
 	// terminal has open. Derived from evidence, never stored: it starts
 	// empty at boot and is re-established by observation.
 	active map[string]string
-	// held is the set of threads whose producing adapter's connection
+	// held is the set of threads whose producing Integration's connection
 	// holds them: the external program still reports the conversation.
 	// Like active, it is evidence, re-established by observation after a
 	// boot.
@@ -105,16 +133,16 @@ type Service struct {
 }
 
 type identityKey struct {
-	adapter    string
-	providerID string
+	integrationID string
+	providerID    string
 }
 
 func NewService(opts Options) *Service {
-	if opts.Terminals == nil {
-		// A nil terminals reader would panic on the first sweep rather
+	if opts.Terminals == nil || opts.Projects == nil {
+		// A nil seam would panic on the first sweep or observation rather
 		// than at boot; fail at construction instead (the server.NewHandler
 		// Verify precedent).
-		panic("threads.NewService: Terminals must not be nil")
+		panic("threads.NewService: Terminals and Projects must not be nil")
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -125,6 +153,7 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repository: opts.Repository,
 		terminals:  opts.Terminals,
+		projects:   opts.Projects,
 		hub:        opts.Hub,
 		logger:     opts.Logger,
 		now:        opts.Now,
@@ -138,12 +167,12 @@ func NewService(opts Options) *Service {
 	}
 }
 
-// SetLinker registers the read-time link derivation for one adapter's
-// threads. Composition-time wiring: the adapter depends on this service
-// for observation, so its linker is attached after both exist and before
-// the server serves reads.
-func (s *Service) SetLinker(adapter string, linker Linker) {
-	s.linkers[adapter] = linker
+// SetLinker registers the read-time link derivation for one
+// Integration's threads. Composition-time wiring: the Integration depends
+// on this service for observation, so its linker is attached after both
+// exist and before the server serves reads.
+func (s *Service) SetLinker(integrationID string, linker Linker) {
+	s.linkers[integrationID] = linker
 }
 
 // Load rebuilds the view and identity mapping from the database at boot.
@@ -178,7 +207,7 @@ func (s *Service) Load(ctx context.Context) error {
 		s.view[entry.ID] = &entry
 	}
 	for _, identity := range identities {
-		key := identityKey{identity.Adapter, identity.ProviderConversationID}
+		key := identityKey{identity.IntegrationID, identity.ProviderConversationID}
 		s.identities[key] = identity.ThreadID
 		s.keys[identity.ThreadID] = key
 	}
@@ -227,10 +256,11 @@ func (s *Service) Sweep(ctx context.Context) {
 
 // ObserveSession is the identity transition: the terminal has the given
 // provider conversation open. A known identity reattaches to its thread
-// (never a duplicate); an unknown one creates a record with the observing
-// terminal's project. Only session observations move a terminal's active
-// thread — delayed status evidence never selects a stale conversation. If
-// two terminals observe the same conversation, the last observer wins.
+// (never a duplicate); an unknown one creates a record from the reported
+// origin directory, classified into the most specific project containing
+// it. Only session observations move a terminal's active thread —
+// delayed status evidence never selects a stale conversation. If two
+// terminals observe the same conversation, the last observer wins.
 // Returns the thread id.
 func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (string, error) {
 	s.ops.Lock()
@@ -239,7 +269,7 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 	if at.IsZero() {
 		at = s.now()
 	}
-	key := identityKey{o.Adapter, o.ProviderID}
+	key := identityKey{o.IntegrationID, o.ProviderID}
 
 	s.mu.Lock()
 	threadID, known := s.identities[key]
@@ -263,6 +293,12 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 	if record.TerminalID == nil || *record.TerminalID != o.TerminalID {
 		terminalID := o.TerminalID
 		record.TerminalID = &terminalID
+		changed = true
+	}
+	if o.AgentID != "" && record.AgentID != o.AgentID {
+		// The agent is mutable reported metadata; an observation that
+		// names none leaves the last report standing.
+		record.AgentID = o.AgentID
 		changed = true
 	}
 	if record.Archived {
@@ -291,8 +327,7 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 		return "", err
 	}
 	if !updated {
-		// The row was cascade-deleted since the view lookup; the pending
-		// ProjectRemoved converges the view, and this observation has
+		// The row was deleted since the view lookup; this observation has
 		// nothing to record against.
 		s.logger.Debug("observation for a deleted thread dropped", "thread", threadID)
 		return "", nil
@@ -305,23 +340,36 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 // mapping (one transaction — a thread must never exist unmapped). Caller
 // holds ops.
 func (s *Service) createObserved(ctx context.Context, o SessionObservation, at time.Time) (string, error) {
+	if o.AppID != "" && !strings.HasPrefix(o.AppID, o.IntegrationID+"/") {
+		return "", fmt.Errorf("%w: %s under %s", ErrAppForeign, o.AppID, o.IntegrationID)
+	}
 	status := o.Status
 	if status == "" {
 		status = api.ThreadUnknown
 	}
 	terminalID := o.TerminalID
 	record := store.ThreadRecord{
-		Adapter:        o.Adapter,
-		Agent:          o.Agent,
-		ProjectID:      o.ProjectID,
+		IntegrationID:  o.IntegrationID,
+		AppID:          o.AppID,
+		AgentID:        o.AgentID,
 		TerminalID:     &terminalID,
 		Status:         string(status),
 		LastEvidenceAt: &at,
 		CreatedAt:      at,
 		UpdatedAt:      at,
 	}
+	canonical, err := paths.CanonicalDir(o.InitialDirectory)
+	if o.InitialDirectory == "" || err != nil {
+		// ATC represents work on its own machine: even a terminal-hosted
+		// conversation is not recorded without a usable origin.
+		return "", fmt.Errorf("%w: %s", ErrNoLocalDirectory, o.InitialDirectory)
+	}
+	record.InitialDirectory = canonical
+	if record.ProjectID, err = s.classify(ctx, canonical); err != nil {
+		return "", err
+	}
 	applyMetadata(&record, o.Metadata)
-	if err := s.insert(ctx, &record, identityKey{o.Adapter, o.ProviderID}); err != nil {
+	if err := s.insert(ctx, &record, identityKey{o.IntegrationID, o.ProviderID}); err != nil {
 		return "", err
 	}
 	s.hub.Publish(api.EventThreadCreated, resource, record.ID)
@@ -340,7 +388,7 @@ func (s *Service) insert(ctx context.Context, record *store.ThreadRecord, key id
 	for {
 		record.ID = randomID()
 		inserted, err := s.repository.InsertObserved(ctx, *record, store.ThreadIdentity{
-			Adapter: key.adapter, ProviderConversationID: key.providerID, ThreadID: record.ID,
+			IntegrationID: key.integrationID, ProviderConversationID: key.providerID, ThreadID: record.ID,
 		})
 		if err != nil {
 			return err
@@ -414,7 +462,7 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 	}
 
 	s.mu.Lock()
-	threadID, known := s.identities[identityKey{o.Adapter, o.ProviderID}]
+	threadID, known := s.identities[identityKey{o.IntegrationID, o.ProviderID}]
 	var record store.ThreadRecord
 	active := false
 	if known {
@@ -427,7 +475,7 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 	}
 	s.mu.Unlock()
 	if !known {
-		s.logger.Debug("status evidence for unmapped conversation dropped", "adapter", o.Adapter)
+		s.logger.Debug("status evidence for unmapped conversation dropped", "integration", o.IntegrationID)
 		return nil
 	}
 
@@ -596,14 +644,15 @@ func (s *Service) TerminalRemoved(ctx context.Context, terminalID string) {
 	}
 }
 
-// ObserveAdapter applies an observing adapter's current view of one
-// conversation its program owns (ATC-285): a known identity is brought
-// into line with the program, an unknown one is minted under ProjectID.
-// The adapter connection holds the thread from here — live statuses are
-// accepted, and archive or delete are refused — until the adapter
-// releases it. A conversation the program reports again after ATC
-// archived it comes back unarchived. Returns the thread id.
-func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (string, error) {
+// ObserveExternal applies an Integration's current view of one
+// conversation its external program owns (ATC-285): a known identity is
+// brought into line with the program, an unknown one is minted from its
+// reported origin directory — which must be usable on this machine — and
+// classified. The Integration's connection holds the thread from here —
+// live statuses are accepted, and archive or delete are refused — until
+// the Integration releases it. A conversation the program reports again
+// after ATC archived it comes back unarchived. Returns the thread id.
+func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (string, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	at := o.At
@@ -614,7 +663,7 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 	if status == "" {
 		status = api.ThreadUnknown
 	}
-	key := identityKey{o.Adapter, o.ProviderID}
+	key := identityKey{o.IntegrationID, o.ProviderID}
 
 	s.mu.Lock()
 	threadID, known := s.identities[key]
@@ -630,19 +679,23 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 	s.mu.Unlock()
 
 	if !known {
-		if o.ProjectID == "" {
-			return "", ErrProjectRequired
+		canonical, err := paths.CanonicalDir(o.InitialDirectory)
+		if o.InitialDirectory == "" || err != nil {
+			return "", fmt.Errorf("%w: %s", ErrNoLocalDirectory, o.InitialDirectory)
 		}
 		record = store.ThreadRecord{
-			Adapter:        o.Adapter,
-			Agent:          o.Agent,
-			ProjectID:      o.ProjectID,
-			Title:          o.Title,
-			Status:         string(status),
-			LastError:      o.LastError,
-			LastEvidenceAt: &at,
-			CreatedAt:      at,
-			UpdatedAt:      at,
+			IntegrationID:    o.IntegrationID,
+			AgentID:          o.AgentID,
+			InitialDirectory: canonical,
+			Title:            o.Title,
+			Status:           string(status),
+			LastError:        o.LastError,
+			LastEvidenceAt:   &at,
+			CreatedAt:        at,
+			UpdatedAt:        at,
+		}
+		if record.ProjectID, err = s.classify(ctx, canonical); err != nil {
+			return "", err
 		}
 		applyMetadata(&record, o.Metadata)
 		if err := s.insert(ctx, &record, key); err != nil {
@@ -664,7 +717,7 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 			changed = true
 		}
 	}
-	set(&record.Agent, o.Agent)
+	set(&record.AgentID, o.AgentID)
 	set(&record.Status, string(status))
 	set(&record.LastError, o.LastError)
 	if !record.TitleUserSet && o.Title != "" {
@@ -701,16 +754,16 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 }
 
 // UnarchivedProviderIDs lists the provider conversation ids of an
-// adapter's unarchived threads — what ATC currently believes the program
-// reports. An adapter diffs a fresh snapshot against it, so a
-// conversation the program dropped while ATC was not listening still
+// Integration's unarchived threads — what ATC currently believes the
+// program reports. An Integration diffs a fresh snapshot against it, so
+// a conversation the program dropped while ATC was not listening still
 // archives.
-func (s *Service) UnarchivedProviderIDs(adapter string) []string {
+func (s *Service) UnarchivedProviderIDs(integrationID string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var ids []string
 	for id, entry := range s.view {
-		if entry.Adapter != adapter || entry.Archived {
+		if entry.IntegrationID != integrationID || entry.Archived {
 			continue
 		}
 		if key, ok := s.keys[id]; ok {
@@ -721,18 +774,18 @@ func (s *Service) UnarchivedProviderIDs(adapter string) []string {
 	return ids
 }
 
-// ReleaseAdapter drops every hold the adapter has — its connection went
-// away — coercing the live statuses it vouched for to unknown, exactly
-// as a terminal leaving does; idle, error, and unknown persist. A failed
-// persist still releases: the hold is about the program reporting the
-// thread, and the boot-time coercion is the backstop.
-func (s *Service) ReleaseAdapter(ctx context.Context, adapter string) {
+// ReleaseIntegration drops every hold the Integration has — its
+// connection went away — coercing the live statuses it vouched for to
+// unknown, exactly as a terminal leaving does; idle, error, and unknown
+// persist. A failed persist still releases: the hold is about the program
+// reporting the thread, and the boot-time coercion is the backstop.
+func (s *Service) ReleaseIntegration(ctx context.Context, integrationID string) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
 	var ids []string
 	for id := range s.held {
-		if entry, ok := s.view[id]; ok && entry.Adapter == adapter {
+		if entry, ok := s.view[id]; ok && entry.IntegrationID == integrationID {
 			ids = append(ids, id)
 		}
 	}
@@ -749,17 +802,17 @@ func (s *Service) ReleaseAdapter(ctx context.Context, adapter string) {
 	}
 }
 
-// ArchiveAdapterThread reacts to the program dropping a conversation
+// ArchiveExternalThread reacts to the program dropping a conversation
 // from what it reports: the hold releases and the thread archives, with
 // a live status coerced to unknown. Archiving is the lossless mirror —
 // the program hides archived and deleted conversations alike, and a
 // later report of the same identity unarchives the same record. An
 // unknown identity is ignored.
-func (s *Service) ArchiveAdapterThread(ctx context.Context, adapter, providerID string) error {
+func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
-	threadID, known := s.identities[identityKey{adapter, providerID}]
+	threadID, known := s.identities[identityKey{integrationID, providerID}]
 	var record store.ThreadRecord
 	if known {
 		entry, ok := s.view[threadID]
@@ -805,31 +858,119 @@ func (s *Service) ArchiveAdapterThread(ctx context.Context, adapter, providerID 
 	return nil
 }
 
-// ProjectRemoved reacts to a project deletion: the database cascade has
-// already removed the project's thread rows and identity mappings, so
-// only the in-memory state and the deletion events remain. Wired by the
-// composition root after the projects domain commits the delete.
-func (s *Service) ProjectRemoved(projectID string) {
+// DeleteProject runs a project deletion under this domain's mutation
+// lock: remove commits the delete (the schema clears the project's thread
+// associations, ON DELETE SET NULL), then the view converges and the
+// updates publish before any observation or patch can copy the stale
+// project id out of the view. Threads survive unassigned and are not
+// reassigned to a less specific project. Wired by the composition root;
+// the projects domain never learns threads exist.
+func (s *Service) DeleteProject(ctx context.Context, projectID string, remove func() error) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
-	removed := make(map[string]bool)
+	if err := remove(); err != nil {
+		return err
+	}
+	var cleared []string
 	s.mu.Lock()
 	for id, entry := range s.view {
 		if entry.ProjectID == projectID {
-			removed[id] = true
-			delete(s.view, id)
-			s.forgetIdentity(id)
-		}
-	}
-	for terminalID, threadID := range s.active {
-		if removed[threadID] {
-			delete(s.active, terminalID)
+			entry.ProjectID = ""
+			cleared = append(cleared, id)
 		}
 	}
 	s.mu.Unlock()
-	for id := range removed {
-		s.hub.Publish(api.EventThreadDeleted, resource, id)
+	sort.Strings(cleared)
+	for _, id := range cleared {
+		s.hub.Publish(api.EventThreadUpdated, resource, id)
 	}
+	return nil
+}
+
+// Backfill reclassifies every unassigned thread — archived included —
+// against the current projects: each joins the most specific project
+// containing its initial directory, if any. Existing associations are
+// never rewritten, so a thread that no longer matches its project keeps
+// it. Wired by the composition root after a project is created or moved;
+// scanning all unassigned threads rather than the changed project's
+// candidates means any later change repairs a backfill that failed.
+func (s *Service) Backfill(ctx context.Context) error {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	projects, err := s.projects.List(ctx)
+	if err != nil {
+		return err
+	}
+	type assignment struct{ threadID, projectID string }
+	var assignments []assignment
+	s.mu.Lock()
+	for id, entry := range s.view {
+		if entry.ProjectID != "" || entry.InitialDirectory == "" {
+			continue
+		}
+		if projectID := mostSpecific(projects, entry.InitialDirectory); projectID != "" {
+			assignments = append(assignments, assignment{id, projectID})
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(assignments, func(i, j int) bool { return assignments[i].threadID < assignments[j].threadID })
+	now := s.now()
+	for _, a := range assignments {
+		// Targeted: only the project column, only while still unassigned,
+		// so nothing else the view holds is written back.
+		assigned, err := s.repository.AssignProject(ctx, a.threadID, a.projectID, now)
+		if err != nil {
+			return err
+		}
+		if !assigned {
+			continue
+		}
+		s.mu.Lock()
+		if entry, ok := s.view[a.threadID]; ok && entry.ProjectID == "" {
+			entry.ProjectID = a.projectID
+			entry.UpdatedAt = now
+		}
+		s.mu.Unlock()
+		s.hub.Publish(api.EventThreadUpdated, resource, a.threadID)
+	}
+	return nil
+}
+
+// classify names the project a first observation joins: the most
+// specific existing project containing the canonical directory, or none.
+// Caller holds ops.
+func (s *Service) classify(ctx context.Context, canonical string) (string, error) {
+	projects, err := s.projects.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	return mostSpecific(projects, canonical), nil
+}
+
+// mostSpecific picks the deepest project whose canonical directory
+// contains dir on path boundaries; ties are impossible (directories are
+// unique), so the choice is deterministic. Empty when none contains it.
+func mostSpecific(projects []store.ProjectRecord, dir string) string {
+	var best store.ProjectRecord
+	for _, project := range projects {
+		if contains(project.Directory, dir) && (best.ID == "" || len(project.Directory) > len(best.Directory)) {
+			best = project
+		}
+	}
+	return best.ID
+}
+
+// contains reports whether dir is root or lies under it, comparing
+// canonical paths on path-segment boundaries — /a/b contains /a/b/c but
+// not /a/bc.
+func contains(root, dir string) bool {
+	if root == dir {
+		return true
+	}
+	if root == string(filepath.Separator) {
+		return filepath.IsAbs(dir)
+	}
+	return strings.HasPrefix(dir, root+string(filepath.Separator))
 }
 
 // Get serves one thread from the in-memory view.
@@ -884,10 +1025,10 @@ func (s *Service) List(projectID, terminalID string, includeArchived bool) []api
 // check after a server restart: evidence for an already-mapped
 // conversation still held by the same terminal may be accepted before a
 // fresh identity transition arrives.
-func (s *Service) LookupIdentity(adapter, providerID string) (threadID, terminalID string, ok bool) {
+func (s *Service) LookupIdentity(integrationID, providerID string) (threadID, terminalID string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, known := s.identities[identityKey{adapter, providerID}]
+	id, known := s.identities[identityKey{integrationID, providerID}]
 	if !known {
 		return "", "", false
 	}
@@ -910,10 +1051,16 @@ func (s *Service) ActiveThreadID(terminalID string) string {
 	return s.active[terminalID]
 }
 
-// Update mutates the two writable fields. A user-set title is protected
-// from observation from then on. Archiving an active thread is refused
-// naming the holder; unarchiving clears the timestamp.
+// Update applies a merge patch to the three writable fields. A user-set
+// title is protected from observation from then on. Archiving an active
+// thread is refused naming the holder; unarchiving clears the timestamp.
+// A project assignment may name any project; clearing leaves the thread
+// unassigned until a project create or move backfills it — observation
+// never re-infers it.
 func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdateParams) (api.Thread, error) {
+	if params.Title.Null() || params.Archived.Null() {
+		return api.Thread{}, fmt.Errorf("%w: title and archived cannot be null", ErrInvalidUpdate)
+	}
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
@@ -927,16 +1074,16 @@ func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdate
 	if !ok {
 		return api.Thread{}, ErrNotFound
 	}
-	if _, opening := s.opening[id]; opening && params.Archived != nil && *params.Archived {
+	if _, opening := s.opening[id]; opening && params.Archived.Set && *params.Archived.Value {
 		// A resume in flight is about to hold the thread; archiving it
 		// now would be undone the moment the launch lands.
 		return api.Thread{}, fmt.Errorf("%w: open in progress", ErrActive)
 	}
 
 	changed, persist := false, false
-	if params.Title != nil {
-		if record.Title != *params.Title {
-			record.Title = *params.Title
+	if params.Title.Set {
+		if record.Title != *params.Title.Value {
+			record.Title = *params.Title.Value
 			changed = true
 		}
 		if !record.TitleUserSet {
@@ -944,8 +1091,23 @@ func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdate
 			persist = true
 		}
 	}
-	if params.Archived != nil && *params.Archived != record.Archived {
-		if *params.Archived {
+	if params.ProjectID.Set {
+		projectID := ""
+		if !params.ProjectID.Null() {
+			projectID = *params.ProjectID.Value
+			if _, ok, err := s.projects.Get(ctx, projectID); err != nil {
+				return api.Thread{}, err
+			} else if !ok {
+				return api.Thread{}, fmt.Errorf("%w %q", ErrProjectUnknown, projectID)
+			}
+		}
+		if record.ProjectID != projectID {
+			record.ProjectID = projectID
+			changed = true
+		}
+	}
+	if params.Archived.Set && *params.Archived.Value != record.Archived {
+		if *params.Archived.Value {
 			if holder != "" {
 				return api.Thread{}, fmt.Errorf("%w: %s", ErrActive, holder)
 			}
@@ -1016,7 +1178,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// forgetIdentity drops a thread's identity mapping and any adapter hold.
+// forgetIdentity drops a thread's identity mapping and any Integration hold.
 // Caller holds mu.
 func (s *Service) forgetIdentity(id string) {
 	if key, ok := s.keys[id]; ok {
@@ -1026,11 +1188,11 @@ func (s *Service) forgetIdentity(id string) {
 	delete(s.held, id)
 }
 
-// Open resolves the thread to exactly one terminal (ATC-282), reporting
-// whether it was created. resume launches the terminal for a dormant
-// thread; nil refuses such opens. Concurrent opens of the same thread
-// converge — one decides, the rest wait for its outcome and re-decide —
-// so at most one creates:
+// Open resolves the thread to exactly one terminal (ATC-282, ATC-297),
+// reporting whether it was created. resume launches the terminal for a
+// dormant thread. Concurrent opens of the same
+// thread converge — one decides, the rest wait for its outcome and
+// re-decide — so at most one creates:
 //
 //  1. a running terminal actively shows the thread   → reuse it
 //  2. the thread's last terminal is still up and no
@@ -1047,7 +1209,10 @@ func (s *Service) forgetIdentity(id string) {
 // records is intent, not evidence — it is what makes the next open fall
 // into rule 2 before any hook fires — and it persists on a detached
 // context: a client that gives up mid-launch must not leave a live
-// resume unlinked for the next open to duplicate. Opening unarchives.
+// resume unlinked for the next open to duplicate. A linkage that cannot
+// persist discards the terminal through the resumer while the thread is
+// still marked opening, so no waiter resumes beside a live orphan.
+// Opening unarchives.
 func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Terminal, bool, error) {
 	for {
 		s.ops.Lock()
@@ -1070,10 +1235,6 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 	}
 	// Dormant, and this open owns the resume. ops is released for the
 	// launch and retaken to link.
-	if resume == nil {
-		s.ops.Unlock()
-		return api.Terminal{}, false, ErrResumeUnavailable
-	}
 	s.mu.Lock()
 	record := *s.view[id]
 	key := s.keys[id]
@@ -1083,23 +1244,35 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 	s.ops.Unlock()
 
 	detached := context.WithoutCancel(ctx)
-	terminal, err := resume(detached, ResumeRequest{
-		Adapter: record.Adapter, Agent: record.Agent, ProviderID: key.providerID,
-		ProjectID: record.ProjectID, Directory: record.Cwd,
+	terminal, err := resume.Resume(detached, ResumeRequest{
+		IntegrationID: record.IntegrationID, AppID: record.AppID, ProviderID: key.providerID,
 	})
-
-	s.ops.Lock()
-	defer s.ops.Unlock()
-	delete(s.opening, id)
-	close(done)
+	finish := func() {
+		s.ops.Lock()
+		delete(s.opening, id)
+		close(done)
+		s.ops.Unlock()
+	}
 	if err != nil {
+		finish()
 		return api.Terminal{}, false, err
 	}
-	if err := s.link(detached, id, terminal.ID); err != nil {
-		s.logger.Error("linking resumed terminal", "thread", id, "terminal", terminal.ID, "error", err)
-		return api.Terminal{}, false, err
+	s.ops.Lock()
+	linkErr := s.link(detached, id, terminal.ID)
+	s.ops.Unlock()
+	if linkErr == nil {
+		finish()
+		return terminal, true, nil
 	}
-	return terminal, true, nil
+	// Compensation runs outside ops (the discard converges this view
+	// through its own lock) but before the opening mark clears.
+	s.logger.Error("linking resumed terminal", "thread", id, "terminal", terminal.ID, "error", linkErr)
+	discardErr := resume.Discard(detached, terminal.ID)
+	finish()
+	if discardErr != nil {
+		return api.Terminal{}, false, fmt.Errorf("%w: terminal %s: %w (after: %w)", ErrCompensationFailed, terminal.ID, discardErr, linkErr)
+	}
+	return api.Terminal{}, false, fmt.Errorf("%w: %w", ErrLinkFailed, linkErr)
 }
 
 // decideOpen applies the reuse rules under ops. It returns the reused
@@ -1203,15 +1376,15 @@ func (s *Service) activeHolder(threadID string) string {
 }
 
 // holder describes whatever holds the thread — the terminal with its
-// conversation open, else the adapter whose program still reports it —
-// for refusal messages; empty when nothing does. Callers hold mu.
+// conversation open, else the Integration whose program still reports it
+// — for refusal messages; empty when nothing does. Callers hold mu.
 func (s *Service) holder(threadID string) string {
 	if terminalID := s.activeHolder(threadID); terminalID != "" {
 		return "open in terminal " + terminalID
 	}
 	if _, ok := s.held[threadID]; ok {
 		if entry, exists := s.view[threadID]; exists {
-			return "still reported by adapter " + entry.Adapter
+			return "still reported by " + entry.IntegrationID
 		}
 	}
 	return ""
@@ -1249,11 +1422,11 @@ func isLive(status api.ThreadStatus) bool {
 }
 
 // thread converts a record to its wire shape, deriving links from the
-// producing adapter's live state. Callers must not hold mu: the linker is
-// the adapter's, and it takes locks of its own.
+// producing Integration's live state. Callers must not hold mu: the
+// linker is the Integration's, and it takes locks of its own.
 func (s *Service) thread(record store.ThreadRecord) api.Thread {
 	thread := threadFrom(record)
-	if linker, ok := s.linkers[record.Adapter]; ok {
+	if linker, ok := s.linkers[record.IntegrationID]; ok {
 		s.mu.Lock()
 		key := s.keys[record.ID]
 		s.mu.Unlock()
@@ -1264,20 +1437,22 @@ func (s *Service) thread(record store.ThreadRecord) api.Thread {
 
 func threadFrom(record store.ThreadRecord) api.Thread {
 	thread := api.Thread{
-		ID:             record.ID,
-		Adapter:        record.Adapter,
-		Agent:          record.Agent,
-		ProjectID:      record.ProjectID,
-		Title:          record.Title,
-		Model:          record.Model,
-		Effort:         record.Effort,
-		Cwd:            record.Cwd,
-		PermissionMode: record.PermissionMode,
-		Status:         api.ThreadStatus(record.Status),
-		LastError:      record.LastError,
-		Archived:       record.Archived,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
+		ID:               record.ID,
+		IntegrationID:    record.IntegrationID,
+		AppID:            record.AppID,
+		AgentID:          record.AgentID,
+		InitialDirectory: record.InitialDirectory,
+		ProjectID:        record.ProjectID,
+		Title:            record.Title,
+		Model:            record.Model,
+		Effort:           record.Effort,
+		Cwd:              record.Cwd,
+		PermissionMode:   record.PermissionMode,
+		Status:           api.ThreadStatus(record.Status),
+		LastError:        record.LastError,
+		Archived:         record.Archived,
+		CreatedAt:        record.CreatedAt,
+		UpdatedAt:        record.UpdatedAt,
 	}
 	if record.TerminalID != nil {
 		thread.TerminalID = *record.TerminalID

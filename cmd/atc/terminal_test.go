@@ -14,11 +14,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/agents"
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/codex"
-	"github.com/jeremytondo/atc/internal/agents/t3code"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/codex"
+	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/store"
@@ -26,13 +28,16 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// cliAdapter is the fake session backend behind the CLI tests' server.
-type cliAdapter struct {
+// cliDriver is the fake session backend behind the CLI tests' server.
+// commands records what each session was created with — the private App
+// command the CLI must never print.
+type cliDriver struct {
 	mu       sync.Mutex
 	sessions map[string]bool
+	commands map[string]string
 }
 
-func (a *cliAdapter) Inventory(context.Context) ([]terminals.Session, error) {
+func (a *cliDriver) Inventory(context.Context) ([]terminals.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	sessions := make([]terminals.Session, 0, len(a.sessions))
@@ -42,14 +47,18 @@ func (a *cliAdapter) Inventory(context.Context) ([]terminals.Session, error) {
 	return sessions, nil
 }
 
-func (a *cliAdapter) Create(_ context.Context, id string, _ terminals.CreateSpec) error {
+func (a *cliDriver) Create(_ context.Context, id string, spec terminals.CreateSpec) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions[id] = true
+	if a.commands == nil {
+		a.commands = map[string]string{}
+	}
+	a.commands[id] = spec.Command
 	return nil
 }
 
-func (a *cliAdapter) Kill(_ context.Context, id string) error {
+func (a *cliDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sessions, id)
@@ -61,40 +70,47 @@ const cliTestToken = "atc_cli-test-token"
 // startTestServer runs the real chassis over a fake backend and points the
 // CLI at it through ATC_SERVER and ATC_TOKEN — the same paste-once setup a
 // remote client uses.
-func startTestServer(t *testing.T) *cliAdapter {
+func startTestServer(t *testing.T) *cliDriver {
 	t.Helper()
-	adapter, _ := startTestServerWithThreads(t)
-	return adapter
+	driver, _ := startTestServerWithThreads(t)
+	return driver
 }
 
 // startTestServerWithThreads additionally exposes the threads service so
 // thread tests can plant observed conversations — the seam providers use
 // in production; there is no create verb on the wire.
-func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
+func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 	t.Helper()
+	// The server is local, so an unplaced create opens in this process's
+	// cwd: a scratch directory, never the repository the tests run from.
+	t.Chdir(t.TempDir())
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "atc.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	adapter := &cliAdapter{sessions: map[string]bool{}}
+	driver := &cliDriver{sessions: map[string]bool{}}
 	hub := events.NewHub(events.DefaultBacklog)
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
-		Adapter:    adapter,
-		Projects:   db.Projects(),
+		Driver:     driver,
+		Spaces:     db.Spaces(),
+		HomeDir:    t.TempDir(),
 		MarkerDir:  t.TempDir(),
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	projectService := projects.NewService(projects.Options{
 		Repository: db.Projects(),
-		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
 	threadService := threads.NewService(threads.Options{
 		Repository: db.Threads(),
 		Terminals:  service,
+		Projects:   db.Projects(),
 		Hub:        hub,
 	})
 	if err := threadService.Load(context.Background()); err != nil {
@@ -118,18 +134,18 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 		Home:        t.TempDir(),
 		SessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
 		Threads:     threadService,
-		Projects:    projectService,
 		Hub:         hub,
 	})
 	threadService.SetLinker(t3code.ID, t3Observer.Links)
-	agentService, err := agents.NewService(agents.Options{
-		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
-		Terminals: service,
-		// The probe never consults this machine's PATH: claude "exists",
-		// codex does not.
+	catalog, err := integrations.NewService(integrations.Options{
+		Integrations: []integrations.Integration{
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+		},
+		// The probe never consults this machine's PATH: claude and zmx
+		// "exist", codex does not.
 		LookPath: func(name string) (string, error) {
-			if name == "claude" {
-				return "/bin/claude", nil
+			if name == "claude" || name == "zmx" {
+				return "/bin/" + name, nil
 			}
 			return "", errors.New("executable file not found in $PATH")
 		},
@@ -138,19 +154,20 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 		t.Fatal(err)
 	}
 	handler := server.NewHandler(server.Options{
-		Verify:    func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
-		Version:   "v0.0.0-test",
-		Terminals: service,
-		Projects:  projectService,
-		Agents:    agentService,
-		Threads:   threadService,
-		Events:    hub,
+		Coordinator:  application.New(application.Options{Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog}),
+		Verify:       func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
+		Version:      "v0.0.0-test",
+		Terminals:    service,
+		Projects:     projectService,
+		Integrations: catalog,
+		Threads:      threadService,
+		Events:       hub,
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	t.Setenv("ATC_SERVER", srv.URL)
 	t.Setenv("ATC_TOKEN", cliTestToken)
-	return adapter, threadService
+	return driver, threadService
 }
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {
@@ -200,12 +217,13 @@ func installFakeZmx(t *testing.T) {
 }
 
 func TestTerminalCLILifecycle(t *testing.T) {
-	adapter := startTestServer(t)
-	// --project skips cwd resolution entirely; the cwd (this repo) owns no
-	// project on the test server.
-	projectID := createProjectCLI(t, t.TempDir())
+	driver := startTestServer(t)
+	// The server is local, so the terminal opens in this process's cwd —
+	// a temp directory here, so the test never touches the repo.
+	dir := canonical(t, t.TempDir())
+	t.Chdir(dir)
 
-	stdout, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--name", "hx")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -213,17 +231,17 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	if id == "" {
 		t.Fatalf("create output has no terminal id:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "running") {
-		t.Errorf("create output missing status:\n%s", stdout)
+	if !strings.Contains(stdout, "running") || !regexp.MustCompile(`(?m)^directory\s+`+regexp.QuoteMeta(dir)+`$`).MatchString(stdout) {
+		t.Errorf("create output missing status or the cwd as directory:\n%s", stdout)
 	}
 
 	stdout, _, err = runCLI(t, "terminal", "list")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// IDs beside names, statuses, and projects — the list contract.
+	// IDs beside names, statuses, and spaces — the list contract.
 	if !strings.Contains(stdout, id) || !strings.Contains(stdout, "hx") ||
-		!strings.Contains(stdout, "running") || !strings.Contains(stdout, projectID) {
+		!strings.Contains(stdout, "running") || !strings.Contains(stdout, "spce-") {
 		t.Errorf("list output:\n%s", stdout)
 	}
 
@@ -247,14 +265,103 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	if !strings.Contains(stdout, "deleted "+id) {
 		t.Errorf("delete output:\n%s", stdout)
 	}
-	adapter.mu.Lock()
-	remaining := len(adapter.sessions)
-	adapter.mu.Unlock()
+	driver.mu.Lock()
+	remaining := len(driver.sessions)
+	driver.mu.Unlock()
 	if remaining != 0 {
 		t.Errorf("session survived delete")
 	}
 	if stdout, _, err = runCLI(t, "terminal", "list"); err != nil || !strings.Contains(stdout, "no terminals") {
 		t.Errorf("list after delete = %q, %v", stdout, err)
+	}
+}
+
+func TestTerminalListShowsApp(t *testing.T) {
+	startTestServer(t)
+
+	plainOut, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--name", "plain", "--detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainID := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(plainOut)
+	if plainID == "" {
+		t.Fatalf("plain create output has no terminal id:\n%s", plainOut)
+	}
+	appOut, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--name", "agent", "--detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(appOut)
+	if appID == "" {
+		t.Fatalf("app create output has no terminal id:\n%s", appOut)
+	}
+
+	stdout, _, err := runCLI(t, "terminal", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsRow(stdout, "ID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY") {
+		t.Fatalf("list output missing APP header:\n%s", stdout)
+	}
+	if got := tableColumn(t, stdout, plainID, "APP", "SPACE"); got != "" {
+		t.Errorf("plain terminal APP = %q, want blank\n%s", got, stdout)
+	}
+	if got := tableColumn(t, stdout, appID, "APP", "SPACE"); got != "claude/tui" {
+		t.Errorf("app terminal APP = %q, want claude/tui\n%s", got, stdout)
+	}
+}
+
+func tableColumn(t *testing.T, table, rowID, column, nextColumn string) string {
+	t.Helper()
+	lines := strings.Split(table, "\n")
+	if len(lines) == 0 {
+		t.Fatal("empty table")
+	}
+	start := strings.Index(lines[0], column)
+	end := strings.Index(lines[0], nextColumn)
+	if start < 0 || end <= start {
+		t.Fatalf("table header has no %s column before %s:\n%s", column, nextColumn, table)
+	}
+	for _, line := range lines[1:] {
+		if strings.HasPrefix(line, rowID) {
+			if len(line) < end {
+				return ""
+			}
+			return strings.TrimSpace(line[start:end])
+		}
+	}
+	t.Fatalf("table has no row %s:\n%s", rowID, table)
+	return ""
+}
+
+func TestTerminalCreateHelpIsScannable(t *testing.T) {
+	help, _, err := runCLI(t, "terminal", "create", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(help), " ")
+	for _, want := range []string{
+		"Session mode (choose one):",
+		"(none) start a plain interactive shell",
+		"--command CMD run CMD through your login shell",
+		"--app ID launch an app listed by `atc integration list`",
+		"--thread ID resume a conversation in its original app",
+		"App conversations become threads at their first prompt",
+		"Unavailable apps are rejected before creating a terminal",
+		"a local server uses your current directory; a remote server uses the space's directory",
+		"attaches by default",
+		"Use --detach to leave the session running in the background",
+		"reattach with `atc terminal attach <id>`",
+		"working directory (default: --space directory; otherwise local cwd or remote Default space)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("terminal create help missing %q:\n%s", want, help)
+		}
+	}
+	for _, section := range []string{"\n\nSession mode", "\n\nApp conversations", "\n\nUse --space", "\n\nThe command attaches"} {
+		if !strings.Contains(help, section) {
+			t.Errorf("terminal create help missing section break before %q:\n%s", strings.TrimSpace(section), help)
+		}
 	}
 }
 
@@ -270,8 +377,7 @@ func TestTerminalGetUnknownIsError(t *testing.T) {
 // says why nothing was attached.
 func TestTerminalCreateWithoutTTYStillCreates(t *testing.T) {
 	startTestServer(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, stderr, err := runCLI(t, "terminal", "create", "--project", projectID)
+	stdout, stderr, err := runCLI(t, "terminal", "create")
 	if err != nil {
 		t.Fatalf("create without TTY = %v", err)
 	}
@@ -283,7 +389,7 @@ func TestTerminalCreateWithoutTTYStillCreates(t *testing.T) {
 		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
 	}
 	// --detach is silent about attaching: nothing was asked for.
-	if _, stderr, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach"); err != nil || strings.Contains(stderr, "attach") {
+	if _, stderr, err := runCLI(t, "terminal", "create", "--detach"); err != nil || strings.Contains(stderr, "attach") {
 		t.Errorf("create --detach = %q, %v", stderr, err)
 	}
 }
@@ -295,8 +401,7 @@ func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
 	startTestServer(t)
 	t.Setenv("PATH", "")
 
-	projectID := createProjectCLI(t, t.TempDir())
-	_, _, err := runCLI(t, "terminal", "create", "--project", projectID)
+	_, _, err := runCLI(t, "terminal", "create")
 	if err == nil || err.Error() != "zmx executable not found on PATH; install zmx to attach" {
 		t.Errorf("create without zmx = %v", err)
 	}
@@ -304,7 +409,7 @@ func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
 	if listErr != nil || !strings.Contains(stdout, "no terminals") {
 		t.Errorf("list after zmx refusal = %q, %v", stdout, listErr)
 	}
-	if _, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach"); err != nil {
+	if _, _, err := runCLI(t, "terminal", "create", "--detach"); err != nil {
 		t.Errorf("create --detach without zmx = %v", err)
 	}
 }
@@ -315,8 +420,7 @@ func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	startTestServer(t)
 
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create")
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	if id == "" || !strings.Contains(stdout, "running") {
 		t.Fatalf("create attach output does not show the created terminal:\n%s", stdout)
@@ -363,19 +467,18 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	t.Setenv("PATH", "")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	adapter := startTestServer(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach")
+	driver := startTestServer(t)
+	stdout, _, err := runCLI(t, "terminal", "create", "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	// The session vanishes without evidence; the next mutation's reconcile
 	// (create of an unrelated terminal) settles it to missing.
-	adapter.mu.Lock()
-	delete(adapter.sessions, id)
-	adapter.mu.Unlock()
-	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--project", projectID, "--detach"); err != nil {
+	driver.mu.Lock()
+	delete(driver.sessions, id)
+	driver.mu.Unlock()
+	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--detach"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -399,8 +502,7 @@ func TestAPICommand(t *testing.T) {
 	}
 
 	// POST with a body creates a terminal through the raw gateway.
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err = runCLI(t, "api", "-d", `{"command":"hx","projectId":"`+projectID+`"}`, "/v1/terminals")
+	stdout, _, err = runCLI(t, "api", "-d", `{"command":"hx"}`, "/v1/terminals")
 	if err != nil {
 		t.Fatal(err)
 	}

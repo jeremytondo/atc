@@ -20,15 +20,17 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremytondo/atc/internal/agents"
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/codex"
-	"github.com/jeremytondo/atc/internal/agents/t3code"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/codex"
+	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
@@ -36,7 +38,6 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/tailscale"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/zmx"
 	"github.com/jeremytondo/atc/internal/threads"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
@@ -81,9 +82,12 @@ func newRootCmd() *cobra.Command {
 		Short: "The ATC terminal client and server",
 		Long: `atc is the ATC terminal client and server.
 
-Configuration precedence: flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults.
-Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to
-expose on the tailnet without the flag.`,
+For ` + "`atc server run`" + `, configuration precedence is:
+  flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
+
+Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to expose
+on the tailnet by default. Supervised server commands read config.toml and
+defaults; their lifecycle flags control unit overrides.`,
 		// Errors surface once, prefixed "atc:" in main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -91,7 +95,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newAgentCmd(), newThreadCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
@@ -133,15 +137,13 @@ func newUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Replace this binary with the latest release",
-		Long: `Download the latest production release, verify its checksum, and atomically
-replace this binary. A machine running a dev build is moved to the latest
-production release even when that is semver-backwards; with --dev, the
-current rolling dev build is installed unconditionally instead.
+		Long: `Download and verify the latest release, then atomically replace this binary.
+Use --dev to install the current rolling dev build instead. Without it, a dev
+build switches to the latest production release even if its version is lower.
 
-A server left running the old version is never restarted silently:
-interactive runs are asked (terminals persist; in-flight agent turns are
-interrupted), headless runs print a reminder unless --restart or
---no-restart pre-answers.`,
+If the server is still running the old version, interactive runs ask before
+restarting it. Headless runs print a reminder unless --restart or --no-restart
+chooses the behavior. A restart preserves terminals but interrupts active turns.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := cmd.Flags()
@@ -260,15 +262,15 @@ func lifecycleCmd(use, short, long string, options func(*cobra.Command) (service
 // return to config.toml rather than a force-off.
 const tailscaleFlagHelp = `
 
---tailscale renders tailnet exposure into the registered unit, so the setting
-survives restarts, reboots, and upgrades. Omitting the flag preserves the
-unit's current setting; --tailscale=false removes it so config.toml decides
-again (with tailscale = true configured there, exposure stays on).`
+--tailscale settings:
+  omitted             preserves the installed unit setting
+  --tailscale         enables exposure; survives restarts, reboots, and upgrades
+  --tailscale=false   removes the unit override; config.toml decides`
 
 // addTailscaleFlag registers the lifecycle --tailscale flag; the tri-state
 // semantics live in tailscaleLifecycleOptions.
 func addTailscaleFlag(cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().Bool("tailscale", false, "persist tailnet exposure in the service unit (omitted: keep the installed setting; false: follow config.toml)")
+	cmd.Flags().Bool("tailscale", false, "persist tailnet exposure (omitted: preserve; false: use config.toml)")
 	return cmd
 }
 
@@ -293,12 +295,12 @@ func tailscaleLifecycleOptions(cmd *cobra.Command) (service.Options, error) {
 func newServerStartCmd() *cobra.Command {
 	return addTailscaleFlag(lifecycleCmd("start",
 		"Register and start the supervised server",
-		`Register the server with the user supervisor (launchd on macOS, systemd user
-units on Linux) and start it. Registration happens on every start: the unit is
-re-rendered from the current binary, so upgrades only need `+"`atc server restart`"+`.
-A healthy server running the current unit is left untouched; a changed unit
-bounces it. The first start prints what was registered and how to undo it
-(atc server uninstall).`+tailscaleFlagHelp,
+		`Register and start ATC with launchd on macOS or the systemd user supervisor on
+Linux. Each start refreshes the unit from the current binary; run
+`+"`atc server restart`"+` after an upgrade. A changed unit restarts the server;
+an unchanged healthy server keeps running.
+
+The first start prints what was registered and how to remove it.`+tailscaleFlagHelp,
 		tailscaleLifecycleOptions, service.Start))
 }
 
@@ -306,7 +308,8 @@ func newServerStopCmd() *cobra.Command {
 	return lifecycleCmd("stop",
 		"Stop the supervised server without uninstalling it",
 		`Stop the supervised server process. The unit stays installed, so the server
-returns at next boot on Linux or next login on macOS; use `+"`atc server uninstall`"+` to remove it entirely.`,
+returns at next boot on Linux or next login on macOS. Use
+`+"`atc server uninstall`"+` to remove it entirely.`,
 		recoveryOptions, service.Stop)
 }
 
@@ -375,7 +378,7 @@ stderr. This is the primitive the supervised unit execs; most users want
 	}
 	cmd.Flags().Int("port", 0, "listen port (overrides ATC_PORT and config.toml)")
 	cmd.Flags().String("bind", "", "bind address (overrides ATC_BIND and config.toml)")
-	cmd.Flags().Bool("tailscale", false, "expose the server on the tailnet via a supervised `tailscale serve` (overrides ATC_TAILSCALE and config.toml)")
+	cmd.Flags().Bool("tailscale", false, "expose on the tailnet (overrides ATC_TAILSCALE and config.toml)")
 	return cmd
 }
 
@@ -539,7 +542,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// unix sockets is a boot error with the remedy in the message. A
 	// missing zmx binary deliberately is not: statuses degrade to
 	// unreachable and delete keeps working.
-	adapter, err := zmx.New(zmx.Options{
+	driver, err := zmx.New(zmx.Options{
 		SocketDir:         socketDir,
 		MarkerDir:         markerDir,
 		WrapperExecutable: selfExecutable,
@@ -551,13 +554,18 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	hub := events.NewHub(events.DefaultBacklog)
 	projectService := projects.NewService(projects.Options{
 		Repository: database.Projects(),
-		Terminals:  database.Terminals(),
 		Hub:        hub,
 	})
+	// The Default space is rooted at the server user's home (ATC-296).
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
 	terminalService := terminals.NewService(terminals.Options{
 		Repository: database.Terminals(),
-		Adapter:    adapter,
-		Projects:   database.Projects(),
+		Driver:     driver,
+		Spaces:     database.Spaces(),
+		HomeDir:    homeDir,
 		MarkerDir:  markerDir,
 		Hub:        hub,
 		Logger:     logger,
@@ -574,6 +582,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	threadService := threads.NewService(threads.Options{
 		Repository: database.Threads(),
 		Terminals:  terminalService,
+		Projects:   database.Projects(),
 		Hub:        hub,
 		Logger:     logger,
 	})
@@ -628,7 +637,8 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 
 	// T3 Code (ATC-285): a read-only mirror of the local T3 environment's
 	// threads, self-discovering and self-pairing; its session lives beside
-	// the auth token. Links on its threads derive from its live state.
+	// the auth token. Links on its threads derive from its live state;
+	// the threads domain classifies them into projects by origin.
 	t3Home, err := t3code.Home()
 	if err != nil {
 		return err
@@ -641,35 +651,50 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Home:        t3Home,
 		SessionPath: t3SessionPath,
 		Threads:     threadService,
-		Projects:    projectService,
 		Hub:         hub,
 		Logger:      logger,
 	})
 	threadService.SetLinker(t3code.ID, t3Observer.Links)
 
-	// One registration line per built-in adapter; a duplicate id fails
-	// the boot.
-	agentService, err := agents.NewService(agents.Options{
-		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
-		Terminals: terminalService,
+	// One registration line per built-in Integration; a duplicate id fails
+	// the boot. The typed seams each implements are wired above — the
+	// catalog only describes them.
+	catalog, err := integrations.NewService(integrations.Options{
+		Integrations: []integrations.Integration{
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+		},
 	})
 	if err != nil {
 		return err
 	}
 
+	// The application coordinator runs the cross-domain workflows: every
+	// terminal create (shell, command, App, thread resume), the deletion of
+	// terminals and spaces (the terminals domain's delete, then the
+	// Integrations' per-terminal cleanups, then the threads view), and the
+	// project mutations threads classify against.
+	coordinator := application.New(application.Options{
+		Terminals:    terminalService,
+		Threads:      threadService,
+		Projects:     projectService,
+		Integrations: catalog,
+		Cleanups:     []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		Logger:       logger,
+	})
+
 	handler := server.NewHandler(server.Options{
-		Verify:    tokens.Verify,
-		Version:   versionValue,
-		Logger:    logger,
-		Terminals: terminalService,
-		Projects:  projectService,
-		Agents:    agentService,
-		Threads:   threadService,
-		Events:    hub,
+		Verify:       tokens.Verify,
+		Version:      versionValue,
+		Logger:       logger,
+		Terminals:    terminalService,
+		Projects:     projectService,
+		Integrations: catalog,
+		Threads:      threadService,
+		Events:       hub,
 		InternalRoutes: map[string]http.Handler{
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 		},
-		TerminalCleanups: []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		Coordinator: coordinator,
 	})
 	// The reconcile loop is waited on before the deferred database close,
 	// so shutdown never races an in-flight pass against it. The wait is

@@ -16,16 +16,18 @@ import (
 
 // observeThread plants an observed conversation in the fixture's threads
 // service — the seam the provider observers use in production (there is
-// deliberately no POST /v1/threads to do it over the wire).
+// deliberately no POST /v1/threads to do it over the wire). It originates
+// in the fixture project's directory, so it classifies into it.
 func (f *fixture) observeThread(t *testing.T, terminalID, providerID string, status api.ThreadStatus) string {
 	t.Helper()
 	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
-		Adapter:    "claude",
-		Agent:      "claude",
-		ProviderID: providerID,
-		TerminalID: terminalID,
-		ProjectID:  f.projectID,
-		Status:     status,
+		IntegrationID:    "claude",
+		AppID:            "claude/tui",
+		AgentID:          "claude",
+		ProviderID:       providerID,
+		TerminalID:       terminalID,
+		InitialDirectory: f.projectDir,
+		Status:           status,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +77,7 @@ func TestThreadReadsOverTheWire(t *testing.T) {
 		t.Fatalf("get: got %d; body %s", rec.Code, rec.Body)
 	}
 	thread := decodeThread(t, rec)
-	if thread.ID != id || thread.Agent != "claude" || thread.Status != api.ThreadWorking || thread.TerminalID != terminal.ID {
+	if thread.ID != id || thread.AgentID != "claude" || thread.AppID != "claude/tui" || thread.Status != api.ThreadWorking || thread.TerminalID != terminal.ID {
 		t.Errorf("thread = %+v", thread)
 	}
 
@@ -199,8 +201,8 @@ func TestThreadDeleteOverTheWire(t *testing.T) {
 	}
 }
 
-// Deleting a terminal clears thread linkage; deleting the project then
-// removes the records — the wire-level referential lifecycle.
+// Deleting a terminal clears thread linkage; deleting the project leaves
+// the thread alive and unassigned — the wire-level referential lifecycle.
 func TestThreadReferentialLifecycleOverTheWire(t *testing.T) {
 	f := newFixture(t)
 	terminal := f.createRunningTerminal(t)
@@ -219,12 +221,19 @@ func TestThreadReferentialLifecycleOverTheWire(t *testing.T) {
 	}
 
 	// The other fixture terminals are gone too, so the project can go; its
-	// threads go with it (unlike terminals, which block).
+	// thread survives, unassigned, with its origin intact.
+	if thread.ProjectID != f.projectID || thread.InitialDirectory != f.projectDir {
+		t.Fatalf("before project delete = %+v; want classified into the fixture project", thread)
+	}
 	if rec := f.request(t, http.MethodDelete, "/v1/projects/"+f.projectID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete project: got %d; body %s", rec.Code, rec.Body)
 	}
-	if rec := f.request(t, http.MethodGet, "/v1/threads/"+id, ""); rec.Code != http.StatusNotFound {
-		t.Errorf("thread survived project delete: got %d, want 404", rec.Code)
+	rec = f.request(t, http.MethodGet, "/v1/threads/"+id, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("thread after project delete: got %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, `"projectId"`) || !strings.Contains(body, `"initialDirectory":"`+f.projectDir+`"`) {
+		t.Errorf("thread after project delete = %s; want no projectId and the origin kept", body)
 	}
 }
 
@@ -290,91 +299,133 @@ func resourceID(t *testing.T, data string) string {
 	return change.ID
 }
 
-// Open over the wire: a running terminal holding the thread is reused; a
-// dormant thread gets a new terminal running the exact resume, linked to
-// it; an unknown id is 404 and creates nothing; an archived thread comes
-// back unarchived. The response terminal carries the projection like
-// every other terminal response.
-func TestThreadOpenOverTheWire(t *testing.T) {
+// Thread mode over the wire (ATC-297): POST /v1/terminals with threadId
+// answers 200 with the running terminal holding the thread, unchanged;
+// once the thread is dormant it answers 201 with a new terminal running
+// the exact resume, linked to it and placed as the request asks — never
+// in the thread's own directory; an unknown thread is refused and
+// creates nothing; an archived thread comes back unarchived. The
+// response terminal carries the projection like every other terminal
+// response.
+func TestThreadResumeThroughTerminalCreate(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
+	elsewhere := canonicalDir(t, t.TempDir())
 
-	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
+	// Reuse: 200, the same terminal, placement ignored.
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id, Directory: elsewhere, Name: "ignored"}))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("open active: got %d; body %s", rec.Code, rec.Body)
+		t.Fatalf("resume active: got %d; body %s", rec.Code, rec.Body)
 	}
-	var opened api.ThreadOpen
-	decodeInto(t, rec, &opened)
-	if opened.Created || opened.Terminal.ID != launched.ID || opened.Terminal.ActiveThreadID != id {
-		t.Errorf("open active = %+v", opened)
+	reused := decodeTerminal(t, rec)
+	if reused.ID != launched.ID || reused.ActiveThreadID != id || reused.Name != launched.Name || reused.Directory != launched.Directory {
+		t.Errorf("resume active = %+v; want %s untouched", reused, launched.ID)
 	}
 
-	// The terminal goes away: the thread is dormant.
+	// The terminal goes away: the thread is dormant, and archived.
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+launched.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete terminal: got %d", rec.Code)
 	}
-	archived := `{"archived":true}`
-	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, archived); rec.Code != http.StatusOK {
+	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"archived":true}`); rec.Code != http.StatusOK {
 		t.Fatalf("archive: got %d; body %s", rec.Code, rec.Body)
 	}
 
-	rec = f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("open dormant: got %d; body %s", rec.Code, rec.Body)
+	// Resume: 201, a new terminal in the requested directory running the
+	// exact resume, composed privately.
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id, Directory: elsewhere, Name: "again"}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("resume dormant: got %d; body %s", rec.Code, rec.Body)
 	}
-	decodeInto(t, rec, &opened)
-	resumed := opened.Terminal
-	if !opened.Created || resumed.ID == launched.ID || resumed.Agent != "claude" || resumed.Status != api.TerminalRunning {
-		t.Errorf("open dormant = %+v", opened)
+	resumed := decodeTerminal(t, rec)
+	if resumed.ID == launched.ID || resumed.AppID != "claude/tui" || resumed.Status != api.TerminalRunning || resumed.ActiveThreadID != "" {
+		t.Errorf("resume dormant = %+v", resumed)
 	}
-	if !strings.HasPrefix(resumed.Command, "claude --settings '") || !strings.HasSuffix(resumed.Command, " --resume 'sess-1'") {
-		t.Errorf("resume command = %q", resumed.Command)
+	if command := f.driverCommand(resumed.ID); !strings.HasPrefix(command, "claude --settings '") || !strings.HasSuffix(command, " --resume 'sess-1'") {
+		t.Errorf("resume command = %q", command)
 	}
-	if resumed.Directory != f.projectDir {
-		t.Errorf("resume directory = %q, want the project's %q (no cwd recorded)", resumed.Directory, f.projectDir)
+	if resumed.Command != "" || strings.Contains(rec.Body.String(), "sess-1") {
+		t.Errorf("private data leaked onto the wire: %s", rec.Body)
+	}
+	if resumed.Directory != elsewhere || resumed.Name != "again" || resumed.SpaceID != f.defaultSpace(t).ID {
+		t.Errorf("resume placement = %+v; want %q named again in the Default space", resumed, elsewhere)
 	}
 	thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
-	if thread.TerminalID != resumed.ID || thread.Archived {
-		t.Errorf("thread after open = %+v; want linked to %s and unarchived", thread, resumed.ID)
+	if thread.TerminalID != resumed.ID || thread.Archived || thread.InitialDirectory != f.projectDir {
+		t.Errorf("thread after resume = %+v; want linked to %s, unarchived, origin kept", thread, resumed.ID)
 	}
 
-	// Opening again reuses the resumed terminal — no evidence has arrived,
-	// but the linkage the decision recorded counts.
-	decodeInto(t, f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", ""), &opened)
-	if opened.Created || opened.Terminal.ID != resumed.ID {
-		t.Errorf("second open = %+v; want reuse of %s", opened, resumed.ID)
+	// Resuming again reuses the resumed terminal — no evidence has
+	// arrived, but the linkage the decision recorded counts.
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id}))
+	if rec.Code != http.StatusOK || decodeTerminal(t, rec).ID != resumed.ID {
+		t.Errorf("second resume: got %d; body %s; want 200 with %s", rec.Code, rec.Body, resumed.ID)
 	}
 
 	before := len(decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")))
-	if rec := f.request(t, http.MethodPost, "/v1/threads/thrd-zzzzz/open", ""); rec.Code != http.StatusNotFound {
-		t.Errorf("open unknown: got %d, want 404", rec.Code)
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: "thrd-zzzzz"}))
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"thread_not_found"`) {
+		t.Errorf("resume unknown: got %d; body %s", rec.Code, rec.Body)
 	}
 	if after := len(decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", ""))); after != before {
-		t.Errorf("open unknown created a terminal: %d → %d", before, after)
+		t.Errorf("resume unknown created a terminal: %d → %d", before, after)
+	}
+	// The selectors are exclusive.
+	for name, body := range map[string]api.TerminalCreateParams{
+		"thread+app":     {ThreadID: id, AppID: "claude/tui"},
+		"thread+command": {ThreadID: id, Command: "hx"},
+		"all three":      {ThreadID: id, AppID: "claude/tui", Command: "hx"},
+	} {
+		rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, body))
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"launch_mode_conflict"`) {
+			t.Errorf("%s: got %d; body %s", name, rec.Code, rec.Body)
+		}
+	}
+	// The old action route is gone.
+	if rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("POST /v1/threads/{id}/open: got %d, want 404", rec.Code)
+	}
+
+	// A thread whose recorded App the catalog no longer has cannot be
+	// resumed: unavailable origin, distinct from missing provenance.
+	stale, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
+		IntegrationID: "claude", AppID: "claude/desktop", AgentID: "claude", ProviderID: "sess-stale", TerminalID: resumed.ID,
+		InitialDirectory: f.projectDir, Status: api.ThreadIdle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.threads.Deactivate(context.Background(), resumed.ID)
+	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+resumed.ID, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete terminal: got %d", rec.Code)
+	}
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: stale}))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"thread_app_unavailable"`) {
+		t.Errorf("resume with a vanished app: got %d; body %s", rec.Code, rec.Body)
 	}
 }
 
-// A dormant thread whose agent binary is missing is refused like a
+// A dormant thread whose App executable is missing is refused like a
 // launch, with the install hint, and nothing is created or linked.
-func TestThreadOpenUnavailableAgent(t *testing.T) {
+func TestThreadResumeUnavailableApp(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+launched.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete terminal: got %d", rec.Code)
 	}
 	f.binaries["claude"] = false
 
-	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "npm install -g @anthropic-ai/claude-code") {
-		t.Errorf("open unavailable: got %d; body %s", rec.Code, rec.Body)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id}))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "npm install -g @anthropic-ai/claude-code") ||
+		!strings.Contains(rec.Body.String(), `"code":"app_unavailable"`) {
+		t.Errorf("resume unavailable: got %d; body %s", rec.Code, rec.Body)
 	}
 	if thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); thread.TerminalID != "" {
-		t.Errorf("refused open linked %q", thread.TerminalID)
+		t.Errorf("refused resume linked %q", thread.TerminalID)
 	}
 	if terminals := decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")); len(terminals) != 0 {
-		t.Errorf("refused open created %+v", terminals)
+		t.Errorf("refused resume created %+v", terminals)
 	}
 }
 
@@ -385,7 +436,7 @@ func decodeTerminalList(t *testing.T, rec *httptest.ResponseRecorder) []api.Term
 	return list.Terminals
 }
 
-// A thread an external program owns (ATC-285): adapter and links on the
+// A thread an external program owns (ATC-285): integration and links on the
 // wire, open refused with a clear error, archive and delete refused
 // while the program still reports it and allowed once it does not, a
 // title change always allowed.
@@ -394,25 +445,26 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 	f.threads.SetLinker("t3code", func(providerID string) *api.ThreadLinks {
 		return &api.ThreadLinks{Web: "http://127.0.0.1:3773/env/" + providerID, App: "t3code://threads/env/" + providerID}
 	})
-	id, err := f.threads.ObserveAdapter(context.Background(), threads.AdapterObservation{
-		Adapter: "t3code", ProviderID: "t1", ProjectID: f.projectID, Status: api.ThreadWorking, Agent: "codex", Title: "T3 thread",
+	id, err := f.threads.ObserveExternal(context.Background(), threads.ExternalObservation{
+		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.projectDir, Status: api.ThreadWorking, AgentID: "codex", Title: "T3 thread",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
-	if thread.Adapter != "t3code" || thread.Agent != "codex" || thread.TerminalID != "" || thread.Links == nil ||
+	if thread.IntegrationID != "t3code" || thread.AppID != "" || thread.AgentID != "codex" || thread.TerminalID != "" || thread.Links == nil ||
 		thread.Links.Web != "http://127.0.0.1:3773/env/t1" || thread.Links.App != "t3code://threads/env/t1" {
 		t.Errorf("thread = %+v", thread)
 	}
-	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); !strings.Contains(body, `"adapter":"t3code"`) || !strings.Contains(body, `"links":{"web":`) {
+	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); !strings.Contains(body, `"integrationId":"t3code"`) || strings.Contains(body, `"appId"`) || !strings.Contains(body, `"links":{"web":`) {
 		t.Errorf("wire body = %s", body)
 	}
 
-	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "open in T3 Code") {
-		t.Errorf("open: got %d; body %s", rec.Code, rec.Body)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id}))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"thread_not_terminal_resumable"`) ||
+		!strings.Contains(rec.Body.String(), "not started in an ATC terminal") {
+		t.Errorf("resume: got %d; body %s", rec.Code, rec.Body)
 	}
 	if terminals := decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")); len(terminals) != 0 {
 		t.Errorf("refused open created %+v", terminals)
@@ -431,7 +483,7 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 
 	// T3 stops reporting it: ATC archived it, and the user may now
 	// unarchive, re-archive, or delete.
-	if err := f.threads.ArchiveAdapterThread(context.Background(), "t3code", "t1"); err != nil {
+	if err := f.threads.ArchiveExternalThread(context.Background(), "t3code", "t1"); err != nil {
 		t.Fatal(err)
 	}
 	if thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); !thread.Archived || thread.Status != api.ThreadUnknown {
@@ -444,16 +496,16 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 		t.Errorf("delete after removal: got %d; body %s", rec.Code, rec.Body)
 	}
 
-	// Every thread carries its adapter; terminal threads carry no links.
+	// Every thread carries its integration; terminal threads carry no links.
 	terminal := f.createRunningTerminal(t)
 	local := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+f.observeThread(t, terminal.ID, "sess-1", api.ThreadIdle), ""))
-	if local.Adapter != "claude" || local.Links != nil {
+	if local.IntegrationID != "claude" || local.Links != nil {
 		t.Errorf("terminal thread = %+v", local)
 	}
 }
 
-// The adapter connection change rides the same feed with its own name.
-func TestAgentAdapterEventOnTheFeed(t *testing.T) {
+// The Integration connection change rides the same feed with its own name.
+func TestIntegrationEventOnTheFeed(t *testing.T) {
 	f := newFixture(t)
 	srv := httptest.NewServer(f.handler)
 	t.Cleanup(srv.Close)
@@ -461,9 +513,89 @@ func TestAgentAdapterEventOnTheFeed(t *testing.T) {
 	if opening := client.next(t); opening.Comment != "connected" {
 		t.Fatalf("opening message = %+v", opening)
 	}
-	f.hub.Publish(api.EventAgentAdapterUpdated, "agent_adapter", "t3code")
+	f.hub.Publish(api.EventIntegrationUpdated, "integration", "t3code")
 	event := client.next(t)
-	if event.Event != api.EventAgentAdapterUpdated || resourceID(t, event.Data) != "t3code" {
+	if event.Event != api.EventIntegrationUpdated || resourceID(t, event.Data) != "t3code" {
 		t.Errorf("feed event = %+v", event)
 	}
+}
+
+// Project association over the wire (ATC-295): a thread observed before
+// any project contains it is unassigned and omits projectId; creating a
+// containing project backfills it (archived threads too); the merge
+// patch assigns any project, null clears, omitted leaves it alone; the
+// ?project filter follows.
+func TestThreadProjectAssociationOverTheWire(t *testing.T) {
+	f := newFixture(t)
+	terminal := f.createRunningTerminal(t)
+	origin := canonicalDir(t, t.TempDir())
+	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-9", TerminalID: terminal.ID,
+		InitialDirectory: origin, Status: api.ThreadIdle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.threads.Deactivate(context.Background(), terminal.ID)
+	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"archived":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("archive: got %d; body %s", rec.Code, rec.Body)
+	}
+	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); strings.Contains(body, `"projectId"`) || !strings.Contains(body, `"initialDirectory":"`+origin+`"`) {
+		t.Errorf("unassigned thread = %s", body)
+	}
+
+	// Creating the containing project backfills the archived thread.
+	project := f.createProject(t, origin)
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); got.ProjectID != project.ID {
+		t.Errorf("after project create = %+v; want backfilled into %s", got, project.ID)
+	}
+	if list := decodeThreadList(t, f.request(t, http.MethodGet, "/v1/threads?project="+project.ID+"&includeArchived=true", "")); len(list) != 1 || list[0].ID != id {
+		t.Errorf("?project filter = %+v", list)
+	}
+
+	// Merge patch: assign elsewhere, leave alone, clear, refuse unknown.
+	rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, jsonBody(t, map[string]any{"projectId": f.projectID}))
+	if rec.Code != http.StatusOK || decodeThread(t, rec).ProjectID != f.projectID {
+		t.Errorf("assign: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"title":"kept"}`)
+	if rec.Code != http.StatusOK || decodeThread(t, rec).ProjectID != f.projectID {
+		t.Errorf("omitted projectId changed it: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"projectId":null}`)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"projectId"`) {
+		t.Errorf("clear: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"projectId":"proj-nope"}`)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"project_not_found"`) {
+		t.Errorf("assign unknown: got %d; body %s", rec.Code, rec.Body)
+	}
+	for name, body := range map[string]string{"null title": `{"title":null}`, "null archived": `{"archived":null}`, "empty project": `{"projectId":""}`} {
+		if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, body); rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s: got %d, want 422; body %s", name, rec.Code, rec.Body)
+		}
+	}
+
+	// Moving a project onto the origin backfills the cleared thread.
+	rec = f.request(t, http.MethodPatch, "/v1/projects/"+project.ID, jsonBody(t, map[string]any{"directory": t.TempDir()}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move away: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); got.ProjectID != "" {
+		t.Fatalf("a move away assigned: %+v", got)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/projects/"+project.ID, jsonBody(t, map[string]any{"directory": origin}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move back: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); got.ProjectID != project.ID {
+		t.Errorf("after move back = %+v; want backfilled into %s", got, project.ID)
+	}
+}
+
+func decodeThreadList(t *testing.T, rec *httptest.ResponseRecorder) []api.Thread {
+	t.Helper()
+	var list api.ThreadList
+	decodeInto(t, rec, &list)
+	return list.Threads
 }

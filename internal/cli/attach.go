@@ -36,14 +36,14 @@ func AttachPreflight(baseURL string, stdioIsTerminal bool) error {
 	return nil
 }
 
-// SessionAttacher supplies the adapter-specific mechanics of attach: a
+// SessionAttacher supplies the driver-specific mechanics of attach: a
 // cheap availability check and the exec handover for one session. The
-// composition root wires the concrete adapter (zmx today) — this package
-// knows only the capability, never an adapter, mirroring how the server
-// side reaches its adapter solely through terminals.Adapter.
+// composition root wires the concrete driver (zmx today) — this package
+// knows only the capability, never a driver, mirroring how the server
+// side reaches its driver solely through terminals.Driver.
 type SessionAttacher interface {
 	// Preflight reports whether attach can possibly succeed on this
-	// machine (the adapter's attach tooling is present).
+	// machine (the driver's attach tooling is present).
 	Preflight() error
 	// AttachCommand validates that the session is reachable in this
 	// process's namespace and returns the exec handover for it.
@@ -52,7 +52,7 @@ type SessionAttacher interface {
 
 // AttachSession hands this process's TTY over to the terminal's running
 // session. On success it never returns: the process is replaced by the
-// adapter's attach client until detach.
+// driver's attach client until detach.
 func AttachSession(terminal api.Terminal, attacher SessionAttacher) error {
 	if terminal.Status != api.TerminalRunning {
 		return fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
@@ -65,6 +65,11 @@ func AttachSession(terminal api.Terminal, attacher SessionAttacher) error {
 	// session until detach.
 	return syscall.Exec(executable, argv, env)
 }
+
+// IsLocalServer reports whether the client targets a server on this
+// machine (a loopback URL): only then is this process's working
+// directory meaningful to the server, and only then can attach work.
+func IsLocalServer(baseURL string) bool { return isLoopback(baseURL) }
 
 func isLoopback(baseURL string) bool {
 	parsed, err := url.Parse(baseURL)

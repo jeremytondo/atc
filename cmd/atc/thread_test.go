@@ -2,27 +2,30 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // observeThreadCLI plants an observed conversation behind the test server
 // and returns its thread id — the seam providers use in production; the
 // wire has no create verb.
-func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, projectID, providerID string) string {
+func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, directory, providerID string) string {
 	t.Helper()
 	id, err := service.ObserveSession(context.Background(), threads.SessionObservation{
-		Adapter:    "claude",
-		Agent:      "claude",
-		ProviderID: providerID,
-		TerminalID: terminalID,
-		ProjectID:  projectID,
-		Status:     api.ThreadIdle,
-		Metadata:   threads.Metadata{Title: "fix the build"},
+		IntegrationID:    "claude",
+		AppID:            "claude/tui",
+		AgentID:          "claude",
+		ProviderID:       providerID,
+		TerminalID:       terminalID,
+		InitialDirectory: directory,
+		Status:           api.ThreadIdle,
+		Metadata:         threads.Metadata{Title: "fix the build"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -30,10 +33,11 @@ func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, projec
 	return id
 }
 
-// createTerminalCLI creates a terminal over the wire and returns its id.
-func createTerminalCLI(t *testing.T, projectID string) string {
+// createTerminalCLI creates a terminal in directory over the wire and
+// returns its id.
+func createTerminalCLI(t *testing.T, directory string) string {
 	t.Helper()
-	stdout, _, err := runCLI(t, "terminal", "create", "--command", "claude", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--command", "claude", "--directory", directory)
 	if err != nil {
 		t.Fatalf("terminal create: %v", err)
 	}
@@ -46,11 +50,12 @@ func createTerminalCLI(t *testing.T, projectID string) string {
 
 func TestThreadCLILifecycle(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	terminalID := createTerminalCLI(t, projectID)
-	id := observeThreadCLI(t, threadService, terminalID, projectID, "sess-1")
+	projectDir := t.TempDir()
+	projectID := createProjectCLI(t, projectDir)
+	terminalID := createTerminalCLI(t, projectDir)
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
-	stdout, _, err := runCLI(t, "thread", "list", "--project", projectID)
+	stdout, _, err := runCLI(t, "thread", "list")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -85,7 +90,7 @@ func TestThreadCLILifecycle(t *testing.T) {
 
 	// Switch the terminal to another conversation; the first thread is now
 	// inactive and archivable.
-	observeThreadCLI(t, threadService, terminalID, projectID, "sess-2")
+	observeThreadCLI(t, threadService, terminalID, projectDir, "sess-2")
 	if stdout, _, err = runCLI(t, "thread", "archive", id); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +99,7 @@ func TestThreadCLILifecycle(t *testing.T) {
 	}
 
 	// Hidden by default, shown with --archived, restored by unarchive.
-	if stdout, _, err = runCLI(t, "thread", "list", "--project", projectID); err != nil {
+	if stdout, _, err = runCLI(t, "thread", "list"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(stdout, id) {
@@ -119,7 +124,7 @@ func TestThreadCLILifecycle(t *testing.T) {
 	if !strings.Contains(stdout, "deleted "+id) {
 		t.Errorf("delete output:\n%s", stdout)
 	}
-	if stdout, _, err = runCLI(t, "thread", "list", "--project", projectID); err != nil {
+	if stdout, _, err = runCLI(t, "thread", "list"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(stdout, id) {
@@ -129,9 +134,10 @@ func TestThreadCLILifecycle(t *testing.T) {
 
 func TestThreadListUnfiltered(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	terminalID := createTerminalCLI(t, projectID)
-	id := observeThreadCLI(t, threadService, terminalID, projectID, "sess-1")
+	projectDir := t.TempDir()
+	createProjectCLI(t, projectDir)
+	terminalID := createTerminalCLI(t, projectDir)
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	// Like terminal list: unfiltered means everything, no project
 	// resolution.
@@ -151,23 +157,60 @@ func TestThreadGetUnknownIsError(t *testing.T) {
 	}
 }
 
-func TestThreadNewCLI(t *testing.T) {
-	_, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
-
-	stdout, _, err := runCLI(t, "thread", "new", "claude", "--project", projectID, "--detach")
+func TestThreadOpenHelpIsConciseAndComplete(t *testing.T) {
+	help, _, err := runCLI(t, "thread", "open", "--help")
 	if err != nil {
-		t.Fatalf("new: %v", err)
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(help), " ")
+	for _, want := range []string{
+		"Open a conversation in its running terminal, or resume it in a new one.",
+		"`atc terminal create --thread <id>`",
+		"Placement and attachment follow `atc terminal create`.",
+		"Use --detach",
+		"Archived threads are unarchived automatically.",
+		"Conversations not started by an ATC terminal app cannot be opened here",
+		"`atc thread get <id>`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("thread open help missing %q:\n%s", want, help)
+		}
+	}
+	for _, section := range []string{"\n\nPlacement and attachment", "\n\nConversations not started"} {
+		if !strings.Contains(help, section) {
+			t.Errorf("thread open help missing section break before %q:\n%s", strings.TrimSpace(section), help)
+		}
+	}
+}
+
+// An App launch is `terminal create --app` (ATC-294): the terminal shows
+// the app and its directory's basename as the name, never the composed
+// command, and no thread exists before the first prompt. `thread new` is
+// gone.
+func TestTerminalCreateAppCLI(t *testing.T) {
+	_, threadService := startTestServerWithThreads(t)
+	projectDir := t.TempDir()
+	createProjectCLI(t, projectDir)
+
+	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--directory", projectDir, "--detach")
+	if err != nil {
+		t.Fatalf("create --app: %v", err)
 	}
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	if id == "" || !strings.Contains(stdout, "running") {
-		t.Fatalf("new output has no running terminal:\n%s", stdout)
+		t.Fatalf("create output has no running terminal:\n%s", stdout)
 	}
-	if !regexp.MustCompile(`(?m)^agent\s+claude$`).MatchString(stdout) || !strings.Contains(stdout, "Claude Code") {
-		t.Errorf("new output missing the agent label or default name:\n%s", stdout)
+	if !regexp.MustCompile(`(?m)^app\s+claude/tui$`).MatchString(stdout) || !regexp.MustCompile(`(?m)^name\s+`+filepath.Base(projectDir)+`$`).MatchString(stdout) {
+		t.Errorf("create output missing the app or the directory-basename name:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "thrd-") {
-		t.Errorf("new printed a thread id; none exists before the first prompt:\n%s", stdout)
+	if strings.Contains(stdout, "thrd-") || strings.Contains(stdout, "--settings") {
+		t.Errorf("create printed a thread id or the private command:\n%s", stdout)
+	}
+	if _, _, err := runCLI(t, "thread", "new", "claude"); err == nil {
+		t.Error("thread new still exists")
+	}
+	if _, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--command", "hx"); err == nil {
+		t.Error("--app with --command was accepted")
 	}
 
 	// The terminal is a normal terminal from here, and --terminal leads
@@ -179,7 +222,7 @@ func TestThreadNewCLI(t *testing.T) {
 	if stdout, _, err = runCLI(t, "thread", "list", "--terminal", id); err != nil || !strings.Contains(stdout, "no threads") {
 		t.Errorf("thread list --terminal before the first prompt = %q, %v", stdout, err)
 	}
-	threadID := observeThreadCLI(t, threadService, id, projectID, "sess-1")
+	threadID := observeThreadCLI(t, threadService, id, projectDir, "sess-1")
 	if stdout, _, err = runCLI(t, "thread", "list", "--terminal", id); err != nil || !strings.Contains(stdout, threadID) {
 		t.Errorf("thread list --terminal = %q, %v", stdout, err)
 	}
@@ -188,46 +231,54 @@ func TestThreadNewCLI(t *testing.T) {
 	}
 }
 
-// Without a TTY, new still launches and prints the terminal, noting on
-// stderr why it did not attach; a missing binary is refused before
-// anything exists.
-func TestThreadNewWithoutTTYAndUnavailable(t *testing.T) {
+// Without a TTY, an App launch still creates and prints the terminal,
+// noting on stderr why it did not attach; a missing executable, a
+// handoff App, and an unknown App are refused before anything exists.
+func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 	startTestServer(t)
-	projectID := createProjectCLI(t, t.TempDir())
+	projectDir := t.TempDir()
+	createProjectCLI(t, projectDir)
 
-	stdout, stderr, err := runCLI(t, "thread", "new", "claude", "--project", projectID)
+	stdout, stderr, err := runCLI(t, "terminal", "create", "--app", "claude/tui")
 	if err != nil {
-		t.Fatalf("new without TTY = %v", err)
+		t.Fatalf("create --app without TTY = %v", err)
 	}
 	if !regexp.MustCompile(`term-[a-z2-9]{5}`).MatchString(stdout) {
-		t.Errorf("new output has no terminal id:\n%s", stdout)
+		t.Errorf("create output has no terminal id:\n%s", stdout)
 	}
 	if !strings.Contains(stderr, "not attaching") || !strings.Contains(stderr, "stdin and stdout must be TTYs") {
 		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
 	}
 
-	_, _, err = runCLI(t, "thread", "new", "codex", "--project", projectID)
+	_, _, err = runCLI(t, "terminal", "create", "--app", "codex/tui")
 	if err == nil || !strings.Contains(err.Error(), `"codex"`) ||
 		!strings.Contains(err.Error(), "npm install -g @openai/codex") {
-		t.Errorf("new unavailable = %v, want the command and its install hint", err)
+		t.Errorf("create unavailable app = %v, want the command and its install hint", err)
+	}
+	if _, _, err = runCLI(t, "terminal", "create", "--app", "t3code/web"); err == nil || !strings.Contains(err.Error(), "does not run in a terminal") {
+		t.Errorf("create handoff app = %v, want the not-terminal refusal", err)
+	}
+	if _, _, err = runCLI(t, "terminal", "create", "--app", "nonexistent/tui"); err == nil || !strings.Contains(err.Error(), "422") {
+		t.Errorf("create unknown app = %v, want a 422 problem", err)
 	}
 	stdout, _, listErr := runCLI(t, "terminal", "list")
 	if listErr != nil || strings.Count(stdout, "term-") != 1 {
-		t.Errorf("a refused new left a terminal: %q, %v", stdout, listErr)
+		t.Errorf("a refused create left a terminal: %q, %v", stdout, listErr)
 	}
 }
 
 // Open lands on the terminal showing the thread, and resumes a dormant
 // one in a new terminal linked to it.
 func TestThreadOpenCLI(t *testing.T) {
-	adapter, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "thread", "new", "claude", "--project", projectID, "--detach")
+	driver, threadService := startTestServerWithThreads(t)
+	projectDir := t.TempDir()
+	createProjectCLI(t, projectDir)
+	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
 	terminalID := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
-	id := observeThreadCLI(t, threadService, terminalID, projectID, "sess-1")
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	stdout, stderr, err := runCLI(t, "thread", "open", id, "--detach")
 	if err != nil {
@@ -238,10 +289,11 @@ func TestThreadOpenCLI(t *testing.T) {
 	}
 
 	// The TUI exits; the thread is dormant. Open resumes it in a fresh
-	// terminal running the exact resume, and the thread now points there.
-	adapter.mu.Lock()
-	delete(adapter.sessions, terminalID)
-	adapter.mu.Unlock()
+	// terminal running the exact resume (privately: the output shows the
+	// app, never the command), and the thread now points there.
+	driver.mu.Lock()
+	delete(driver.sessions, terminalID)
+	driver.mu.Unlock()
 	if _, _, err := runCLI(t, "terminal", "delete", terminalID); err != nil {
 		t.Fatal(err)
 	}
@@ -250,17 +302,78 @@ func TestThreadOpenCLI(t *testing.T) {
 		t.Fatalf("open dormant: %v", err)
 	}
 	resumed := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
-	if resumed == "" || resumed == terminalID || !strings.Contains(stdout, "--resume 'sess-1'") || !strings.Contains(stdout, "running") {
+	if resumed == "" || resumed == terminalID || !strings.Contains(stdout, "running") ||
+		!regexp.MustCompile(`(?m)^app\s+claude/tui$`).MatchString(stdout) || strings.Contains(stdout, "--resume") {
 		t.Errorf("open dormant output:\n%s", stdout)
+	}
+	driver.mu.Lock()
+	command := driver.commands[resumed]
+	driver.mu.Unlock()
+	if !strings.HasSuffix(command, "--resume 'sess-1'") {
+		t.Errorf("resumed session command = %q", command)
 	}
 	if !strings.Contains(stderr, "not attaching") {
 		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
 	}
+	// open is sugar: the resumed terminal sits in this process's cwd (a
+	// local server), never in the thread's own directory, and
+	// `terminal create --thread` lands on the same terminal.
+	cwd, err := paths.CanonicalDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^directory\s+` + regexp.QuoteMeta(cwd) + `$`).MatchString(stdout) {
+		t.Errorf("resumed terminal directory:\n%s", stdout)
+	}
 	if stdout, _, err = runCLI(t, "thread", "get", id); err != nil || !strings.Contains(stdout, resumed) {
 		t.Errorf("thread after open = %q, %v; want linked to %s", stdout, err, resumed)
 	}
+	if stdout, _, err = runCLI(t, "terminal", "create", "--thread", id, "--detach"); err != nil || !regexp.MustCompile(`(?m)^id\s+`+resumed+`$`).MatchString(stdout) {
+		t.Errorf("terminal create --thread = %q, %v; want the same terminal %s", stdout, err, resumed)
+	}
+	if _, _, err := runCLI(t, "terminal", "create", "--thread", id, "--app", "claude/tui"); err == nil {
+		t.Error("--thread with --app was accepted")
+	}
 
-	if _, _, err := runCLI(t, "thread", "open", "thrd-zzzzz"); err == nil || !strings.Contains(err.Error(), "404") {
-		t.Errorf("open unknown = %v, want a 404 problem", err)
+	if _, _, err := runCLI(t, "thread", "open", "thrd-zzzzz"); err == nil || !strings.Contains(err.Error(), "422") {
+		t.Errorf("open unknown = %v, want a 422 problem", err)
+	}
+}
+
+// --project assigns any project, --remove-project clears; both at once,
+// or an empty --project, is refused before any request.
+func TestThreadUpdateProjectCLI(t *testing.T) {
+	_, threadService := startTestServerWithThreads(t)
+	projectDir, err := paths.CanonicalDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := createProjectCLI(t, projectDir)
+	otherID := createProjectCLI(t, t.TempDir())
+	terminalID := createTerminalCLI(t, projectDir)
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
+
+	stdout, _, err := runCLI(t, "thread", "get", id)
+	if err != nil || !regexp.MustCompile(`(?m)^project\s+`+projectID+`$`).MatchString(stdout) ||
+		!regexp.MustCompile(`(?m)^initial directory\s+`+regexp.QuoteMeta(projectDir)+`$`).MatchString(stdout) {
+		t.Fatalf("get = %q, %v; want classified into %s with its origin", stdout, err, projectID)
+	}
+	if stdout, _, err = runCLI(t, "thread", "update", id, "--project", otherID); err != nil || !regexp.MustCompile(`(?m)^project\s+`+otherID+`$`).MatchString(stdout) {
+		t.Errorf("assign = %q, %v", stdout, err)
+	}
+	if stdout, _, err = runCLI(t, "thread", "update", id, "--remove-project"); err != nil || strings.Contains(stdout, "\nproject") {
+		t.Errorf("remove = %q, %v; want no project line", stdout, err)
+	}
+	if stdout, _, err = runCLI(t, "thread", "list", "--project", projectID); err != nil || strings.Contains(stdout, id) {
+		t.Errorf("list after remove = %q, %v; want the thread gone from the project", stdout, err)
+	}
+	if _, _, err := runCLI(t, "thread", "update", id, "--project", otherID, "--remove-project"); err == nil {
+		t.Error("--project with --remove-project was accepted")
+	}
+	if _, _, err := runCLI(t, "thread", "update", id, "--project", ""); err == nil || !strings.Contains(err.Error(), "--remove-project") {
+		t.Errorf("empty --project = %v; want a refusal pointing at --remove-project", err)
+	}
+	if _, _, err := runCLI(t, "thread", "update", id); err == nil {
+		t.Error("update with no flags was accepted")
 	}
 }

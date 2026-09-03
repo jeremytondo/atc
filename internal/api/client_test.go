@@ -222,11 +222,11 @@ func TestTerminalMethods(t *testing.T) {
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	ctx := context.Background()
 
-	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{ProjectID: "proj-x7k2f", Command: "hx"})
+	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{SpaceID: "spce-x7k2f", Command: "hx"})
 	if err != nil || terminal.ID != "term-x7k2f" {
 		t.Fatalf("CreateTerminal = %+v, %v", terminal, err)
 	}
-	want := call{http.MethodPost, "/v1/terminals", "", `{"projectId":"proj-x7k2f","command":"hx"}`}
+	want := call{http.MethodPost, "/v1/terminals", "", `{"spaceId":"spce-x7k2f","command":"hx"}`}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("create request (-want +got):\n%s", diff)
 	}
@@ -238,10 +238,10 @@ func TestTerminalMethods(t *testing.T) {
 		t.Errorf("list request = %+v", got)
 	}
 
-	if _, err := client.Terminals(ctx, "proj-x7k2f"); err != nil {
+	if _, err := client.Terminals(ctx, "spce-x7k2f"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Query != "project=proj-x7k2f" {
+	if got.Query != "space=spce-x7k2f" {
 		t.Errorf("filtered list query = %q", got.Query)
 	}
 
@@ -252,7 +252,7 @@ func TestTerminalMethods(t *testing.T) {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	if _, err := client.UpdateTerminal(ctx, "term-x7k2f", TerminalUpdateParams{Name: "build"}); err != nil {
+	if _, err := client.UpdateTerminal(ctx, "term-x7k2f", TerminalUpdateParams{Name: Some("build")}); err != nil {
 		t.Fatal(err)
 	}
 	want = call{http.MethodPatch, "/v1/terminals/term-x7k2f", "", `{"name":"build"}`}
@@ -314,7 +314,7 @@ func TestProjectMethods(t *testing.T) {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	if _, err := client.UpdateProject(ctx, "proj-x7k2f", ProjectUpdateParams{Name: "renamed"}); err != nil {
+	if _, err := client.UpdateProject(ctx, "proj-x7k2f", ProjectUpdateParams{Name: Some("renamed")}); err != nil {
 		t.Fatal(err)
 	}
 	want = call{http.MethodPatch, "/v1/projects/proj-x7k2f", `{"name":"renamed"}`}
@@ -369,80 +369,89 @@ func TestProblemErrorFallbacks(t *testing.T) {
 	}
 }
 
-// The agent methods are thin typed wrappers; the id path segment is
-// escaped so a user-typed id with reserved characters stays one unknown
-// segment instead of changing the route.
-func TestAgentMethods(t *testing.T) {
+// The integration methods are thin typed wrappers; the id path segment
+// is escaped so a user-typed id with reserved characters stays one
+// unknown segment instead of changing the route.
+func TestIntegrationMethods(t *testing.T) {
 	var got struct{ Method, Path string }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.Method, got.Path = r.Method, r.URL.EscapedPath()
-		switch {
-		case r.URL.Path == "/v1/agents":
-			_ = json.NewEncoder(w).Encode(AgentList{Agents: []Agent{{ID: "claude"}}})
-		case r.URL.Path == "/v1/agents/adapters":
-			_ = json.NewEncoder(w).Encode(AgentAdapterList{Adapters: []AgentAdapter{{ID: "claude"}, {ID: "t3code"}}})
-		case strings.HasPrefix(r.URL.Path, "/v1/agents/adapters/"):
-			_ = json.NewEncoder(w).Encode(AgentAdapter{ID: "t3code"})
-		default:
-			_ = json.NewEncoder(w).Encode(Agent{ID: "claude"})
+		if r.URL.Path == "/v1/integrations" {
+			_ = json.NewEncoder(w).Encode(IntegrationList{Integrations: []Integration{{ID: "claude"}, {ID: "t3code"}}})
+			return
 		}
+		_ = json.NewEncoder(w).Encode(Integration{ID: "t3code"})
 	}))
 	defer srv.Close()
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	ctx := context.Background()
 
-	agents, err := client.Agents(ctx)
-	if err != nil || len(agents) != 1 {
-		t.Fatalf("Agents = %+v, %v", agents, err)
+	integrations, err := client.Integrations(ctx)
+	if err != nil || len(integrations) != 2 {
+		t.Fatalf("Integrations = %+v, %v", integrations, err)
 	}
-	if got.Method != http.MethodGet || got.Path != "/v1/agents" {
+	if got.Method != http.MethodGet || got.Path != "/v1/integrations" {
 		t.Errorf("list request = %+v", got)
 	}
-
-	if _, err := client.Agent(ctx, "claude"); err != nil {
-		t.Fatal(err)
+	if integration, err := client.Integration(ctx, "t3code"); err != nil || integration.ID != "t3code" {
+		t.Fatalf("Integration = %+v, %v", integration, err)
 	}
-	if got.Path != "/v1/agents/claude" {
+	if got.Path != "/v1/integrations/t3code" {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	adapters, err := client.AgentAdapters(ctx)
-	if err != nil || len(adapters) != 2 {
-		t.Fatalf("AgentAdapters = %+v, %v", adapters, err)
-	}
-	if got.Path != "/v1/agents/adapters" {
-		t.Errorf("adapters list path = %q", got.Path)
-	}
-	if adapter, err := client.AgentAdapter(ctx, "t3code"); err != nil || adapter.ID != "t3code" {
-		t.Fatalf("AgentAdapter = %+v, %v", adapter, err)
-	}
-	if got.Path != "/v1/agents/adapters/t3code" {
-		t.Errorf("adapter get path = %q", got.Path)
-	}
-
-	if _, err := client.Agent(ctx, "adapters/x?y"); err != nil {
+	if _, err := client.Integration(ctx, "x/y?z"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Path != "/v1/agents/adapters%2Fx%3Fy" {
+	if got.Path != "/v1/integrations/x%2Fy%3Fz" {
 		t.Errorf("escaped get path = %q", got.Path)
 	}
 }
 
-// OpenThread is a POST action on the thread; the response carries the
-// chosen terminal and whether it was created.
-func TestOpenThread(t *testing.T) {
-	var got struct{ Method, Path string }
+// The space methods are thin typed wrappers over the flat /v1/spaces
+// surface.
+func TestSpaceMethods(t *testing.T) {
+	type call struct {
+		Method, Path, Query, Body string
+	}
+	var got call
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got.Method, got.Path = r.Method, r.URL.Path
-		_ = json.NewEncoder(w).Encode(ThreadOpen{Terminal: Terminal{ID: "term-x7k2f"}, Created: true})
+		body, _ := io.ReadAll(r.Body)
+		got = call{r.Method, r.URL.Path, r.URL.RawQuery, strings.TrimSpace(string(body))}
+		if r.URL.Path == "/v1/spaces" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(SpaceList{Spaces: []Space{{ID: "spce-x7k2f", IsDefault: true}}})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(Space{ID: "spce-x7k2f"})
 	}))
 	defer srv.Close()
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
-	opened, err := client.OpenThread(context.Background(), "thrd-x7k2f")
-	if err != nil || opened.Terminal.ID != "term-x7k2f" || !opened.Created {
-		t.Fatalf("OpenThread = %+v, %v", opened, err)
+	ctx := context.Background()
+
+	if _, err := client.CreateSpace(ctx, SpaceCreateParams{Directory: "/work", Name: "work"}); err != nil {
+		t.Fatal(err)
 	}
-	if got.Method != http.MethodPost || got.Path != "/v1/threads/thrd-x7k2f/open" {
-		t.Errorf("request = %+v", got)
+	if diff := cmp.Diff(call{http.MethodPost, "/v1/spaces", "", `{"directory":"/work","name":"work"}`}, got); diff != "" {
+		t.Errorf("create request (-want +got):\n%s", diff)
+	}
+	spaces, err := client.Spaces(ctx)
+	if err != nil || len(spaces) != 1 || !spaces[0].IsDefault {
+		t.Fatalf("Spaces = %+v, %v", spaces, err)
+	}
+	if _, err := client.Space(ctx, "spce-x7k2f"); err != nil || got.Path != "/v1/spaces/spce-x7k2f" {
+		t.Errorf("get = %+v, %v", got, err)
+	}
+	if _, err := client.UpdateSpace(ctx, "spce-x7k2f", SpaceUpdateParams{Name: Some("renamed")}); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(call{http.MethodPatch, "/v1/spaces/spce-x7k2f", "", `{"name":"renamed"}`}, got); diff != "" {
+		t.Errorf("update request (-want +got):\n%s", diff)
+	}
+	if err := client.DeleteSpace(ctx, "spce-x7k2f"); err != nil || got.Method != http.MethodDelete {
+		t.Errorf("delete = %+v, %v", got, err)
 	}
 }

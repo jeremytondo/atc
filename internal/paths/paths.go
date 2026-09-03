@@ -13,8 +13,10 @@
 //	state   $XDG_STATE_HOME/atc/hooks         (~/.local/state/atc/hooks)
 //
 // It also owns CanonicalDir, the one rule for canonicalizing user-supplied
-// directories (ATC-256) — project identity and CLI project resolution must
-// agree on it exactly.
+// directories (ATC-256): project and space directories, terminal working
+// directories, and thread initial directories all store its result, and
+// thread classification by containment depends on every one of them
+// agreeing on it exactly.
 package paths
 
 import (
@@ -71,7 +73,7 @@ func DatabaseFile() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "atc.db")
 }
 
-// T3CodeSessionFile is the T3 Code adapter's paired session (ATC-285), a
+// T3CodeSessionFile is the T3 Code Integration's paired session (ATC-285), a
 // 0600 credential beside auth-token: the one place it is stored — never
 // config.toml, never the environment.
 func T3CodeSessionFile() (string, error) {

@@ -16,43 +16,54 @@ type Project struct {
 	UpdatedAt string
 }
 
+type Space struct {
+	ID        string
+	Name      string
+	Directory string
+	IsDefault int64
+	CreatedAt string
+	UpdatedAt string
+}
+
 type Terminal struct {
 	ID              string
-	ProjectID       string
+	SpaceID         string
 	Name            string
 	Directory       string
 	Command         sql.NullString
+	AppID           sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
 	StopRequestedAt sql.NullString
 	ExitedAt        sql.NullString
 	ExitCode        sql.NullInt64
-	Agent           sql.NullString
 }
 
 type Thread struct {
-	ID             string
-	Adapter        string
-	Agent          sql.NullString
-	ProjectID      string
-	TerminalID     sql.NullString
-	Title          sql.NullString
-	TitleUserSet   int64
-	Model          sql.NullString
-	Effort         sql.NullString
-	Cwd            sql.NullString
-	PermissionMode sql.NullString
-	Status         string
-	LastError      sql.NullString
-	LastEvidenceAt sql.NullString
-	Archived       int64
-	ArchivedAt     sql.NullString
-	CreatedAt      string
-	UpdatedAt      string
+	ID               string
+	IntegrationID    string
+	AppID            sql.NullString
+	AgentID          sql.NullString
+	InitialDirectory sql.NullString
+	ProjectID        sql.NullString
+	TerminalID       sql.NullString
+	Title            sql.NullString
+	TitleUserSet     int64
+	Model            sql.NullString
+	Effort           sql.NullString
+	Cwd              sql.NullString
+	PermissionMode   sql.NullString
+	Status           string
+	LastError        sql.NullString
+	LastEvidenceAt   sql.NullString
+	Archived         int64
+	ArchivedAt       sql.NullString
+	CreatedAt        string
+	UpdatedAt        string
 }
 
 type ThreadIdentity struct {
-	Adapter                string
+	IntegrationID          string
 	ProviderConversationID string
 	ThreadID               string
 }

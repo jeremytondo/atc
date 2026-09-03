@@ -7,7 +7,7 @@ import "github.com/jeremytondo/atc/internal/ids"
 const (
 	idPrefix = "term-"
 	// IDLength is the fixed byte length of every terminal ID — what the
-	// zmx adapter budgets socket paths against.
+	// zmx driver budgets socket paths against.
 	IDLength = len(idPrefix) + ids.SuffixLength
 )
 

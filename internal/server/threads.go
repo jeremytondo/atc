@@ -7,18 +7,16 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// Four verbs on /v1/threads (ATC-255) plus one action (ATC-282):
-// deliberately no POST /v1/threads — threads are observed into existence,
-// not created — and archive/unarchive is a PATCH of archived. open is the
-// one action route: it answers an intent (put me in front of this
-// conversation) with a terminal, which no resource mutation expresses.
-// Handlers are thin Huma wrappers around the shared wire structs; policy
-// lives in the threads service.
+// Four verbs on /v1/threads (ATC-255): deliberately no POST /v1/threads
+// — threads are observed into existence, not created — and
+// archive/unarchive is a PATCH of archived. Putting a user in front of a
+// conversation is a terminal create with threadId (ATC-297), not an
+// action here. Handlers are thin Huma wrappers around the shared wire
+// structs; policy lives in the threads service.
 
 type threadOutput struct {
 	Body api.Thread
@@ -28,21 +26,11 @@ type threadListOutput struct {
 	Body api.ThreadList
 }
 
-type threadOpenOutput struct {
-	Body api.ThreadOpen
-}
-
 type threadIDInput struct {
 	ID string `path:"id" doc:"Thread identifier."`
 }
 
-func registerThreads(humaAPI huma.API, service *threads.Service, agentService *agents.Service) {
-	// The resume launch behind open is the agent catalog's; a server
-	// without one can still reuse running terminals.
-	var resume threads.Resumer
-	if agentService != nil {
-		resume = agentService.Resume
-	}
+func registerThreads(humaAPI huma.API, service *threads.Service) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "list-threads",
 		Method:      http.MethodGet,
@@ -77,7 +65,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, agentService *a
 		Method:      http.MethodPatch,
 		Path:        "/v1/threads/{id}",
 		Summary:     "Update a thread",
-		Description: "Title and archived are the only mutable fields. A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder.",
+		Description: "A merge patch of title, archived, and projectId: omitted fields are unchanged, null clears projectId (title and archived cannot be null). A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder. A project assignment may name any project; a cleared thread stays unassigned until a project is created or moved to contain its initial directory.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Thread identifier."`
 		Body api.ThreadUpdateParams
@@ -87,21 +75,6 @@ func registerThreads(humaAPI huma.API, service *threads.Service, agentService *a
 			return nil, mapThreadError(err)
 		}
 		return &threadOutput{Body: thread}, nil
-	})
-
-	huma.Register(humaAPI, huma.Operation{
-		OperationID: "open-thread",
-		Method:      http.MethodPost,
-		Path:        "/v1/threads/{id}/open",
-		Summary:     "Open a thread in a terminal",
-		Description: "Resolves the thread to exactly one terminal under one server-side decision: a running terminal showing it is reused; else its last terminal, if still running with unknown contents, is reused rather than risk a second writer; else a new terminal runs the provider's exact resume and is recorded as the thread's terminal. Concurrent opens converge on one terminal. An archived thread is unarchived. A thread an external program owns is refused: it opens through its links. The server never attaches.",
-	}, func(ctx context.Context, input *threadIDInput) (*threadOpenOutput, error) {
-		terminal, created, err := service.Open(ctx, input.ID, resume)
-		if err != nil {
-			return nil, mapThreadError(err)
-		}
-		terminal.ActiveThreadID = service.ActiveThreadID(terminal.ID)
-		return &threadOpenOutput{Body: api.ThreadOpen{Terminal: terminal, Created: created}}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -119,17 +92,16 @@ func registerThreads(humaAPI huma.API, service *threads.Service, agentService *a
 	})
 }
 
-// mapThreadError adds the thread mappings ahead of the agent and terminal
-// ones, which open's resume launch can also surface (agent unavailable,
-// unknown project, missing project directory).
 func mapThreadError(err error) error {
 	switch {
 	case errors.Is(err, threads.ErrNotFound):
-		return huma.Error404NotFound("thread not found")
+		return problem(http.StatusNotFound, api.CodeThreadNotFound, "thread not found")
 	case errors.Is(err, threads.ErrActive):
-		return huma.Error409Conflict(err.Error())
-	case errors.Is(err, threads.ErrResumeUnavailable):
-		return huma.Error422UnprocessableEntity("this server has no agent catalog")
+		return problem(http.StatusConflict, api.CodeThreadActive, err.Error())
+	case errors.Is(err, threads.ErrProjectUnknown):
+		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
+	case errors.Is(err, threads.ErrInvalidUpdate):
+		return problem(http.StatusUnprocessableEntity, api.CodeValidationFailed, err.Error())
 	}
-	return mapAgentError(err)
+	return err
 }

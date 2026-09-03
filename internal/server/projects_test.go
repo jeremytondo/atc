@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/paths"
 )
 
 func decodeProject(t *testing.T, rec *httptest.ResponseRecorder) api.Project {
@@ -62,16 +63,37 @@ func TestProjectCRUDOverTheWire(t *testing.T) {
 		t.Errorf("updated name = %q", got.Name)
 	}
 
-	// Immutable and unknown fields are rejected by schema.
-	for name, body := range map[string]string{
-		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
-		"unknown field":       `{"name":"x","frobnicate":true}`,
-		"missing name":        `{}`,
+	// Unknown fields are rejected by schema; null and empty are refused
+	// for both fields as malformed patches; a missing directory is the
+	// directory's own refusal.
+	for name, tc := range map[string]struct{ body, code string }{
+		"unknown field":     {`{"name":"x","frobnicate":true}`, api.CodeValidationFailed},
+		"null name":         {`{"name":null}`, api.CodeValidationFailed},
+		"empty name":        {`{"name":"  "}`, api.CodeValidationFailed},
+		"null directory":    {`{"directory":null}`, api.CodeValidationFailed},
+		"missing directory": {`{"directory":"` + filepath.Join(dir, "nope") + `"}`, api.CodeProjectDirectoryInvalid},
 	} {
-		rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, body)
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Errorf("%s: got %d, want 422; body %s", name, rec.Code, rec.Body)
+		rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, tc.body)
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"`+tc.code+`"`) {
+			t.Errorf("%s: got %d, want 422 %s; body %s", name, rec.Code, tc.code, rec.Body)
 		}
+	}
+	// A merge patch: an empty body changes nothing.
+	if rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, `{}`); rec.Code != http.StatusOK || decodeProject(t, rec).Name != "renamed" {
+		t.Errorf("empty patch: got %d; body %s", rec.Code, rec.Body)
+	}
+	// The directory moves; the canonical form is stored, and another
+	// project's directory is refused.
+	moved := t.TempDir()
+	rec = f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, `{"directory":"`+moved+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeProject(t, rec); got.Directory != canonicalDir(t, moved) || got.Name != "renamed" {
+		t.Errorf("moved = %+v", got)
+	}
+	if rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, `{"directory":"`+f.projectDir+`"}`); rec.Code != http.StatusConflict {
+		t.Errorf("move onto another project: got %d, want 409; body %s", rec.Code, rec.Body)
 	}
 
 	rec = f.request(t, http.MethodDelete, "/v1/projects/"+created.ID, "")
@@ -125,81 +147,25 @@ func TestProjectCreateValidation(t *testing.T) {
 	}
 }
 
-func TestProjectDeleteRefusedWhileTerminalsRemain(t *testing.T) {
+// Projects own no terminals (ATC-296): a project deletes with terminals
+// running in its directory, which stay put.
+func TestProjectDeleteLeavesTerminals(t *testing.T) {
 	f := newFixture(t)
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
 		f.createTerminalBody(t, api.TerminalCreateParams{})))
-
-	rec := f.request(t, http.MethodDelete, "/v1/projects/"+f.projectID, "")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("delete non-empty: got %d, want 409; body %s", rec.Code, rec.Body)
-	}
-	// The refusal reports what remains.
-	if !strings.Contains(rec.Body.String(), created.ID) {
-		t.Errorf("refusal does not name the terminal: %s", rec.Body)
-	}
-
-	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+created.ID, ""); rec.Code != http.StatusNoContent {
-		t.Fatalf("delete terminal: got %d", rec.Code)
-	}
 	if rec := f.request(t, http.MethodDelete, "/v1/projects/"+f.projectID, ""); rec.Code != http.StatusNoContent {
-		t.Errorf("delete emptied project: got %d; body %s", rec.Code, rec.Body)
+		t.Fatalf("delete project: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+created.ID, "")); got.Status != api.TerminalRunning {
+		t.Errorf("terminal after project delete = %+v; want untouched", got)
 	}
 }
 
-// The ATC-256 terminal-create contract: projectId is required, must name a
-// known project, and the project's directory must exist at that moment.
-func TestTerminalCreateProjectContract(t *testing.T) {
-	f := newFixture(t)
-
-	if rec := f.request(t, http.MethodPost, "/v1/terminals", `{}`); rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("missing projectId: got %d, want 422; body %s", rec.Code, rec.Body)
-	}
-	if rec := f.request(t, http.MethodPost, "/v1/terminals", `{"projectId":"proj-zzzzz"}`); rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("unknown project: got %d, want 422; body %s", rec.Code, rec.Body)
-	}
-	// The directory parameter is gone from create.
-	if rec := f.request(t, http.MethodPost, "/v1/terminals",
-		`{"projectId":"`+f.projectID+`","directory":"/elsewhere"}`); rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("directory param: got %d, want 422; body %s", rec.Code, rec.Body)
-	}
-
-	// The project's folder vanishing after project creation refuses the
-	// create, and no terminal row is written.
-	if err := os.RemoveAll(f.projectDir); err != nil {
+func canonicalDir(t *testing.T, dir string) string {
+	t.Helper()
+	canonical, err := paths.CanonicalDir(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{}))
-	if rec.Code != http.StatusConflict {
-		t.Errorf("vanished directory: got %d, want 409; body %s", rec.Code, rec.Body)
-	}
-	if rec := f.request(t, http.MethodGet, "/v1/terminals", ""); !strings.Contains(rec.Body.String(), `"terminals":[]`) {
-		t.Errorf("refused create left a terminal: %s", rec.Body)
-	}
-}
-
-func TestTerminalListProjectFilter(t *testing.T) {
-	f := newFixture(t)
-	other := f.createProject(t, t.TempDir())
-
-	mine := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
-		f.createTerminalBody(t, api.TerminalCreateParams{})))
-	theirs := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
-		f.createTerminalBody(t, api.TerminalCreateParams{ProjectID: other.ID})))
-
-	var list api.TerminalList
-	rec := f.request(t, http.MethodGet, "/v1/terminals?project="+other.ID, "")
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Terminals) != 1 || list.Terminals[0].ID != theirs.ID {
-		t.Errorf("filtered list = %+v, want only %s", list, theirs.ID)
-	}
-	rec = f.request(t, http.MethodGet, "/v1/terminals", "")
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Terminals) != 2 {
-		t.Errorf("unfiltered list = %+v, want both %s and %s", list, mine.ID, theirs.ID)
-	}
+	return canonical
 }
