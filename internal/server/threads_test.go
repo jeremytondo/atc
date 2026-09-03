@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -598,4 +599,67 @@ func decodeThreadList(t *testing.T, rec *httptest.ResponseRecorder) []api.Thread
 	var list api.ThreadList
 	decodeInto(t, rec, &list)
 	return list.Threads
+}
+
+// The turn model at the boundary (ATC-301): latestTurn is absent before
+// any turn, carries an ATC-minted id and never the provider's, and
+// statusDetail rides an error status only; lastError is gone from the
+// schema; a turn change publishes thread.updated.
+func TestThreadTurnOverTheWire(t *testing.T) {
+	f := newFixture(t)
+	terminal := f.createRunningTerminal(t)
+	id := f.observeThread(t, terminal.ID, "sess-1", api.ThreadIdle)
+	sub := f.hub.Subscribe(0, false)
+	t.Cleanup(sub.Close)
+
+	body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String()
+	for _, absent := range []string{`"latestTurn"`, `"lastError"`, `"statusDetail"`} {
+		if strings.Contains(body, absent) {
+			t.Errorf("thread before any turn carries %s: %s", absent, body)
+		}
+	}
+	if rec := get(f.handler, "/openapi.json", true); strings.Contains(rec.Body.String(), "lastError") {
+		t.Error("lastError is still in the schema")
+	}
+
+	observe := func(status api.ThreadStatus, detail string, turn *threads.TurnObservation) {
+		t.Helper()
+		if err := f.threads.ObserveStatus(context.Background(), threads.StatusObservation{
+			IntegrationID: "claude", ProviderID: "sess-1", Status: status, StatusDetail: detail, Turn: turn,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observe(api.ThreadWorking, "", &threads.TurnObservation{ProviderID: "provider-turn-1", State: api.TurnRunning})
+	select {
+	case change := <-sub.C:
+		if change.Type != api.EventThreadUpdated || change.ID != id {
+			t.Errorf("event after a turn change = %+v", change)
+		}
+	case <-time.After(time.Second):
+		t.Error("no thread.updated after a turn change")
+	}
+	rec := f.request(t, http.MethodGet, "/v1/threads/"+id, "")
+	thread := decodeThread(t, rec)
+	if thread.LatestTurn == nil || !strings.HasPrefix(thread.LatestTurn.ID, "turn-") || len(thread.LatestTurn.ID) != len("turn-")+10 ||
+		thread.LatestTurn.State != api.TurnRunning || thread.LatestTurn.CompletedAt != nil {
+		t.Errorf("latest turn = %+v", thread.LatestTurn)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "provider-turn-1") || strings.Contains(body, `"completedAt"`) || strings.Contains(body, `"statusDetail"`) {
+		t.Errorf("wire body = %s", body)
+	}
+
+	observe(api.ThreadError, "session broke", nil)
+	thread = decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
+	if thread.Status != api.ThreadError || thread.StatusDetail != "session broke" || thread.LatestTurn.State != api.TurnFailed || thread.LatestTurn.Error != "session broke" {
+		t.Errorf("faulted = %+v turn %+v", thread, thread.LatestTurn)
+	}
+	observe(api.ThreadIdle, "", nil)
+	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); strings.Contains(body, `"statusDetail"`) || !strings.Contains(body, `"state":"failed"`) {
+		t.Errorf("recovered body = %s", body)
+	}
+	threads := decodeThreadList(t, f.request(t, http.MethodGet, "/v1/threads", ""))
+	if len(threads) != 1 || threads[0].LatestTurn == nil {
+		t.Errorf("list = %+v", threads)
+	}
 }

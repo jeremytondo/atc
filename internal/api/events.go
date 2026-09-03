@@ -58,8 +58,9 @@ type ProjectDeletedEvent struct{ ChangeEvent }
 type ThreadCreatedEvent struct{ ChangeEvent }
 
 // ThreadUpdatedEvent is the thread.updated payload. It fires only on
-// meaningful change (status, terminal linkage, title, archived,
-// metadata); a lastEvidenceAt refresh alone updates silently.
+// meaningful change (status, statusDetail, latestTurn, terminal linkage,
+// title, archived, metadata); a lastEvidenceAt refresh alone updates
+// silently.
 type ThreadUpdatedEvent struct{ ChangeEvent }
 
 // ThreadDeletedEvent is the thread.deleted payload.

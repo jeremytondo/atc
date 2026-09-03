@@ -109,6 +109,9 @@ type Service struct {
 	// other terminal — and a concurrent open of the same thread waits
 	// here instead of racing it.
 	opening map[string]chan struct{}
+	// pending holds each thread's submitted turn until the provider
+	// reports it starting (turns.go).
+	pending map[string]pendingTurn
 
 	// linkers derive deep links per Integration id at read time; set at
 	// composition, before serving, and read without mu.
@@ -159,6 +162,7 @@ func NewService(opts Options) *Service {
 		now:        opts.Now,
 		linkers:    make(map[string]Linker),
 		opening:    make(map[string]chan struct{}),
+		pending:    make(map[string]pendingTurn),
 		view:       make(map[string]*store.ThreadRecord),
 		identities: make(map[identityKey]string),
 		keys:       make(map[string]identityKey),
@@ -176,10 +180,11 @@ func (s *Service) SetLinker(integrationID string, linker Linker) {
 }
 
 // Load rebuilds the view and identity mapping from the database at boot.
-// Live statuses (working, waiting_*) are unverifiable claims about an
-// observation that no longer exists, so they coerce to unknown — persisted
-// immediately, so the database never claims liveness it cannot back. Idle,
-// error, and unknown persist as recorded.
+// Live statuses (working, waiting_*) and running turns are unverifiable
+// claims about an observation that no longer exists, so they coerce to
+// unknown — persisted immediately, so the database never claims liveness
+// it cannot back. Idle, error, unknown, and finished turns persist as
+// recorded.
 func (s *Service) Load(ctx context.Context) error {
 	records, err := s.repository.List(ctx)
 	if err != nil {
@@ -191,10 +196,9 @@ func (s *Service) Load(ctx context.Context) error {
 	}
 	now := s.now()
 	for i := range records {
-		if !isLive(api.ThreadStatus(records[i].Status)) {
+		if !coerceRecord(&records[i]) {
 			continue
 		}
-		records[i].Status = string(api.ThreadUnknown)
 		records[i].UpdatedAt = now
 		if _, err := s.repository.Update(ctx, records[i]); err != nil {
 			return err
@@ -311,10 +315,7 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 		record.ArchivedAt = nil
 		changed = true
 	}
-	if o.Status != "" && record.Status != string(o.Status) {
-		record.Status = string(o.Status)
-		changed = true
-	}
+	changed = s.applyStatus(&record, o.Status, o.StatusDetail, o.Turn, at, true) || changed
 	changed = applyMetadata(&record, o.Metadata) || changed
 	record.LastEvidenceAt = &at
 	if changed {
@@ -343,21 +344,18 @@ func (s *Service) createObserved(ctx context.Context, o SessionObservation, at t
 	if o.AppID != "" && !strings.HasPrefix(o.AppID, o.IntegrationID+"/") {
 		return "", fmt.Errorf("%w: %s under %s", ErrAppForeign, o.AppID, o.IntegrationID)
 	}
-	status := o.Status
-	if status == "" {
-		status = api.ThreadUnknown
-	}
 	terminalID := o.TerminalID
 	record := store.ThreadRecord{
 		IntegrationID:  o.IntegrationID,
 		AppID:          o.AppID,
 		AgentID:        o.AgentID,
 		TerminalID:     &terminalID,
-		Status:         string(status),
+		Status:         string(api.ThreadUnknown),
 		LastEvidenceAt: &at,
 		CreatedAt:      at,
 		UpdatedAt:      at,
 	}
+	s.applyStatus(&record, o.Status, o.StatusDetail, o.Turn, at, true)
 	canonical, err := paths.CanonicalDir(o.InitialDirectory)
 	if o.InitialDirectory == "" || err != nil {
 		// ATC represents work on its own machine: even a terminal-hosted
@@ -447,12 +445,12 @@ func (s *Service) commit(ctx context.Context, record store.ThreadRecord, threadI
 	}
 }
 
-// ObserveStatus applies fresh status evidence to a known conversation.
-// Evidence for an unmapped identity is dropped, and a live status for a
-// thread no terminal holds is ignored — delayed evidence must not revive
-// a conversation nothing displays (the provider layer re-establishes the
-// session first). An evidence-only refresh persists lastEvidenceAt
-// silently: no event, no updatedAt bump.
+// ObserveStatus applies fresh status and turn evidence to a known
+// conversation. Evidence for an unmapped identity is dropped, and a live
+// status or running turn for a thread nothing holds is ignored — delayed
+// evidence must not revive a conversation nothing displays (the provider
+// layer re-establishes the session first). An evidence-only refresh
+// persists lastEvidenceAt silently: no event, no updatedAt bump.
 func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
@@ -479,19 +477,7 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 		return nil
 	}
 
-	changed := false
-	if o.Status != "" && record.Status != string(o.Status) {
-		if isLive(o.Status) && !active {
-			s.logger.Debug("live status for an inactive thread ignored", "thread", threadID, "status", o.Status)
-		} else {
-			record.Status = string(o.Status)
-			changed = true
-		}
-	}
-	if o.LastError != nil && record.LastError != *o.LastError {
-		record.LastError = *o.LastError
-		changed = true
-	}
+	changed := s.applyStatus(&record, o.Status, o.StatusDetail, o.Turn, at, active)
 	changed = applyMetadata(&record, o.Metadata) || changed
 	record.LastEvidenceAt = &at
 	if changed {
@@ -518,8 +504,9 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 
 // Deactivate clears a terminal's active thread: the TUI closed or the
 // provider reported the conversation left without a successor. Idle
-// persists; unverifiable live states coerce to unknown. On a failed
-// persist the active entry stays, so the sweep retries.
+// persists; an unverifiable live status or running turn coerces to
+// unknown. On a failed persist the active entry stays, so the sweep
+// retries.
 func (s *Service) Deactivate(ctx context.Context, terminalID string) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
@@ -538,8 +525,7 @@ func (s *Service) Deactivate(ctx context.Context, terminalID string) {
 		return
 	}
 	coerced := false
-	if isLive(api.ThreadStatus(record.Status)) {
-		record.Status = string(api.ThreadUnknown)
+	if coerceRecord(&record) {
 		record.UpdatedAt = s.now()
 		updated, err := s.repository.Update(ctx, record)
 		if err != nil || !updated {
@@ -563,10 +549,10 @@ func (s *Service) Deactivate(ctx context.Context, terminalID string) {
 	s.hub.Publish(api.EventTerminalUpdated, terminalResource, terminalID)
 }
 
-// coerceInactive coerces a thread's live status to unknown —
-// persist-first, then the view — reporting whether it changed. A failed
-// persist changes nothing (boot-time coercion is the backstop). Caller
-// holds ops.
+// coerceInactive coerces a thread's live status and running turn to
+// unknown — persist-first, then the view — reporting whether it changed.
+// A failed persist changes nothing (boot-time coercion is the backstop).
+// Caller holds ops.
 func (s *Service) coerceInactive(ctx context.Context, threadID string) bool {
 	s.mu.Lock()
 	entry, ok := s.view[threadID]
@@ -575,10 +561,9 @@ func (s *Service) coerceInactive(ctx context.Context, threadID string) bool {
 		record = *entry
 	}
 	s.mu.Unlock()
-	if !ok || !isLive(api.ThreadStatus(record.Status)) {
+	if !ok || !coerceRecord(&record) {
 		return false
 	}
-	record.Status = string(api.ThreadUnknown)
 	record.UpdatedAt = s.now()
 	updated, err := s.repository.Update(ctx, record)
 	if err != nil || !updated {
@@ -610,9 +595,7 @@ func (s *Service) TerminalRemoved(ctx context.Context, terminalID string) {
 		if entry.TerminalID != nil && *entry.TerminalID == terminalID {
 			record := *entry
 			record.TerminalID = nil
-			if isLive(api.ThreadStatus(record.Status)) {
-				record.Status = string(api.ThreadUnknown)
-			}
+			coerceRecord(&record)
 			record.UpdatedAt = now
 			affected = append(affected, record)
 		}
@@ -688,8 +671,7 @@ func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (s
 			AgentID:          o.AgentID,
 			InitialDirectory: canonical,
 			Title:            o.Title,
-			Status:           string(status),
-			LastError:        o.LastError,
+			Status:           string(api.ThreadUnknown),
 			LastEvidenceAt:   &at,
 			CreatedAt:        at,
 			UpdatedAt:        at,
@@ -697,6 +679,7 @@ func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (s
 		if record.ProjectID, err = s.classify(ctx, canonical); err != nil {
 			return "", err
 		}
+		s.applyStatus(&record, status, o.StatusDetail, o.Turn, at, true)
 		applyMetadata(&record, o.Metadata)
 		if err := s.insert(ctx, &record, key); err != nil {
 			return "", err
@@ -718,8 +701,7 @@ func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (s
 		}
 	}
 	set(&record.AgentID, o.AgentID)
-	set(&record.Status, string(status))
-	set(&record.LastError, o.LastError)
+	changed = s.applyStatus(&record, status, o.StatusDetail, o.Turn, at, true) || changed
 	if !record.TitleUserSet && o.Title != "" {
 		set(&record.Title, o.Title)
 	}
@@ -825,11 +807,7 @@ func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, prov
 	if !known {
 		return nil
 	}
-	changed := false
-	if isLive(api.ThreadStatus(record.Status)) {
-		record.Status = string(api.ThreadUnknown)
-		changed = true
-	}
+	changed := coerceRecord(&record)
 	if !record.Archived {
 		at := s.now()
 		record.Archived = true
@@ -1170,6 +1148,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if !deleted {
 		return ErrNotFound
 	}
+	delete(s.pending, id)
 	s.mu.Lock()
 	delete(s.view, id)
 	s.forgetIdentity(id)
@@ -1413,14 +1392,6 @@ func applyMetadata(record *store.ThreadRecord, metadata Metadata) bool {
 	return changed
 }
 
-func isLive(status api.ThreadStatus) bool {
-	switch status {
-	case api.ThreadWorking, api.ThreadWaitingForInput, api.ThreadWaitingForPermission:
-		return true
-	}
-	return false
-}
-
 // thread converts a record to its wire shape, deriving links from the
 // producing Integration's live state. Callers must not hold mu: the
 // linker is the Integration's, and it takes locks of its own.
@@ -1449,7 +1420,7 @@ func threadFrom(record store.ThreadRecord) api.Thread {
 		Cwd:              record.Cwd,
 		PermissionMode:   record.PermissionMode,
 		Status:           api.ThreadStatus(record.Status),
-		LastError:        record.LastError,
+		StatusDetail:     record.StatusDetail,
 		Archived:         record.Archived,
 		CreatedAt:        record.CreatedAt,
 		UpdatedAt:        record.UpdatedAt,
@@ -1464,6 +1435,13 @@ func threadFrom(record store.ThreadRecord) api.Thread {
 	if record.ArchivedAt != nil {
 		at := *record.ArchivedAt
 		thread.ArchivedAt = &at
+	}
+	if turn := record.Turn; turn != nil {
+		thread.LatestTurn = &api.ThreadTurn{ID: turn.ID, State: api.TurnState(turn.State), StartedAt: turn.StartedAt, Error: turn.Error}
+		if turn.CompletedAt != nil {
+			at := *turn.CompletedAt
+			thread.LatestTurn.CompletedAt = &at
+		}
 	}
 	return thread
 }

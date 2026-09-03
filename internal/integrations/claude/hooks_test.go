@@ -271,8 +271,22 @@ func TestSessionLifecycleObservations(t *testing.T) {
 	if status.Status != api.ThreadWorking {
 		t.Errorf("prompt status = %s", status.Status)
 	}
+	if status.Turn == nil || status.Turn.State != api.TurnRunning {
+		t.Errorf("prompt turn = %+v; want running", status.Turn)
+	}
 	if status.Metadata.Title == "" || len(status.Metadata.Title) > 50 {
 		t.Errorf("title fallback = %q", status.Metadata.Title)
+	}
+	// The idle nudge carries no turn evidence: an interrupted turn ends
+	// unknown in the threads domain, never guessed at here.
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}`)
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadIdle || got.Turn != nil {
+		t.Errorf("idle nudge = %+v; want idle with no turn claim", got)
+	}
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"again"}`)
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"StopFailure","error":"server_error"}`)
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadIdle || got.Turn == nil || got.Turn.State != api.TurnFailed || got.Turn.Error != "server_error" {
+		t.Errorf("stop failure = %+v; want idle with a failed turn", got)
 	}
 
 	// /clear: SessionEnd(reason=clear) does not deactivate — the end

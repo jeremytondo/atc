@@ -512,9 +512,12 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 			observation.AgentID = *thread.Session.ProviderName
 		}
 		if thread.Session.LastError != nil {
-			observation.LastError = *thread.Session.LastError
+			// The session's error text explains a faulted session and a
+			// failed turn alike; the domain records it where it applies.
+			observation.StatusDetail = *thread.Session.LastError
 		}
 	}
+	observation.Turn = turnObservation(thread.LatestTurn, observation.StatusDetail)
 	_, err := o.threads.ObserveExternal(ctx, observation)
 	if errors.Is(err, threads.ErrNoLocalDirectory) {
 		o.skipped[thread.ID] = fmt.Sprintf("workspace %s: %v", project.WorkspaceRoot, err)

@@ -279,8 +279,19 @@ func printThread(out io.Writer, thread api.Thread) {
 	if thread.PermissionMode != "" {
 		_, _ = fmt.Fprintf(w, "permission mode\t%s\n", thread.PermissionMode)
 	}
-	if thread.LastError != "" {
-		_, _ = fmt.Fprintf(w, "last error\t%s\n", thread.LastError)
+	if thread.StatusDetail != "" {
+		_, _ = fmt.Fprintf(w, "status detail\t%s\n", thread.StatusDetail)
+	}
+	if turn := thread.LatestTurn; turn != nil {
+		_, _ = fmt.Fprintf(w, "latest turn\t%s\n", turn.ID)
+		_, _ = fmt.Fprintf(w, "turn state\t%s\n", turn.State)
+		_, _ = fmt.Fprintf(w, "turn started\t%s\n", turn.StartedAt.Format("2006-01-02 15:04:05 MST"))
+		if turn.CompletedAt != nil {
+			_, _ = fmt.Fprintf(w, "turn completed\t%s\n", turn.CompletedAt.Format("2006-01-02 15:04:05 MST"))
+		}
+		if turn.Error != "" {
+			_, _ = fmt.Fprintf(w, "turn error\t%s\n", turn.Error)
+		}
 	}
 	if thread.LastEvidenceAt != nil {
 		_, _ = fmt.Fprintf(w, "last evidence\t%s\n", thread.LastEvidenceAt.Format("2006-01-02 15:04:05 MST"))

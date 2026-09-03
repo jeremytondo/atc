@@ -402,10 +402,11 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 		t.Error("evidence-only refresh bumped UpdatedAt")
 	}
 
-	// A failed turn: idle with the detail in lastError.
+	// A failed turn: the thread is idle, the outcome on latestTurn, and
+	// no statusDetail — a failed turn is not a faulted session.
 	detail := "provider rejected the request"
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		IntegrationID: "claude", ProviderID: "sess-1", Status: api.ThreadIdle, LastError: &detail,
+		IntegrationID: "claude", ProviderID: "sess-1", Status: api.ThreadIdle, Turn: &TurnObservation{State: api.TurnFailed, Error: detail},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -413,8 +414,8 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if thread.Status != api.ThreadIdle || thread.LastError != detail {
-		t.Errorf("failed turn: status=%s lastError=%q; want idle with detail", thread.Status, thread.LastError)
+	if thread.Status != api.ThreadIdle || thread.StatusDetail != "" || thread.LatestTurn == nil || thread.LatestTurn.State != api.TurnFailed || thread.LatestTurn.Error != detail {
+		t.Errorf("failed turn: status=%s detail=%q turn=%+v; want idle with the detail on the turn", thread.Status, thread.StatusDetail, thread.LatestTurn)
 	}
 
 	// Evidence for an unmapped conversation is dropped, never minted.
@@ -1324,7 +1325,7 @@ func TestObserveExternalMintsAndUpdates(t *testing.T) {
 	}
 	id, err := f.service.ObserveExternal(ctx, ExternalObservation{
 		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"),
-		Status: api.ThreadWorking, AgentID: "codex", Title: "Fix it", LastError: "",
+		Status: api.ThreadWorking, AgentID: "codex", Title: "Fix it",
 		Metadata: Metadata{Model: "gpt-5", Cwd: "/proj-aaaaa"},
 	})
 	if err != nil {
@@ -1364,13 +1365,13 @@ func TestObserveExternalMintsAndUpdates(t *testing.T) {
 	// an identical observation refreshes evidence silently.
 	again := ExternalObservation{
 		IntegrationID: "t3code", ProviderID: "t1", Status: api.ThreadError, AgentID: "", Title: "T3 renamed",
-		LastError: "boom", Metadata: Metadata{Model: "gpt-6"},
+		StatusDetail: "boom", Metadata: Metadata{Model: "gpt-6"},
 	}
 	if got, err := f.service.ObserveExternal(ctx, again); err != nil || got != id {
 		t.Fatalf("second observation = %q, %v; want %q", got, err, id)
 	}
 	thread, _ = f.service.Get(id)
-	if thread.AgentID != "" || thread.Title != "mine" || thread.Status != api.ThreadError || thread.LastError != "boom" || thread.Model != "gpt-6" || thread.Cwd != "/proj-aaaaa" {
+	if thread.AgentID != "" || thread.Title != "mine" || thread.Status != api.ThreadError || thread.StatusDetail != "boom" || thread.Model != "gpt-6" || thread.Cwd != "/proj-aaaaa" {
 		t.Errorf("updated = %+v", thread)
 	}
 	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {

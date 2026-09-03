@@ -1,6 +1,11 @@
 package claude
 
-import "github.com/jeremytondo/atc/internal/api"
+import (
+	"encoding/json"
+
+	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/threads"
+)
 
 // tracker is one session's stateful reducer: root status, agent-owned
 // background work (subagents, backgrounded shells), and the aggregation
@@ -17,7 +22,8 @@ import "github.com/jeremytondo/atc/internal/api"
 //
 // Known limitation, accepted (ATC-255): Claude fires no hook on user
 // interrupt, so working can overstay by up to roughly a minute until the
-// next prompt or the idle notification.
+// next prompt or the idle notification — and an interrupted turn ends
+// unknown when that arrives, since no hook says it was interrupted.
 type tracker struct {
 	root       api.ThreadStatus
 	background map[string]api.ThreadStatus
@@ -36,32 +42,16 @@ func seededTracker() *tracker {
 	return &tracker{root: api.ThreadUnknown, background: map[string]api.ThreadStatus{}}
 }
 
-// rank orders statuses for aggregation: a blocked prompt outranks work,
-// work outranks ignorance, and idle requires every member known-inactive.
-// A specific question outranks a generic permission prompt, so a pending
-// question is never papered over by later permission evidence.
-func rank(status api.ThreadStatus) int {
-	switch status {
-	case api.ThreadWaitingForInput:
-		return 4
-	case api.ThreadWaitingForPermission:
-		return 3
-	case api.ThreadWorking:
-		return 2
-	case api.ThreadUnknown:
-		return 1
-	}
-	return 0 // idle
-}
-
+// aggregate hands the root and every background member to the threads
+// domain's one ranking: a blocked prompt outranks work, work outranks
+// ignorance, and idle requires every member known-inactive.
 func (t *tracker) aggregate() api.ThreadStatus {
-	status := t.root
+	members := make([]api.ThreadStatus, 0, 1+len(t.background))
+	members = append(members, t.root)
 	for _, member := range t.background {
-		if rank(member) > rank(status) {
-			status = member
-		}
+		members = append(members, member)
 	}
-	return status
+	return threads.Rank(members...)
 }
 
 // waiting reports a status that blocks on the user.
@@ -71,9 +61,10 @@ func waiting(status api.ThreadStatus) bool {
 
 // apply folds one hook payload in and reports the aggregate, whether the
 // payload carried a signal worth forwarding (unrecognized events without
-// a snapshot are never guessed at), and a lastError change when the
-// payload proves one.
-func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, lastError *string) {
+// a snapshot are never guessed at), and the root turn evidence the
+// payload carries: a prompt starts a turn, Stop completes it, StopFailure
+// fails it with whatever detail the payload supplies.
+func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, turn *threads.TurnObservation) {
 	// Level snapshots first — authoritative wherever they appear. A
 	// retained id keeps its waiting flavor: the coarse snapshot status
 	// cannot see prompts.
@@ -116,11 +107,9 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, lastEr
 	case "UserPromptSubmit":
 		set(api.ThreadWorking)
 		if root {
-			// A new turn supersedes the previous turn's failure detail.
-			cleared := ""
-			lastError = &cleared
+			turn = &threads.TurnObservation{State: api.TurnRunning}
 		}
-		return t.aggregate(), true, lastError
+		return t.aggregate(), true, turn
 	case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied":
 		// The failure and denial events also resolve a descendant's
 		// pending prompt — the turn moved on.
@@ -129,14 +118,13 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, lastEr
 	case "Stop":
 		if root {
 			t.root = api.ThreadIdle
-			return t.aggregate(), true, nil
+			return t.aggregate(), true, &threads.TurnObservation{State: api.TurnCompleted}
 		}
 		return t.aggregate(), signal, nil
 	case "StopFailure":
 		if root {
 			t.root = api.ThreadIdle
-			failed := "the last turn failed"
-			return t.aggregate(), true, &failed
+			return t.aggregate(), true, &threads.TurnObservation{State: api.TurnFailed, Error: failureDetail(p)}
 		}
 		return t.aggregate(), signal, nil
 	case "SubagentStart":
@@ -187,4 +175,27 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, lastEr
 		return t.aggregate(), signal, nil
 	}
 	return t.aggregate(), signal, nil
+}
+
+// failureDetail is what a StopFailure payload says went wrong: its
+// error_details when present, else its error kind — read leniently,
+// since the shape is Claude's to change; empty when it says nothing.
+func failureDetail(p payload) string {
+	if detail := stringOf(p.ErrorDetails); detail != "" {
+		return detail
+	}
+	return stringOf(p.Error)
+}
+
+// stringOf reads a JSON string, and renders any other non-null value as
+// its JSON text.
+func stringOf(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	return string(raw)
 }

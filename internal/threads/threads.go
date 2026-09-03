@@ -10,8 +10,10 @@
 // conversations; the private identity mapping (integration, provider
 // conversation id) → thread never leaves the server.
 //
-// The package owns policy: capture and reattach, the six-status model and
-// its inactive coercion, archive/delete with their active refusals (and
+// The package owns policy: capture and reattach, the six-status model
+// (one ranking, Rank, that every Integration feeds), the latest-turn
+// model with its minting and binding (turns.go), the inactive coercion
+// of both, archive/delete with their active refusals (and
 // the unarchive a reattach implies — active means unarchived), and the
 // activeThreadId projection onto terminals. A thread is held either by a
 // terminal (its App has the conversation open) or by an Integration
@@ -90,8 +92,13 @@ type SessionObservation struct {
 	// At is when the evidence arrived; zero means now.
 	At time.Time
 	// Status is the initial status evidence riding on the transition;
-	// empty means unknown.
-	Status   api.ThreadStatus
+	// empty means unknown. StatusDetail is the provider's fault text,
+	// recorded only with an error status.
+	Status       api.ThreadStatus
+	StatusDetail string
+	// Turn is the transition's turn evidence, if any (a turn starting is
+	// the first thing some providers report).
+	Turn     *TurnObservation
 	Metadata Metadata
 }
 
@@ -103,13 +110,16 @@ type StatusObservation struct {
 	IntegrationID string
 	ProviderID    string
 	// At is when the evidence arrived; zero means now.
-	At     time.Time
-	Status api.ThreadStatus
-	// LastError sets the thread's lastError detail: nil leaves it alone,
-	// a pointer to "" clears it, anything else records it (a failed turn
-	// leaves the thread idle with the detail here).
-	LastError *string
-	Metadata  Metadata
+	At time.Time
+	// Status is the status claim; empty claims nothing (an evidence-only
+	// refresh, or turn evidence alone). StatusDetail is the provider's
+	// fault text, recorded only with an error status.
+	Status       api.ThreadStatus
+	StatusDetail string
+	// Turn is fresh evidence about the latest turn; nil says nothing
+	// about it.
+	Turn     *TurnObservation
+	Metadata Metadata
 }
 
 // ExternalObservation reports what an Integration currently knows about a
@@ -139,9 +149,13 @@ type ExternalObservation struct {
 	// Title is the program's title; it tracks the program unless the user
 	// set one in ATC.
 	Title string
-	// LastError is applied as-is; empty clears.
-	LastError string
-	Metadata  Metadata
+	// StatusDetail is the program's fault text, applied as-is with an
+	// error status and dropped with any other.
+	StatusDetail string
+	// Turn is the program's latest turn as it reports it; nil when it
+	// reports none.
+	Turn     *TurnObservation
+	Metadata Metadata
 }
 
 // ResumeRequest asks the application coordinator to launch a terminal

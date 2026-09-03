@@ -31,6 +31,7 @@ func TestThreadsRoundTrip(t *testing.T) {
 			Cwd: "/home/x", PermissionMode: "default",
 			Status: "idle", LastEvidenceAt: &evidence,
 			CreatedAt: at(1), UpdatedAt: at(3),
+			Turn: &TurnRecord{ID: "turn-aaaaaaaaaa", State: "running", StartedAt: at(2)},
 		},
 		{
 			ID: "thrd-bbbbb", IntegrationID: "codex", AgentID: "codex", ProjectID: "proj-aaaaa",
@@ -82,8 +83,10 @@ func TestThreadsRoundTrip(t *testing.T) {
 	updated.TerminalID = nil
 	updated.Title = "renamed"
 	updated.TitleUserSet = true
-	updated.Status = "unknown"
-	updated.LastError = "turn failed"
+	updated.Status = "error"
+	updated.StatusDetail = "session faulted"
+	completed := at(5)
+	updated.Turn = &TurnRecord{ID: "turn-bbbbbbbbbb", ProviderID: "t3-turn-1", State: "failed", StartedAt: at(4), CompletedAt: &completed, Error: "boom"}
 	updated.Archived = true
 	updated.ArchivedAt = &archived
 	updated.UpdatedAt = at(6)

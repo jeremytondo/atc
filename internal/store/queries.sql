@@ -65,9 +65,10 @@ DELETE FROM projects WHERE id = ?;
 
 -- name: InsertThread :execrows
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
-    title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived,
-    archived_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
+    archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
+    turn_completed_at, turn_error)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreads :many
@@ -78,8 +79,9 @@ SELECT * FROM threads ORDER BY created_at, id;
 -- statement instead of a query per verb.
 -- name: UpdateThread :execrows
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
-    cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
-    archived = ?, archived_at = ?, updated_at = ?
+    cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
+    archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?
 WHERE id = ?;
 
 -- Backfill assigns only threads still unassigned, so a project change
