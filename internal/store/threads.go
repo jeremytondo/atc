@@ -48,12 +48,30 @@ type ThreadRecord struct {
 	Cwd            string
 	PermissionMode string
 	Status         string
-	LastError      string
+	// StatusDetail is the provider's explanation of a faulted session;
+	// empty (stored NULL) unless Status is error.
+	StatusDetail   string
 	LastEvidenceAt *time.Time
 	Archived       bool
 	ArchivedAt     *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// Turn is the latest turn ATC observed or created on the thread; nil
+	// until there is one.
+	Turn *TurnRecord
+}
+
+// TurnRecord is the latest turn's persisted shape. ID is the ATC-minted
+// public id; ProviderID is the provider's own turn id, private to the
+// server, empty when the provider reports none or the turn is not yet
+// bound to one.
+type TurnRecord struct {
+	ID          string
+	ProviderID  string
+	State       string
+	StartedAt   time.Time
+	CompletedAt *time.Time
+	Error       string
 }
 
 // ThreadIdentity is one row of the private identity mapping:
@@ -81,6 +99,7 @@ func (s *Store) Threads() *Threads {
 }
 
 func insertThreadParams(record ThreadRecord) gen.InsertThreadParams {
+	turn := turnColumnsOf(record.Turn)
 	return gen.InsertThreadParams{
 		ID:               record.ID,
 		IntegrationID:    record.IntegrationID,
@@ -96,12 +115,37 @@ func insertThreadParams(record ThreadRecord) gen.InsertThreadParams {
 		Cwd:              nullString(record.Cwd),
 		PermissionMode:   nullString(record.PermissionMode),
 		Status:           record.Status,
-		LastError:        nullString(record.LastError),
+		StatusDetail:     nullString(record.StatusDetail),
 		LastEvidenceAt:   nullTime(record.LastEvidenceAt),
 		Archived:         boolInt(record.Archived),
 		ArchivedAt:       nullTime(record.ArchivedAt),
 		CreatedAt:        formatTime(record.CreatedAt),
 		UpdatedAt:        formatTime(record.UpdatedAt),
+		TurnID:           turn.id,
+		TurnProviderID:   turn.providerID,
+		TurnState:        turn.state,
+		TurnStartedAt:    turn.startedAt,
+		TurnCompletedAt:  turn.completedAt,
+		TurnError:        turn.err,
+	}
+}
+
+// turnColumns is a turn's column values, all NULL when there is none.
+type turnColumns struct {
+	id, providerID, state, startedAt, completedAt, err sql.NullString
+}
+
+func turnColumnsOf(turn *TurnRecord) turnColumns {
+	if turn == nil {
+		return turnColumns{}
+	}
+	return turnColumns{
+		id:          nullString(turn.ID),
+		providerID:  nullString(turn.ProviderID),
+		state:       nullString(turn.State),
+		startedAt:   nullString(formatTime(turn.StartedAt)),
+		completedAt: nullTime(turn.CompletedAt),
+		err:         nullString(turn.Error),
 	}
 }
 
@@ -143,23 +187,30 @@ func (t *Threads) InsertObserved(ctx context.Context, record ThreadRecord, ident
 // record. A terminal or project deleted since the record was read
 // surfaces as ErrForeignKeyViolation.
 func (t *Threads) Update(ctx context.Context, record ThreadRecord) (bool, error) {
+	turn := turnColumnsOf(record.Turn)
 	n, err := t.writes.UpdateThread(ctx, gen.UpdateThreadParams{
-		AgentID:        nullString(record.AgentID),
-		ProjectID:      nullString(record.ProjectID),
-		TerminalID:     nullStringPtr(record.TerminalID),
-		Title:          nullString(record.Title),
-		TitleUserSet:   boolInt(record.TitleUserSet),
-		Model:          nullString(record.Model),
-		Effort:         nullString(record.Effort),
-		Cwd:            nullString(record.Cwd),
-		PermissionMode: nullString(record.PermissionMode),
-		Status:         record.Status,
-		LastError:      nullString(record.LastError),
-		LastEvidenceAt: nullTime(record.LastEvidenceAt),
-		Archived:       boolInt(record.Archived),
-		ArchivedAt:     nullTime(record.ArchivedAt),
-		UpdatedAt:      formatTime(record.UpdatedAt),
-		ID:             record.ID,
+		AgentID:         nullString(record.AgentID),
+		ProjectID:       nullString(record.ProjectID),
+		TerminalID:      nullStringPtr(record.TerminalID),
+		Title:           nullString(record.Title),
+		TitleUserSet:    boolInt(record.TitleUserSet),
+		Model:           nullString(record.Model),
+		Effort:          nullString(record.Effort),
+		Cwd:             nullString(record.Cwd),
+		PermissionMode:  nullString(record.PermissionMode),
+		Status:          record.Status,
+		StatusDetail:    nullString(record.StatusDetail),
+		LastEvidenceAt:  nullTime(record.LastEvidenceAt),
+		Archived:        boolInt(record.Archived),
+		ArchivedAt:      nullTime(record.ArchivedAt),
+		UpdatedAt:       formatTime(record.UpdatedAt),
+		TurnID:          turn.id,
+		TurnProviderID:  turn.providerID,
+		TurnState:       turn.state,
+		TurnStartedAt:   turn.startedAt,
+		TurnCompletedAt: turn.completedAt,
+		TurnError:       turn.err,
+		ID:              record.ID,
 	})
 	return n > 0, foreignKeyError(err)
 }
@@ -231,7 +282,7 @@ func threadFrom(row gen.Thread) (ThreadRecord, error) {
 		Cwd:              row.Cwd.String,
 		PermissionMode:   row.PermissionMode.String,
 		Status:           row.Status,
-		LastError:        row.LastError.String,
+		StatusDetail:     row.StatusDetail.String,
 		Archived:         row.Archived != 0,
 	}
 	var err error
@@ -246,6 +297,21 @@ func threadFrom(row gen.Thread) (ThreadRecord, error) {
 	}
 	if record.ArchivedAt, err = parseNullTime(row.ArchivedAt); err != nil {
 		return ThreadRecord{}, fmt.Errorf("thread %s archived_at: %w", row.ID, err)
+	}
+	if row.TurnID.Valid {
+		turn := &TurnRecord{
+			ID:         row.TurnID.String,
+			ProviderID: row.TurnProviderID.String,
+			State:      row.TurnState.String,
+			Error:      row.TurnError.String,
+		}
+		if turn.StartedAt, err = parseTime(row.TurnStartedAt.String); err != nil {
+			return ThreadRecord{}, fmt.Errorf("thread %s turn_started_at: %w", row.ID, err)
+		}
+		if turn.CompletedAt, err = parseNullTime(row.TurnCompletedAt); err != nil {
+			return ThreadRecord{}, fmt.Errorf("thread %s turn_completed_at: %w", row.ID, err)
+		}
+		record.Turn = turn
 	}
 	return record, nil
 }

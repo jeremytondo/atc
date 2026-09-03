@@ -196,9 +196,10 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 
 const insertThread = `-- name: InsertThread :execrows
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
-    title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived,
-    archived_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
+    archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
+    turn_completed_at, turn_error)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
@@ -217,12 +218,18 @@ type InsertThreadParams struct {
 	Cwd              sql.NullString
 	PermissionMode   sql.NullString
 	Status           string
-	LastError        sql.NullString
+	StatusDetail     sql.NullString
 	LastEvidenceAt   sql.NullString
 	Archived         int64
 	ArchivedAt       sql.NullString
 	CreatedAt        string
 	UpdatedAt        string
+	TurnID           sql.NullString
+	TurnProviderID   sql.NullString
+	TurnState        sql.NullString
+	TurnStartedAt    sql.NullString
+	TurnCompletedAt  sql.NullString
+	TurnError        sql.NullString
 }
 
 func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int64, error) {
@@ -241,12 +248,18 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 		arg.Cwd,
 		arg.PermissionMode,
 		arg.Status,
-		arg.LastError,
+		arg.StatusDetail,
 		arg.LastEvidenceAt,
 		arg.Archived,
 		arg.ArchivedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.TurnID,
+		arg.TurnProviderID,
+		arg.TurnState,
+		arg.TurnStartedAt,
+		arg.TurnCompletedAt,
+		arg.TurnError,
 	)
 	if err != nil {
 		return 0, err
@@ -408,7 +421,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 }
 
 const listThreads = `-- name: ListThreads :many
-SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at, created_at, updated_at FROM threads ORDER BY created_at, id
+SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error FROM threads ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
@@ -435,12 +448,18 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 			&i.Cwd,
 			&i.PermissionMode,
 			&i.Status,
-			&i.LastError,
 			&i.LastEvidenceAt,
 			&i.Archived,
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.StatusDetail,
+			&i.TurnID,
+			&i.TurnProviderID,
+			&i.TurnState,
+			&i.TurnStartedAt,
+			&i.TurnCompletedAt,
+			&i.TurnError,
 		); err != nil {
 			return nil, err
 		}
@@ -589,28 +608,35 @@ func (q *Queries) UpdateTerminal(ctx context.Context, arg UpdateTerminalParams) 
 
 const updateThread = `-- name: UpdateThread :execrows
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
-    cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
-    archived = ?, archived_at = ?, updated_at = ?
+    cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
+    archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?
 WHERE id = ?
 `
 
 type UpdateThreadParams struct {
-	AgentID        sql.NullString
-	ProjectID      sql.NullString
-	TerminalID     sql.NullString
-	Title          sql.NullString
-	TitleUserSet   int64
-	Model          sql.NullString
-	Effort         sql.NullString
-	Cwd            sql.NullString
-	PermissionMode sql.NullString
-	Status         string
-	LastError      sql.NullString
-	LastEvidenceAt sql.NullString
-	Archived       int64
-	ArchivedAt     sql.NullString
-	UpdatedAt      string
-	ID             string
+	AgentID         sql.NullString
+	ProjectID       sql.NullString
+	TerminalID      sql.NullString
+	Title           sql.NullString
+	TitleUserSet    int64
+	Model           sql.NullString
+	Effort          sql.NullString
+	Cwd             sql.NullString
+	PermissionMode  sql.NullString
+	Status          string
+	StatusDetail    sql.NullString
+	LastEvidenceAt  sql.NullString
+	Archived        int64
+	ArchivedAt      sql.NullString
+	UpdatedAt       string
+	TurnID          sql.NullString
+	TurnProviderID  sql.NullString
+	TurnState       sql.NullString
+	TurnStartedAt   sql.NullString
+	TurnCompletedAt sql.NullString
+	TurnError       sql.NullString
+	ID              string
 }
 
 // One broad update: the domain service owns the view and serializes
@@ -628,11 +654,17 @@ func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int
 		arg.Cwd,
 		arg.PermissionMode,
 		arg.Status,
-		arg.LastError,
+		arg.StatusDetail,
 		arg.LastEvidenceAt,
 		arg.Archived,
 		arg.ArchivedAt,
 		arg.UpdatedAt,
+		arg.TurnID,
+		arg.TurnProviderID,
+		arg.TurnState,
+		arg.TurnStartedAt,
+		arg.TurnCompletedAt,
+		arg.TurnError,
 		arg.ID,
 	)
 	if err != nil {

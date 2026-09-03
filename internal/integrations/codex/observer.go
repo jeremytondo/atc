@@ -483,6 +483,22 @@ func (o *Observer) handleAnnouncement(n notification) {
 // never reaches here — the read loop handles it at receipt).
 func (o *Observer) handleNotification(ctx context.Context, n notification) {
 	switch n.method {
+	case "turn/started", "turn/completed":
+		var p struct {
+			ThreadID string   `json:"threadId"`
+			Turn     wireTurn `json:"turn"`
+		}
+		if err := json.Unmarshal(n.params, &p); err != nil || p.ThreadID == "" || p.Turn.ID == "" {
+			return
+		}
+		e := evidence{kind: evidenceTurn, turn: turnFrom(p.Turn), seq: n.seq}
+		if n.method == "turn/started" {
+			// A turn starting is foreground work; a turn ending says
+			// nothing about the thread's rest (background work may
+			// continue), so only the status stream claims idle.
+			e.status = api.ThreadWorking
+		}
+		o.applyEvidence(ctx, p.ThreadID, e)
 	case "thread/status/changed":
 		var p struct {
 			ThreadID string          `json:"threadId"`
@@ -514,11 +530,13 @@ func sourceKind(raw json.RawMessage) string {
 	return ""
 }
 
-// evidence is one status fact about a Codex thread.
+// evidence is one status or turn fact about a Codex thread.
 type evidence struct {
 	kind   evidenceKind
 	status api.ThreadStatus
-	seq    uint64
+	// turn rides evidenceTurn.
+	turn threads.TurnObservation
+	seq  uint64
 	// conn is the connection a read came over; a read that outlived its
 	// connection's teardown is stale. Notifications carry none: their
 	// dispatcher is joined before teardown runs.
@@ -536,7 +554,51 @@ const (
 	evidenceClosed
 	// evidenceNotLoaded is a reconcile finding the thread not loaded.
 	evidenceNotLoaded
+	// evidenceTurn is turn/started or turn/completed: the thread's latest
+	// turn, by Codex's own id, with a working claim on the start.
+	evidenceTurn
 )
+
+// wireTurn is the slice of a Turn ATC reads from turn/started and
+// turn/completed; timestamps are unix seconds.
+type wireTurn struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	StartedAt   *int64 `json:"startedAt"`
+	CompletedAt *int64 `json:"completedAt"`
+	Error       *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// turnFrom maps a Codex turn to the thread vocabulary: inProgress is
+// running; completed and interrupted map directly; failed carries the
+// error message; anything unrecognized is unknown.
+func turnFrom(turn wireTurn) threads.TurnObservation {
+	o := threads.TurnObservation{ProviderID: turn.ID}
+	if turn.StartedAt != nil {
+		o.StartedAt = time.Unix(*turn.StartedAt, 0).UTC()
+	}
+	if turn.CompletedAt != nil {
+		o.CompletedAt = time.Unix(*turn.CompletedAt, 0).UTC()
+	}
+	switch turn.Status {
+	case "inProgress":
+		o.State = api.TurnRunning
+	case "completed":
+		o.State = api.TurnCompleted
+	case "interrupted":
+		o.State = api.TurnInterrupted
+	case "failed":
+		o.State = api.TurnFailed
+		if turn.Error != nil {
+			o.Error = turn.Error.Message
+		}
+	default:
+		o.State = api.TurnUnknown
+	}
+	return o
+}
 
 // evidenceFrom maps the wire status shape to the thread vocabulary:
 //
@@ -560,21 +622,17 @@ func evidenceFrom(raw json.RawMessage, seq uint64) evidence {
 	case "idle":
 		return evidence{kind: evidenceStatus, status: api.ThreadIdle, seq: seq}
 	case "active":
-		// The flags are a set; should both ever appear, a question to the
-		// user outranks a permission prompt (the threads domain's own
-		// ranking for Claude).
-		mapped := api.ThreadWorking
+		// The flags are a set; the threads domain ranks them.
+		statuses := []api.ThreadStatus{api.ThreadWorking}
 		for _, flag := range status.ActiveFlags {
 			switch flag {
 			case "waitingOnUserInput":
-				mapped = api.ThreadWaitingForInput
+				statuses = append(statuses, api.ThreadWaitingForInput)
 			case "waitingOnApproval":
-				if mapped != api.ThreadWaitingForInput {
-					mapped = api.ThreadWaitingForPermission
-				}
+				statuses = append(statuses, api.ThreadWaitingForPermission)
 			}
 		}
-		return evidence{kind: evidenceStatus, status: mapped, seq: seq}
+		return evidence{kind: evidenceStatus, status: threads.Rank(statuses...), seq: seq}
 	case "systemError":
 		return evidence{kind: evidenceStatus, status: api.ThreadError, seq: seq}
 	case "notLoaded":
@@ -587,9 +645,10 @@ func evidenceFrom(raw json.RawMessage, seq uint64) evidence {
 // Only a thread paired with a live terminal gets through; everything
 // else — other clients' threads, threads whose terminal has left — is
 // dropped entirely, no status, metadata, or last-evidence update. A
-// fresh pairing mints its thread at its first live status; a resumed one
-// establishes on any status; an established one forwards. Session end
-// (closed, or not loaded on reconcile) deactivates the terminal.
+// fresh pairing mints its thread at its first live status or turn (a
+// turn is a prompt); a resumed one establishes on any evidence; an
+// established one forwards. Session end (closed, or not loaded on
+// reconcile) deactivates the terminal.
 func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidence) {
 	o.handleMu.Lock()
 	defer o.handleMu.Unlock()
@@ -638,7 +697,11 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 		return
 	}
 
-	if !p.established && !p.resumed && !isLive(e.status) && !p.promptSeen {
+	var turn *threads.TurnObservation
+	if e.kind == evidenceTurn {
+		turn = &e.turn
+	}
+	if !p.established && !p.resumed && !isLive(e.status) && turn == nil && !p.promptSeen {
 		// Held, not yet minted: only the first prompt mints.
 		return
 	}
@@ -659,7 +722,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 		}
 		if _, err := o.threads.ObserveSession(ctx, threads.SessionObservation{
 			IntegrationID: ID, AppID: AppID, AgentID: AgentID, ProviderID: threadID, TerminalID: p.terminalID, InitialDirectory: origin,
-			At: o.now(), Status: e.status, Metadata: metadata,
+			At: o.now(), Status: e.status, Turn: turn, Metadata: metadata,
 		}); err != nil {
 			// A transient failure leaves the pairing unestablished; the
 			// next evidence retries rather than silencing the thread.
@@ -667,14 +730,16 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 			return
 		}
 	} else if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
-		IntegrationID: ID, ProviderID: threadID, At: o.now(), Status: e.status, Metadata: metadata,
+		IntegrationID: ID, ProviderID: threadID, At: o.now(), Status: e.status, Turn: turn, Metadata: metadata,
 	}); err != nil {
 		o.logger.Warn("recording codex status observation", "error", err)
 		return
 	}
 	o.mu.Lock()
 	p.established = true
-	p.last = e.status
+	if e.status != "" {
+		p.last = e.status
+	}
 	p.titled = p.titled || metadata.Title != ""
 	o.mu.Unlock()
 }

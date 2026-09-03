@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
@@ -1168,4 +1169,79 @@ func TestResumeSurvivesEvidenceBeforeTheRecord(t *testing.T) {
 	f.terminals.set("term-new", api.TerminalRunning)
 	f.server.broadcast("thread/status/changed", changed("t9", status("idle")))
 	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
+}
+
+// turn builds a turn/started or turn/completed payload.
+func turn(threadID, turnID, status string, startedAt, completedAt any, message string) map[string]any {
+	t := map[string]any{"id": turnID, "status": status, "items": []any{}, "startedAt": startedAt, "completedAt": completedAt}
+	if message != "" {
+		t["error"] = map[string]any{"message": message}
+	}
+	return map[string]any{"threadId": threadID, "turn": t}
+}
+
+// The turn decode: inProgress is running; completed, interrupted, and
+// failed (with its message) map directly; unix-second timestamps carry
+// over; anything unrecognized is unknown.
+func TestTurnFromTable(t *testing.T) {
+	started, completed := int64(1700000000), int64(1700000009)
+	failure := &struct {
+		Message string `json:"message"`
+	}{Message: "context window exceeded"}
+	cases := []struct {
+		name string
+		wire wireTurn
+		want threads.TurnObservation
+	}{
+		{"in progress", wireTurn{ID: "tu", Status: "inProgress", StartedAt: &started},
+			threads.TurnObservation{ProviderID: "tu", State: api.TurnRunning, StartedAt: time.Unix(started, 0).UTC()}},
+		{"completed", wireTurn{ID: "tu", Status: "completed", StartedAt: &started, CompletedAt: &completed},
+			threads.TurnObservation{ProviderID: "tu", State: api.TurnCompleted, StartedAt: time.Unix(started, 0).UTC(), CompletedAt: time.Unix(completed, 0).UTC()}},
+		{"interrupted", wireTurn{ID: "tu", Status: "interrupted"}, threads.TurnObservation{ProviderID: "tu", State: api.TurnInterrupted}},
+		{"failed", wireTurn{ID: "tu", Status: "failed", Error: failure}, threads.TurnObservation{ProviderID: "tu", State: api.TurnFailed, Error: "context window exceeded"}},
+		{"unrecognized", wireTurn{ID: "tu", Status: "somethingNew"}, threads.TurnObservation{ProviderID: "tu", State: api.TurnUnknown}},
+	}
+	for _, c := range cases {
+		if diff := cmp.Diff(c.want, turnFrom(c.wire)); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.name, diff)
+		}
+	}
+}
+
+// turn/started and turn/completed ride the status seam as turn evidence
+// under Codex's own turn id — the start claims working, the end claims
+// no status; a turn for an unpaired thread is dropped like any other
+// evidence.
+func TestTurnNotifications(t *testing.T) {
+	f := newFixture(t, false)
+	f.mint(t, "term-aaaaa", "t1")
+	f.server.broadcast("turn/started", turn("t1", "tu-1", "inProgress", int64(1700000000), nil, ""))
+	waitFor(t, func() bool { return f.threads.statusCount() == 1 })
+	if got := f.threads.lastStatus(t); got.Status != api.ThreadWorking || got.Turn == nil || got.Turn.ProviderID != "tu-1" || got.Turn.State != api.TurnRunning {
+		t.Errorf("turn/started observation = %+v", got)
+	}
+	f.server.broadcast("turn/completed", turn("t1", "tu-1", "failed", int64(1700000000), int64(1700000009), "boom"))
+	waitFor(t, func() bool { return f.threads.statusCount() == 2 })
+	if got := f.threads.lastStatus(t); got.Status != "" || got.Turn == nil || got.Turn.State != api.TurnFailed || got.Turn.Error != "boom" {
+		t.Errorf("turn/completed observation = %+v", got)
+	}
+	f.server.broadcast("turn/started", turn("t9", "tu-9", "inProgress", nil, nil, ""))
+	settle()
+	if f.threads.statusCount() != 2 {
+		t.Errorf("unpaired turn reached the seam: %+v", f.threads.lastStatus(t))
+	}
+}
+
+// A turn starting is a prompt: for a paired, unminted thread it mints
+// through the session seam, carrying the turn.
+func TestTurnStartMints(t *testing.T) {
+	f := newFixture(t, false)
+	f.bind(t, "term-aaaaa", "t1")
+	f.server.setThread("t1", fakeThread{Preview: "fix the build", Status: status("active")})
+	f.server.broadcast("turn/started", turn("t1", "tu-1", "inProgress", nil, nil, ""))
+	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
+	session := f.threads.lastSession(t)
+	if session.ProviderID != "t1" || session.Status != api.ThreadWorking || session.Turn == nil || session.Turn.ProviderID != "tu-1" || session.Turn.State != api.TurnRunning || session.Metadata.Title != "fix the build" {
+		t.Errorf("session observation = %+v turn %+v", session, session.Turn)
+	}
 }

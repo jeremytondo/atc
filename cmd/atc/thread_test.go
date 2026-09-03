@@ -68,8 +68,29 @@ func TestThreadCLILifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout, id) || !strings.Contains(stdout, terminalID) ||
-		!strings.Contains(stdout, projectID) || !strings.Contains(stdout, "fix the build") {
+		!strings.Contains(stdout, projectID) || !strings.Contains(stdout, "fix the build") || strings.Contains(stdout, "latest turn") {
 		t.Errorf("get output:\n%s", stdout)
+	}
+
+	// The detail view shows the latest turn; the list stays status only.
+	if err := threadService.ObserveStatus(context.Background(), threads.StatusObservation{
+		IntegrationID: "claude", ProviderID: "sess-1", Status: api.ThreadIdle, Turn: &threads.TurnObservation{State: api.TurnFailed, Error: "limit reached"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, _, err = runCLI(t, "thread", "get", id); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"latest turn", "turn-", "turn state", "failed", "turn started", "turn completed", "turn error", "limit reached"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("get output with a turn lacks %q:\n%s", want, stdout)
+		}
+	}
+	if stdout, _, err = runCLI(t, "thread", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "turn-") || strings.Contains(stdout, "failed") {
+		t.Errorf("list output shows turn detail:\n%s", stdout)
 	}
 
 	if stdout, _, err = runCLI(t, "thread", "update", id, "--title", "my title"); err != nil {

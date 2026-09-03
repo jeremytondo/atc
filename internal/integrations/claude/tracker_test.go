@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // event builds a payload the way the wire delivers it, so the tests read
@@ -61,20 +62,47 @@ func TestTrackerPermissionAndQuestion(t *testing.T) {
 	step(t, tr, `{`+sess+`"hook_event_name":"Stop"}`, api.ThreadIdle, true)
 }
 
-func TestTrackerFailedTurn(t *testing.T) {
+// Root prompt, Stop, and StopFailure are the turn's start and its two
+// observable ends; a failure carries whatever detail the payload
+// supplies, and nothing invented when it supplies none. Descendant and
+// in-turn events say nothing about the turn.
+func TestTrackerTurnEvidence(t *testing.T) {
 	tr := newTracker()
+	turnOf := func(raw string) *threads.TurnObservation {
+		t.Helper()
+		_, _, turn := tr.apply(event(raw))
+		return turn
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"UserPromptSubmit"}`); turn == nil || turn.State != api.TurnRunning || turn.ProviderID != "" {
+		t.Fatalf("prompt turn = %+v; want running with no provider id", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"PreToolUse","tool_name":"Bash"}`); turn != nil {
+		t.Errorf("tool use claimed a turn: %+v", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"UserPromptSubmit","agent_id":"a1"}`); turn != nil {
+		t.Errorf("a descendant prompt claimed a turn: %+v", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop"}`); turn == nil || turn.State != api.TurnCompleted {
+		t.Fatalf("Stop turn = %+v; want completed", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop","agent_id":"a1"}`); turn != nil {
+		t.Errorf("a descendant Stop claimed a turn: %+v", turn)
+	}
+	step(t, tr, `{`+sess+`"hook_event_name":"SubagentStop","agent_id":"a1"}`, api.ThreadIdle, true)
+
 	step(t, tr, `{`+sess+`"hook_event_name":"UserPromptSubmit"}`, api.ThreadWorking, true)
-	status, signal, lastError := tr.apply(event(`{` + sess + `"hook_event_name":"StopFailure"}`))
+	status, signal, turn := tr.apply(event(`{` + sess + `"hook_event_name":"StopFailure","error":"server_error","error_details":"upstream 500"}`))
 	if !signal || status != api.ThreadIdle {
 		t.Fatalf("StopFailure: status=%s signal=%v; want idle signal", status, signal)
 	}
-	if lastError == nil || *lastError == "" {
-		t.Fatal("StopFailure carried no lastError detail")
+	if turn == nil || turn.State != api.TurnFailed || turn.Error != "upstream 500" {
+		t.Fatalf("StopFailure turn = %+v; want failed with the details", turn)
 	}
-	// The next prompt clears the failure detail.
-	_, _, cleared := tr.apply(event(`{` + sess + `"hook_event_name":"UserPromptSubmit"}`))
-	if cleared == nil || *cleared != "" {
-		t.Fatalf("UserPromptSubmit lastError = %v; want a clear", cleared)
+	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure","error":"rate_limit"}`); turn == nil || turn.Error != "rate_limit" {
+		t.Errorf("StopFailure without details = %+v; want the error kind", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure"}`); turn == nil || turn.Error != "" {
+		t.Errorf("StopFailure with nothing = %+v; want no invented detail", turn)
 	}
 }
 

@@ -2,9 +2,10 @@ package api
 
 import "time"
 
-// ThreadStatus is the server-owned state of an agent conversation
-// (ATC-255), derived only from structured provider evidence — never
-// guessed, never screen-parsed. Unknown means no evidence.
+// ThreadStatus is what an agent conversation is doing right now
+// (ATC-255, ATC-301), derived only from structured provider evidence —
+// never guessed, never screen-parsed. Unknown means no evidence. It says
+// nothing about how the last turn ended; that is the thread's latestTurn.
 type ThreadStatus string
 
 const (
@@ -12,13 +13,15 @@ const (
 	// thread stops being observed (TUI closed, conversation switched away,
 	// server restart).
 	ThreadUnknown ThreadStatus = "unknown"
-	// ThreadIdle: the agent finished its last turn. Idle persists while
-	// the thread is inactive — a resumable conversation at rest.
+	// ThreadIdle: no foreground turn running, no background work reported,
+	// nothing waiting on the user. Idle persists while the thread is
+	// inactive — a resumable conversation at rest — and is what a thread
+	// whose last turn failed reads once it is otherwise at rest.
 	ThreadIdle ThreadStatus = "idle"
-	// ThreadWorking: the agent is doing work right now. Claude fires no
-	// hook on user interrupt, so working can overstay by up to roughly a
-	// minute until the next prompt or idle notification (accepted
-	// limitation).
+	// ThreadWorking: foreground or background work is active, a starting
+	// session included. Claude fires no hook on user interrupt, so working
+	// can overstay by up to roughly a minute until the next prompt or idle
+	// notification (accepted limitation).
 	ThreadWorking ThreadStatus = "working"
 	// ThreadWaitingForInput: the agent asked the user a question and is
 	// blocked on the answer.
@@ -26,10 +29,44 @@ const (
 	// ThreadWaitingForPermission: the agent is blocked on a permission
 	// approval.
 	ThreadWaitingForPermission ThreadStatus = "waiting_for_permission"
-	// ThreadError: the thread itself is faulted. A merely failed turn is
-	// idle with the detail in lastError.
+	// ThreadError: the provider session itself is faulted and cannot take
+	// a prompt, with the provider's explanation in statusDetail. A failed
+	// turn never produces it.
 	ThreadError ThreadStatus = "error"
 )
+
+// TurnState is how a thread's latest turn stands: still running, or the
+// way it ended. A completed turn is not a completed task.
+type TurnState string
+
+const (
+	// TurnUnknown: ATC saw the turn but not how it ended — observation
+	// stopped, the thread went idle without an end signal, or a new turn
+	// replaced it.
+	TurnUnknown TurnState = "unknown"
+	// TurnRunning: the turn is in progress.
+	TurnRunning TurnState = "running"
+	// TurnCompleted: the agent ended the turn on its own terms.
+	TurnCompleted TurnState = "completed"
+	// TurnFailed: anything but a cancellation cut the turn short — a
+	// provider error, a refusal, a limit, the session faulting mid-turn.
+	TurnFailed TurnState = "failed"
+	// TurnInterrupted: a person or host cancelled it, and the provider
+	// said so.
+	TurnInterrupted TurnState = "interrupted"
+)
+
+// ThreadTurn is the most recent execution ATC observed or created on a
+// thread. Its id is ATC-minted — the provider's own turn id never appears
+// — and is what a caller that submitted a prompt waits on: the thread's
+// latestTurn carries that id until a later turn replaces it.
+type ThreadTurn struct {
+	ID          string     `json:"id" doc:"Server-minted turn identifier (turn-…); the id a submission returned, until a later turn replaces it."`
+	State       TurnState  `json:"state" enum:"unknown,running,completed,failed,interrupted" doc:"Whether the turn is running or how it ended; unknown means ATC saw the turn but not its end."`
+	StartedAt   time.Time  `json:"startedAt" doc:"When the turn began, as best ATC knows."`
+	CompletedAt *time.Time `json:"completedAt,omitempty" doc:"When the turn ended; omitted while running and when the end went unobserved."`
+	Error       string     `json:"error,omitempty" doc:"Failure detail from the provider; present only for a failed turn that supplied one."`
+}
 
 // Thread is the /v1/threads resource: one exact provider conversation,
 // observed inside an ATC-launched App or mirrored from an external
@@ -56,8 +93,9 @@ type Thread struct {
 	// PermissionMode is provider-native and read-only; ATC imposes no
 	// normalized vocabulary on it.
 	PermissionMode string       `json:"permissionMode,omitempty" doc:"Provider-native permission mode string, read-only."`
-	Status         ThreadStatus `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence."`
-	LastError      string       `json:"lastError,omitempty" doc:"Detail of the most recent failed turn; the thread itself stays idle."`
+	Status         ThreadStatus `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence. Says nothing about how the last turn ended — see latestTurn."`
+	StatusDetail   string       `json:"statusDetail,omitempty" doc:"The provider's own explanation of a faulted session; present only while status is error."`
+	LatestTurn     *ThreadTurn  `json:"latestTurn,omitempty" doc:"The most recent turn ATC observed or created on the thread; omitted until there is one."`
 	LastEvidenceAt *time.Time   `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
 	Links          *ThreadLinks `json:"links,omitempty" doc:"Where the conversation opens in the program that owns it; present only for threads an external program owns."`
 	Archived       bool         `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its program) unarchives it."`

@@ -205,9 +205,13 @@ type payload struct {
 	ToolName         string  `json:"tool_name"`
 	Prompt           string  `json:"prompt"`
 	Reason           string  `json:"reason"`
-	Cwd              string  `json:"cwd"`
-	PermissionMode   string  `json:"permission_mode"`
-	Effort           struct {
+	// Error and ErrorDetails ride StopFailure: the failure kind and, when
+	// Claude supplies one, the detail.
+	Error          string `json:"error"`
+	ErrorDetails   string `json:"error_details"`
+	Cwd            string `json:"cwd"`
+	PermissionMode string `json:"permission_mode"`
+	Effort         struct {
 		Level string `json:"level"`
 	} `json:"effort"`
 }
@@ -416,7 +420,7 @@ func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
 	if st.tracker == nil {
 		st.tracker = seededTracker()
 	}
-	status, signal, lastError := st.tracker.apply(p)
+	status, signal, turn := st.tracker.apply(p)
 	if !signal {
 		return
 	}
@@ -428,7 +432,7 @@ func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
 	}
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
 		IntegrationID: ID, ProviderID: p.SessionID, At: h.now(),
-		Status: status, LastError: lastError, Metadata: metadata,
+		Status: status, Turn: turn, Metadata: metadata,
 	}); err != nil {
 		h.logger.Warn("recording status observation", "error", err)
 	}

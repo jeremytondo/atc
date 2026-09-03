@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // The shell projection is T3's lightweight read model of projects and
@@ -43,6 +45,9 @@ type threadShell struct {
 	HasPendingApprovals *bool           `json:"hasPendingApprovals"`
 	HasPendingUserInput *bool           `json:"hasPendingUserInput"`
 	BackgroundLiveness  *string         `json:"backgroundLiveness"`
+	// LatestTurn is T3's own latest-turn projection; null before any
+	// turn.
+	LatestTurn *latestTurnShell `json:"latestTurn"`
 	// SettledOverride is T3's own settlement: "settled" threads leave its
 	// active list while staying in the shell projection.
 	SettledOverride *string `json:"settledOverride"`
@@ -62,6 +67,48 @@ type sessionShell struct {
 	Status       string  `json:"status"`
 	ProviderName *string `json:"providerName"`
 	LastError    *string `json:"lastError"`
+}
+
+// latestTurnShell is T3's latest turn: its id is the private provider
+// turn id, and startedAt is null until the provider picks the turn up,
+// so requestedAt stands in for when it began. An unreadable timestamp
+// fails the payload's decoding, like any other schema failure.
+type latestTurnShell struct {
+	TurnID      string     `json:"turnId"`
+	State       string     `json:"state"`
+	RequestedAt time.Time  `json:"requestedAt"`
+	StartedAt   *time.Time `json:"startedAt"`
+	CompletedAt *time.Time `json:"completedAt"`
+}
+
+// turnObservation maps T3's latest turn to the thread vocabulary:
+// running, completed, and interrupted directly; error is a failed turn
+// carrying the session's error text; anything unrecognized is unknown.
+func turnObservation(turn *latestTurnShell, sessionError string) *threads.TurnObservation {
+	if turn == nil {
+		return nil
+	}
+	o := &threads.TurnObservation{ProviderID: turn.TurnID, StartedAt: turn.RequestedAt}
+	if turn.StartedAt != nil {
+		o.StartedAt = *turn.StartedAt
+	}
+	if turn.CompletedAt != nil {
+		o.CompletedAt = *turn.CompletedAt
+	}
+	switch turn.State {
+	case "running":
+		o.State = api.TurnRunning
+	case "completed":
+		o.State = api.TurnCompleted
+	case "interrupted":
+		o.State = api.TurnInterrupted
+	case "error":
+		o.State = api.TurnFailed
+		o.Error = sessionError
+	default:
+		o.State = api.TurnUnknown
+	}
+	return o
 }
 
 // nullableString distinguishes a required JSON null from an omitted
@@ -185,54 +232,57 @@ func validateThread(thread threadShell) error {
 		return schemaErrorf("thread %s omitted its pending-action flags", thread.ID)
 	case thread.Session != nil && thread.Session.Status == "":
 		return schemaErrorf("thread %s session omitted status", thread.ID)
+	case thread.LatestTurn != nil && (thread.LatestTurn.TurnID == "" || thread.LatestTurn.State == "" || thread.LatestTurn.RequestedAt.IsZero()):
+		return schemaErrorf("thread %s latestTurn omitted turnId, state, or requestedAt", thread.ID)
 	}
 	return nil
 }
 
-// projectStatus maps T3's evidence to the thread vocabulary, first match
-// wins:
+// projectStatus normalizes each of T3's status facets into the thread
+// vocabulary and lets the threads domain rank them:
 //
-//	hasPendingApprovals                          → waiting_for_permission
-//	hasPendingUserInput                          → waiting_for_input
-//	session starting / running                   → working
-//	session error                                → error
-//	session at rest (or none) with live
-//	  background work (working / monitoring)     → working
-//	session at rest (or none), no liveness       → idle
-//	anything unrecognized                        → unknown
+//	hasPendingApprovals                       → waiting_for_permission
+//	hasPendingUserInput                       → waiting_for_input
+//	session starting / running                → working
+//	session error                             → error
+//	session idle / ready / interrupted /
+//	  stopped, or no session                  → idle
+//	background liveness working / monitoring  → working
+//	anything unrecognized                     → unknown
 //
-// Approval and input outrank the session because they name the action
-// that unblocks the thread; an error outranks stale background liveness.
 // A value ATC does not recognize is honestly unknown, never a guessed
 // resting state.
 func projectStatus(thread threadShell) api.ThreadStatus {
+	evidence := make([]api.ThreadStatus, 0, 4)
 	if *thread.HasPendingApprovals {
-		return api.ThreadWaitingForPermission
+		evidence = append(evidence, api.ThreadWaitingForPermission)
 	}
 	if *thread.HasPendingUserInput {
-		return api.ThreadWaitingForInput
+		evidence = append(evidence, api.ThreadWaitingForInput)
 	}
+	session := api.ThreadIdle
 	if thread.Session != nil {
 		switch thread.Session.Status {
 		case "starting", "running":
-			return api.ThreadWorking
+			session = api.ThreadWorking
 		case "error":
-			return api.ThreadError
+			session = api.ThreadError
 		case "idle", "ready", "interrupted", "stopped":
 		default:
-			return api.ThreadUnknown
+			session = api.ThreadUnknown
 		}
 	}
+	evidence = append(evidence, session)
 	if thread.BackgroundLiveness != nil {
 		switch *thread.BackgroundLiveness {
 		case "working", "monitoring":
-			return api.ThreadWorking
+			evidence = append(evidence, api.ThreadWorking)
 		case "":
 		default:
-			return api.ThreadUnknown
+			evidence = append(evidence, api.ThreadUnknown)
 		}
 	}
-	return api.ThreadIdle
+	return threads.Rank(evidence...)
 }
 
 // errUnknownProject reports a thread naming a project the projection has

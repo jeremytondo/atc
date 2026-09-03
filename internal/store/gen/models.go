@@ -54,12 +54,18 @@ type Thread struct {
 	Cwd              sql.NullString
 	PermissionMode   sql.NullString
 	Status           string
-	LastError        sql.NullString
 	LastEvidenceAt   sql.NullString
 	Archived         int64
 	ArchivedAt       sql.NullString
 	CreatedAt        string
 	UpdatedAt        string
+	StatusDetail     sql.NullString
+	TurnID           sql.NullString
+	TurnProviderID   sql.NullString
+	TurnState        sql.NullString
+	TurnStartedAt    sql.NullString
+	TurnCompletedAt  sql.NullString
+	TurnError        sql.NullString
 }
 
 type ThreadIdentity struct {

@@ -345,6 +345,17 @@ func lastError(detail string) threadOpt {
 	return func(m map[string]any) { m["session"].(map[string]any)["lastError"] = detail }
 }
 
+// latestTurn sets T3's latest-turn projection; startedAt and completedAt
+// are ISO strings or nil.
+func latestTurn(id, state string, startedAt, completedAt any) threadOpt {
+	return func(m map[string]any) {
+		m["latestTurn"] = map[string]any{
+			"turnId": id, "state": state, "requestedAt": "2026-09-01T00:00:01Z",
+			"startedAt": startedAt, "completedAt": completedAt, "assistantMessageId": nil,
+		}
+	}
+}
+
 func pending(approvals, input bool) threadOpt {
 	return func(m map[string]any) { m["hasPendingApprovals"], m["hasPendingUserInput"] = approvals, input }
 }
