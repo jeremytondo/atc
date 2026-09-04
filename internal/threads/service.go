@@ -1474,7 +1474,7 @@ func threadFrom(record store.ThreadRecord) api.Thread {
 		thread.ArchivedAt = &at
 	}
 	if turn := record.Turn; turn != nil {
-		thread.LatestTurn = &api.ThreadTurn{ID: turn.ID, State: api.TurnState(turn.State), StartedAt: turn.StartedAt, Error: turn.Error}
+		thread.LatestTurn = &api.ThreadTurn{ID: turn.ID, State: api.TurnState(turn.State), StartedAt: turn.StartedAt, Error: turn.Error, Response: turn.Response}
 		if turn.CompletedAt != nil {
 			at := *turn.CompletedAt
 			thread.LatestTurn.CompletedAt = &at

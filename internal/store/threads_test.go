@@ -86,7 +86,7 @@ func TestThreadsRoundTrip(t *testing.T) {
 	updated.Status = "error"
 	updated.StatusDetail = "session faulted"
 	completed := at(5)
-	updated.Turn = &TurnRecord{ID: "turn-bbbbbbbbbb", ProviderID: "t3-turn-1", State: "failed", StartedAt: at(4), CompletedAt: &completed, Error: "boom"}
+	updated.Turn = &TurnRecord{ID: "turn-bbbbbbbbbb", ProviderID: "t3-turn-1", State: "failed", StartedAt: at(4), CompletedAt: &completed, Error: "boom", Response: "I could not finish: **boom**."}
 	updated.Archived = true
 	updated.ArchivedAt = &archived
 	updated.UpdatedAt = at(6)

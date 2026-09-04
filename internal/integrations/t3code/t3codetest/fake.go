@@ -77,6 +77,10 @@ type Server struct {
 	dispatch func(command map[string]any) DispatchReply
 	commands []map[string]any
 	sequence uint64
+	// details answers thread detail snapshot reads by thread id (absent
+	// answers 404); detailReads counts the reads per thread.
+	details     map[string]map[string]any
+	detailReads map[string]int
 }
 
 type session struct {
@@ -116,6 +120,8 @@ func NewServer(t *testing.T) *Server {
 		tickets:       map[string]bool{},
 		initial:       func(*uint64) []any { return []any{SnapshotItem(0, nil, nil), SynchronizedItem()} },
 		dispatch:      func(map[string]any) DispatchReply { return DispatchReply{} },
+		details:       map[string]map[string]any{},
+		detailReads:   map[string]int{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/t3/environment", func(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +132,7 @@ func NewServer(t *testing.T) *Server {
 	})
 	mux.HandleFunc("POST /oauth/token", s.exchange)
 	mux.HandleFunc("POST /api/auth/websocket-ticket", s.ticket)
+	mux.HandleFunc("GET /api/orchestration/threads/{threadId}", s.threadDetail)
 	mux.HandleFunc("GET /ws", s.serve)
 	s.srv = httptest.NewServer(mux)
 	t.Cleanup(s.srv.Close)
@@ -188,6 +195,46 @@ func (s *Server) SetDispatch(dispatch func(command map[string]any) DispatchReply
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dispatch = dispatch
+}
+
+// SetThreadDetail sets what the thread detail snapshot read answers for
+// a thread (ThreadDetailItem); nil answers 404 again.
+func (s *Server) SetThreadDetail(threadID string, detail map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if detail == nil {
+		delete(s.details, threadID)
+		return
+	}
+	s.details[threadID] = detail
+}
+
+// DetailReads reports how many thread detail snapshot reads a thread has
+// received.
+func (s *Server) DetailReads(threadID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.detailReads[threadID]
+}
+
+// threadDetail is the one-shot thread snapshot read: the session bearer
+// authenticates it, and an unknown thread is 404.
+func (s *Server) threadDetail(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if _, ok := s.tokens[token]; !ok {
+		http.Error(w, `{"code":"auth_invalid"}`, http.StatusUnauthorized)
+		return
+	}
+	threadID := r.PathValue("threadId")
+	s.detailReads[threadID]++
+	detail, ok := s.details[threadID]
+	if !ok {
+		http.Error(w, `{"code":"not_found","reason":"thread_not_found"}`, http.StatusNotFound)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(detail)
 }
 
 // Commands returns every command dispatched so far, in arrival order.
@@ -560,6 +607,35 @@ func LatestTurn(id, state string, startedAt, completedAt any) ThreadOpt {
 			"startedAt": startedAt, "completedAt": completedAt, "assistantMessageId": nil,
 		}
 	}
+}
+
+// AssistantMessage names the latest turn's final assistant message; use
+// after LatestTurn.
+func AssistantMessage(id string) ThreadOpt {
+	return func(m map[string]any) { m["latestTurn"].(map[string]any)["assistantMessageId"] = id }
+}
+
+// MessageItem is one thread message in the detail snapshot.
+func MessageItem(id, role, text, turnID string, streaming bool) map[string]any {
+	return map[string]any{
+		"id": id, "role": role, "text": text, "turnId": turnID, "streaming": streaming,
+		"createdAt": "2026-09-01T00:00:02Z", "updatedAt": "2026-09-01T00:00:03Z",
+	}
+}
+
+// ThreadDetailItem is a thread detail snapshot: the thread shell
+// (ThreadItem) carrying these messages.
+func ThreadDetailItem(thread map[string]any, messages ...map[string]any) map[string]any {
+	detail := make(map[string]any, len(thread)+4)
+	for k, v := range thread {
+		detail[k] = v
+	}
+	list := make([]any, 0, len(messages))
+	for _, message := range messages {
+		list = append(list, message)
+	}
+	detail["messages"], detail["activities"], detail["checkpoints"], detail["proposedPlans"] = list, []any{}, []any{}, []any{}
+	return map[string]any{"snapshotSequence": 1, "thread": detail}
 }
 
 // Pending sets the pending-approval and pending-input flags.

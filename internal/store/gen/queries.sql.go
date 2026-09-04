@@ -198,8 +198,8 @@ const insertThread = `-- name: InsertThread :execrows
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
     title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
     archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
-    turn_completed_at, turn_error)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    turn_completed_at, turn_error, turn_response)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
@@ -230,6 +230,7 @@ type InsertThreadParams struct {
 	TurnStartedAt    sql.NullString
 	TurnCompletedAt  sql.NullString
 	TurnError        sql.NullString
+	TurnResponse     sql.NullString
 }
 
 func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int64, error) {
@@ -260,6 +261,7 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 		arg.TurnStartedAt,
 		arg.TurnCompletedAt,
 		arg.TurnError,
+		arg.TurnResponse,
 	)
 	if err != nil {
 		return 0, err
@@ -421,7 +423,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 }
 
 const listThreads = `-- name: ListThreads :many
-SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error FROM threads ORDER BY created_at, id
+SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error, turn_response FROM threads ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
@@ -460,6 +462,7 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 			&i.TurnStartedAt,
 			&i.TurnCompletedAt,
 			&i.TurnError,
+			&i.TurnResponse,
 		); err != nil {
 			return nil, err
 		}
@@ -610,7 +613,7 @@ const updateThread = `-- name: UpdateThread :execrows
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
-    turn_started_at = ?, turn_completed_at = ?, turn_error = ?
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?
 WHERE id = ?
 `
 
@@ -636,6 +639,7 @@ type UpdateThreadParams struct {
 	TurnStartedAt   sql.NullString
 	TurnCompletedAt sql.NullString
 	TurnError       sql.NullString
+	TurnResponse    sql.NullString
 	ID              string
 }
 
@@ -665,6 +669,7 @@ func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int
 		arg.TurnStartedAt,
 		arg.TurnCompletedAt,
 		arg.TurnError,
+		arg.TurnResponse,
 		arg.ID,
 	)
 	if err != nil {

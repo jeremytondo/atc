@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -102,6 +103,7 @@ func (f *fixture) start() {
 	f.service.backoffMin = 20 * time.Millisecond
 	f.service.backoffMax = 100 * time.Millisecond
 	f.service.authRetry = f.authRetry
+	f.service.responseRetry = 20 * time.Millisecond
 	f.threads.SetLinker(ID, f.service.Links)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
@@ -1199,5 +1201,150 @@ func TestTurnObservationTable(t *testing.T) {
 		if diff := cmp.Diff(c.want, turnObservation(c.turn, "boom")); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", c.name, diff)
 		}
+	}
+}
+
+// The latest turn's response (ATC-303): a turn T3 reports ended triggers
+// one read of the thread detail snapshot, the message the turn names is
+// the response, and thread.updated publishes once for it; a thread first
+// seen already ended backfills at the snapshot; a message still
+// streaming, or a turn without one named, is retried the bounded number
+// of times and then left absent with the turn unchanged; a snapshot
+// showing T3 already on another turn is dropped after one read; a
+// reconnect reads nothing for a response already recorded.
+func TestTurnResponseRecovery(t *testing.T) {
+	f := newFixture(t)
+	workspace := t.TempDir()
+	f.project(workspace, "mine")
+	f.writeRuntime(f.server.Origin())
+	ended := func(id, title, turnID string, opts ...t3codetest.ThreadOpt) map[string]any {
+		opts = append([]t3codetest.ThreadOpt{t3codetest.WithSession("idle", "codex"),
+			t3codetest.LatestTurn(turnID, "completed", "2026-09-01T00:00:02Z", "2026-09-01T00:00:03Z")}, opts...)
+		return t3codetest.ThreadItem(id, "p1", title, opts...)
+	}
+	zero := ended("t0", "Zero", "tu-0", t3codetest.AssistantMessage("m0"))
+	f.server.SetThreadDetail("t0", t3codetest.ThreadDetailItem(zero, t3codetest.MessageItem("u0", "user", "start", "tu-0", false), t3codetest.MessageItem("m0", "assistant", "Zero is done.", "tu-0", false)))
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+			zero, t3codetest.ThreadItem("t1", "p1", "One"),
+		}), t3codetest.SynchronizedItem()}
+	})
+	f.start()
+	waitResponse := func(providerID, want string) api.Thread {
+		t.Helper()
+		var thread api.Thread
+		waitFor(t, providerID+" response", func() bool {
+			thread = f.thread(providerID)
+			return thread.LatestTurn != nil && thread.LatestTurn.Response == want
+		})
+		return thread
+	}
+	waitReads := func(providerID string, want int) {
+		t.Helper()
+		waitFor(t, fmt.Sprintf("%d detail reads of %s", want, providerID), func() bool { return f.server.DetailReads(providerID) >= want })
+		if got := f.server.DetailReads(providerID); got != want {
+			t.Errorf("detail reads of %s = %d; want %d", providerID, got, want)
+		}
+	}
+	// Backfill: first seen already ended, recovered from one read.
+	backfilled := waitResponse("t0", "Zero is done.")
+	waitReads("t0", 1)
+	if backfilled.LatestTurn.State != api.TurnCompleted || backfilled.Status != api.ThreadIdle {
+		t.Errorf("backfilled thread = status %s turn %+v", backfilled.Status, backfilled.LatestTurn)
+	}
+	one := f.waitStatus("t1", api.ThreadIdle)
+	f.events()
+
+	// The normal end: running carries nothing; the completion names the
+	// message, one read recovers it, and the Thread updates once for the
+	// completion and once for the response.
+	f.server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("tu-1", "running", "2026-09-01T00:00:02Z", nil))))
+	if thread := f.waitStatus("t1", api.ThreadWorking); thread.LatestTurn == nil || thread.LatestTurn.Response != "" {
+		t.Errorf("running turn = %+v", thread.LatestTurn)
+	}
+	completed := ended("t1", "One", "tu-1", t3codetest.AssistantMessage("m1"))
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(completed,
+		t3codetest.MessageItem("u1", "user", "do it", "tu-1", false),
+		t3codetest.MessageItem("m1", "assistant", "One is **done**.", "tu-1", false)))
+	f.server.Push(t3codetest.Upserted(3, completed))
+	recovered := waitResponse("t1", "One is **done**.")
+	waitReads("t1", 1)
+	if recovered.LatestTurn.State != api.TurnCompleted || recovered.Status != api.ThreadIdle {
+		t.Errorf("recovered thread = status %s turn %+v", recovered.Status, recovered.LatestTurn)
+	}
+	if got := f.events(); count(got, "thread.updated "+one.ID) != 3 {
+		// Running, completed, response.
+		t.Errorf("events = %v; want three updates of %s", got, one.ID)
+	}
+	// Still streaming at every attempt: bounded reads, then absent, the
+	// turn untouched.
+	streaming := ended("t1", "One", "tu-2", t3codetest.AssistantMessage("m2"))
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(streaming, t3codetest.MessageItem("m2", "assistant", "partial", "tu-2", true)))
+	f.server.Push(t3codetest.Upserted(5, streaming))
+	waitReads("t1", 1+responseReads)
+	time.Sleep(50 * time.Millisecond)
+	if thread := f.thread("t1"); thread.LatestTurn == nil || thread.LatestTurn.State != api.TurnCompleted || thread.LatestTurn.Response != "" || f.server.DetailReads("t1") != 1+responseReads {
+		t.Errorf("after a streaming message = %+v, %d reads", thread.LatestTurn, f.server.DetailReads("t1"))
+	}
+	// No message named: bounded reads, then absent.
+	unnamed := ended("t1", "One", "tu-3")
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(unnamed, t3codetest.MessageItem("m3", "assistant", "unnamed", "tu-3", false)))
+	f.server.Push(t3codetest.Upserted(6, unnamed))
+	waitReads("t1", 1+2*responseReads)
+	time.Sleep(50 * time.Millisecond)
+	if thread := f.thread("t1"); thread.LatestTurn.Response != "" || f.server.DetailReads("t1") != 1+2*responseReads {
+		t.Errorf("after an unnamed message = %+v, %d reads", thread.LatestTurn, f.server.DetailReads("t1"))
+	}
+	// T3 already on another turn when the read lands: dropped after one
+	// read; that turn's own end recovers its own.
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(ended("t1", "One", "tu-5", t3codetest.AssistantMessage("m5")), t3codetest.MessageItem("m5", "assistant", "five", "tu-5", false)))
+	f.server.Push(t3codetest.Upserted(7, ended("t1", "One", "tu-4", t3codetest.AssistantMessage("m4"))))
+	waitReads("t1", 2+2*responseReads)
+	time.Sleep(50 * time.Millisecond)
+	if thread := f.thread("t1"); thread.LatestTurn.Response != "" || f.server.DetailReads("t1") != 2+2*responseReads {
+		t.Errorf("after T3 moved on = %+v, %d reads", thread.LatestTurn, f.server.DetailReads("t1"))
+	}
+	// An interrupted turn takes a response too; the message's empty text
+	// is absent. Messages are matched by id, not position.
+	interrupted := t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"),
+		t3codetest.LatestTurn("tu-6", "interrupted", "2026-09-01T00:00:02Z", "2026-09-01T00:00:03Z"), t3codetest.AssistantMessage("m6"))
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(interrupted,
+		t3codetest.MessageItem("m6", "assistant", "Stopped early.", "tu-6", false),
+		t3codetest.MessageItem("m7", "assistant", "later message", "tu-6", false)))
+	f.server.Push(t3codetest.Upserted(8, interrupted))
+	if thread := waitResponse("t1", "Stopped early."); thread.LatestTurn.State != api.TurnInterrupted {
+		t.Errorf("interrupted turn = %+v", thread.LatestTurn)
+	}
+
+	// Attempts exhausted on a message T3 was still streaming, then the
+	// connection drops: the replay re-reports the same turn, every
+	// connection is a fresh chance, and the message — final by then — is
+	// recovered with one more read. The response already recorded for the
+	// other thread is not read again.
+	slow := ended("t1", "One", "tu-7", t3codetest.AssistantMessage("m8"))
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(slow, t3codetest.MessageItem("m8", "assistant", "Slow answer.", "tu-7", true)))
+	f.server.Push(t3codetest.Upserted(9, slow))
+	waitReads("t1", 3+3*responseReads)
+	time.Sleep(50 * time.Millisecond)
+	if thread := f.thread("t1"); thread.LatestTurn.Response != "" || f.server.DetailReads("t1") != 3+3*responseReads {
+		t.Errorf("after exhausting the attempts = %+v, %d reads", thread.LatestTurn, f.server.DetailReads("t1"))
+	}
+	f.server.SetThreadDetail("t1", t3codetest.ThreadDetailItem(slow, t3codetest.MessageItem("m8", "assistant", "Slow answer.", "tu-7", false)))
+	reads0 := f.server.DetailReads("t0")
+	f.server.SetInitial(func(after *uint64) []any {
+		if after == nil {
+			t.Error("reconnect asked for a snapshot")
+		}
+		return []any{t3codetest.Upserted(10, slow), t3codetest.SynchronizedItem()}
+	})
+	subscriptions := len(f.server.Subscriptions())
+	f.server.DropConns()
+	waitFor(t, "a resubscription", func() bool { return len(f.server.Subscriptions()) > subscriptions })
+	f.waitState(api.IntegrationConnected)
+	waitResponse("t1", "Slow answer.")
+	waitReads("t1", 4+3*responseReads)
+	time.Sleep(50 * time.Millisecond)
+	if f.server.DetailReads("t0") != reads0 {
+		t.Errorf("reads of t0 after reconnect = %d; want %d", f.server.DetailReads("t0"), reads0)
 	}
 }

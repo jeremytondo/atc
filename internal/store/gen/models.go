@@ -66,6 +66,7 @@ type Thread struct {
 	TurnStartedAt    sql.NullString
 	TurnCompletedAt  sql.NullString
 	TurnError        sql.NullString
+	TurnResponse     sql.NullString
 }
 
 type ThreadIdentity struct {

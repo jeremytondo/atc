@@ -560,7 +560,11 @@ const (
 )
 
 // wireTurn is the slice of a Turn ATC reads from turn/started and
-// turn/completed; timestamps are unix seconds.
+// turn/completed; timestamps are unix seconds. Items are whatever thread
+// items Codex includes in the payload: turn/completed carries a summary
+// view holding the final agent message (probed 2026-09-03), turn/started
+// none. That summary is the whole of Codex's response recovery — no read
+// follows a completion without one.
 type wireTurn struct {
 	ID          string `json:"id"`
 	Status      string `json:"status"`
@@ -569,11 +573,48 @@ type wireTurn struct {
 	Error       *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+	Items []wireItem `json:"items"`
+}
+
+// wireItem is the slice of a ThreadItem ATC reads: an agentMessage's
+// text and its phase — final_answer or commentary, absent from providers
+// that do not classify.
+type wireItem struct {
+	Type  string `json:"type"`
+	Text  string `json:"text"`
+	Phase string `json:"phase"`
+}
+
+// responseFrom picks a turn's final response out of its items (ATC-303):
+// the last agent message classified final_answer, else the last agent
+// message. The chosen message's text is the response, empty included —
+// an empty final answer is absent, never an earlier commentary in its
+// place.
+func responseFrom(items []wireItem) string {
+	var last, final *wireItem
+	for i := range items {
+		item := &items[i]
+		if item.Type != "agentMessage" {
+			continue
+		}
+		last = item
+		if item.Phase == "final_answer" {
+			final = item
+		}
+	}
+	switch {
+	case final != nil:
+		return final.Text
+	case last != nil:
+		return last.Text
+	}
+	return ""
 }
 
 // turnFrom maps a Codex turn to the thread vocabulary: inProgress is
 // running; completed and interrupted map directly; failed carries the
-// error message; anything unrecognized is unknown.
+// error message; anything unrecognized is unknown. An ended turn carries
+// the final response its items hold.
 func turnFrom(turn wireTurn) threads.TurnObservation {
 	o := threads.TurnObservation{ProviderID: turn.ID}
 	if turn.StartedAt != nil {
@@ -596,6 +637,9 @@ func turnFrom(turn wireTurn) threads.TurnObservation {
 		}
 	default:
 		o.State = api.TurnUnknown
+	}
+	if o.State.Ended() {
+		o.Response = responseFrom(turn.Items)
 	}
 	return o
 }

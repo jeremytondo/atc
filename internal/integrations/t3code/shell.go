@@ -73,12 +73,16 @@ type sessionShell struct {
 // turn id, and startedAt is null until the provider picks the turn up,
 // so requestedAt stands in for when it began. An unreadable timestamp
 // fails the payload's decoding, like any other schema failure.
+// assistantMessageId names the turn's final assistant message once T3
+// knows it (ATC-303), null until then; it is read from the detail
+// snapshot, not from here (response.go).
 type latestTurnShell struct {
-	TurnID      string     `json:"turnId"`
-	State       string     `json:"state"`
-	RequestedAt time.Time  `json:"requestedAt"`
-	StartedAt   *time.Time `json:"startedAt"`
-	CompletedAt *time.Time `json:"completedAt"`
+	TurnID             string     `json:"turnId"`
+	State              string     `json:"state"`
+	RequestedAt        time.Time  `json:"requestedAt"`
+	StartedAt          *time.Time `json:"startedAt"`
+	CompletedAt        *time.Time `json:"completedAt"`
+	AssistantMessageID *string    `json:"assistantMessageId"`
 }
 
 // turnObservation maps T3's latest turn to the thread vocabulary:

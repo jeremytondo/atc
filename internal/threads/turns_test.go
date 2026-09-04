@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
 )
@@ -389,5 +391,145 @@ func TestTurnRematchAfterReconnect(t *testing.T) {
 	observe(&TurnObservation{ProviderID: "pt-4", State: api.TurnRunning}, api.ThreadIdle)
 	if got := f.turn(t, id); got.State != api.TurnRunning {
 		t.Errorf("reported running with idle status = %+v", got)
+	}
+}
+
+// The latest turn's response (ATC-303): recorded only with an ended
+// state, never with a running one; an ended turn gains or changes it
+// after the fact through the same provider turn — publishing only on a
+// change — while a late result for a turn no longer latest, a result for
+// a running turn, an empty text, and an unmapped identity are dropped; a
+// newer turn starts without one; presence never changes the rest of the
+// turn; and it survives a reload.
+func TestTurnResponse(t *testing.T) {
+	f := newFixture(t)
+	f.plant(t, "proj-aaaaa", "term-aaaaa")
+	ctx := context.Background()
+	observe := func(turn *TurnObservation, status api.ThreadStatus) string {
+		t.Helper()
+		id, err := f.service.ObserveExternal(ctx, ExternalObservation{
+			IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"), Status: status, Title: "T", Turn: turn,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	recover := func(threadID, turnID, response string) {
+		t.Helper()
+		if err := f.service.ObserveTurnResponse(ctx, threadID, turnID, response); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// A running turn never carries one, whatever the observation says.
+	id := observe(&TurnObservation{ProviderID: "pt-1", State: api.TurnRunning, StartedAt: started, Response: "early"}, api.ThreadWorking)
+	if got := f.turn(t, id); got.Response != "" {
+		t.Errorf("running turn = %+v; want no response", got)
+	}
+	f.drain()
+
+	// The end carrying the response records it, one event; the same
+	// report again, or one without a response, changes nothing.
+	completed := &TurnObservation{ProviderID: "pt-1", State: api.TurnCompleted, StartedAt: started, CompletedAt: ended, Response: "All done."}
+	observe(completed, api.ThreadIdle)
+	first := f.turn(t, id)
+	if first.State != api.TurnCompleted || first.Response != "All done." {
+		t.Fatalf("completed turn = %+v; want the response", first)
+	}
+	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {
+		t.Errorf("events on completion = %v", got)
+	}
+	observe(completed, api.ThreadIdle)
+	bare := *completed
+	bare.Response = ""
+	observe(&bare, api.ThreadIdle)
+	if got := f.turn(t, id); got.Response != "All done." {
+		t.Errorf("re-reports changed the response: %+v", got)
+	}
+	if got := f.drain(); len(got) != 0 {
+		t.Errorf("events on unchanged re-reports = %v", got)
+	}
+
+	// After the fact: the same text is silent, a new text replaces and
+	// publishes, and nothing else about the turn moves.
+	recover(id, "pt-1", "All done.")
+	if got := f.drain(); len(got) != 0 {
+		t.Errorf("events on an identical recovery = %v", got)
+	}
+	recover(id, "pt-1", "All done, and the tests pass.")
+	replaced := f.turn(t, id)
+	if replaced.Response != "All done, and the tests pass." {
+		t.Errorf("replaced response = %+v", replaced)
+	}
+	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {
+		t.Errorf("events on a changed recovery = %v", got)
+	}
+	replaced.Response = first.Response
+	if diff := cmp.Diff(first, replaced); diff != "" {
+		t.Errorf("recovery changed more than the response (-before +after):\n%s", diff)
+	}
+	// Dropped: a stale turn, an empty text, an unknown thread.
+	recover(id, "pt-0", "stale")
+	recover(id, "pt-1", "")
+	recover("thrd-nope", "pt-1", "unknown")
+	if got := f.turn(t, id); got.Response != "All done, and the tests pass." {
+		t.Errorf("dropped recoveries changed the response: %+v", got)
+	}
+	if got := f.drain(); len(got) != 0 {
+		t.Errorf("events on dropped recoveries = %v", got)
+	}
+
+	// A newer turn starts without one; a late result for the earlier
+	// turn is dropped, as is one for the turn while it runs; its own end
+	// — interrupted here — takes one after the fact.
+	observe(&TurnObservation{ProviderID: "pt-2", State: api.TurnRunning, StartedAt: ended}, api.ThreadWorking)
+	second := f.turn(t, id)
+	if second.ID == first.ID || second.Response != "" {
+		t.Fatalf("newer turn = %+v; want a fresh id with no response", second)
+	}
+	recover(id, "pt-1", "late for the first turn")
+	recover(id, "pt-2", "too early for the second")
+	if got := f.turn(t, id); got.ID != second.ID || got.State != api.TurnRunning || got.Response != "" {
+		t.Errorf("late and early results landed: %+v", got)
+	}
+	observe(&TurnObservation{ProviderID: "pt-2", State: api.TurnInterrupted, StartedAt: ended, CompletedAt: ended.Add(time.Minute)}, api.ThreadIdle)
+	f.drain()
+	recover(id, "pt-2", "Stopped before the summary.")
+	if got := f.turn(t, id); got.ID != second.ID || got.State != api.TurnInterrupted || got.Response != "Stopped before the summary." {
+		t.Errorf("interrupted turn after recovery = %+v", got)
+	}
+	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {
+		t.Errorf("events on recovery = %v", got)
+	}
+	// An empty message at the end is absent.
+	observe(&TurnObservation{ProviderID: "pt-3", State: api.TurnRunning}, api.ThreadWorking)
+	observe(&TurnObservation{ProviderID: "pt-3", State: api.TurnCompleted, Response: ""}, api.ThreadIdle)
+	if got := f.turn(t, id); got.State != api.TurnCompleted || got.Response != "" {
+		t.Errorf("empty response = %+v; want absent", got)
+	}
+
+	// Without provider ids (Claude): the stop carries it onto the running
+	// turn.
+	claude, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.status(t, api.ThreadWorking, "", &TurnObservation{State: api.TurnRunning})
+	running := f.turn(t, claude)
+	f.status(t, api.ThreadIdle, "", &TurnObservation{State: api.TurnCompleted, Response: "Claude says so."})
+	if got := f.turn(t, claude); got.ID != running.ID || got.State != api.TurnCompleted || got.Response != "Claude says so." {
+		t.Errorf("Claude stop = %+v; want %s completed with the message", got, running.ID)
+	}
+
+	// Persisted with the turn: a reload serves it.
+	reloaded := NewService(Options{Repository: f.store.Threads(), Terminals: f.terminals, Projects: f.store.Projects(), Hub: events.NewHubAt(8, 1), Now: f.clock.Now})
+	if err := reloaded.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reloaded.Get(claude); got.LatestTurn == nil || got.LatestTurn.Response != "Claude says so." {
+		t.Errorf("response after reload = %+v", got.LatestTurn)
 	}
 }

@@ -29,8 +29,11 @@ const (
 	shellMethod    = "orchestration.subscribeShell"
 	dispatchMethod = "orchestration.dispatchCommand"
 	maxFrameBytes  = 64 << 20
-	// maxBodyBytes bounds every HTTP response body ATC reads from T3.
-	maxBodyBytes = 1 << 20
+	// maxBodyBytes bounds every HTTP response body ATC reads from T3,
+	// except a thread detail snapshot, which carries a whole transcript
+	// and is bounded by maxSnapshotBytes.
+	maxBodyBytes     = 1 << 20
+	maxSnapshotBytes = 64 << 20
 )
 
 // protocolError marks an exchange ATC cannot continue with — an envelope
@@ -142,12 +145,17 @@ type rpcEnvelope struct {
 // doJSON performs one request and decodes a JSON success body; a non-2xx
 // answer is an *httpError carrying a bounded body excerpt.
 func doJSON(client *http.Client, req *http.Request, out any) error {
+	return doJSONBounded(client, req, out, maxBodyBytes)
+}
+
+// doJSONBounded is doJSON with the body bound the caller names.
+func doJSONBounded(client *http.Client, req *http.Request, out any, limit int64) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return err
 	}

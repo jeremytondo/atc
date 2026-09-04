@@ -72,6 +72,9 @@ type TurnRecord struct {
 	StartedAt   time.Time
 	CompletedAt *time.Time
 	Error       string
+	// Response is the turn's final assistant message, recovered after the
+	// turn ended; empty (stored NULL) until then.
+	Response string
 }
 
 // ThreadIdentity is one row of the private identity mapping:
@@ -127,12 +130,13 @@ func insertThreadParams(record ThreadRecord) gen.InsertThreadParams {
 		TurnStartedAt:    turn.startedAt,
 		TurnCompletedAt:  turn.completedAt,
 		TurnError:        turn.err,
+		TurnResponse:     turn.response,
 	}
 }
 
 // turnColumns is a turn's column values, all NULL when there is none.
 type turnColumns struct {
-	id, providerID, state, startedAt, completedAt, err sql.NullString
+	id, providerID, state, startedAt, completedAt, err, response sql.NullString
 }
 
 func turnColumnsOf(turn *TurnRecord) turnColumns {
@@ -146,6 +150,7 @@ func turnColumnsOf(turn *TurnRecord) turnColumns {
 		startedAt:   nullString(formatTime(turn.StartedAt)),
 		completedAt: nullTime(turn.CompletedAt),
 		err:         nullString(turn.Error),
+		response:    nullString(turn.Response),
 	}
 }
 
@@ -210,6 +215,7 @@ func (t *Threads) Update(ctx context.Context, record ThreadRecord) (bool, error)
 		TurnStartedAt:   turn.startedAt,
 		TurnCompletedAt: turn.completedAt,
 		TurnError:       turn.err,
+		TurnResponse:    turn.response,
 		ID:              record.ID,
 	})
 	return n > 0, foreignKeyError(err)
@@ -304,6 +310,7 @@ func threadFrom(row gen.Thread) (ThreadRecord, error) {
 			ProviderID: row.TurnProviderID.String,
 			State:      row.TurnState.String,
 			Error:      row.TurnError.String,
+			Response:   row.TurnResponse.String,
 		}
 		if turn.StartedAt, err = parseTime(row.TurnStartedAt.String); err != nil {
 			return ThreadRecord{}, fmt.Errorf("thread %s turn_started_at: %w", row.ID, err)
