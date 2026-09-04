@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -799,7 +800,9 @@ func TestThreadCreateReportedBeforeReply(t *testing.T) {
 	sub := f.hub.Subscribe(0, false)
 	t.Cleanup(sub.Close)
 	// The fake's goroutine cannot fail the test itself: it polls with a
-	// bound and the assertions follow the request.
+	// bound, records whether T3's report was applied before it answered,
+	// and the assertions follow the request.
+	var reportedFirst atomic.Bool
 	f.t3Server.SetDispatch(func(command map[string]any) t3codetest.DispatchReply {
 		t3ID := command["threadId"].(string)
 		f.t3Server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem(t3ID, "p1", "Fix the build",
@@ -807,6 +810,7 @@ func TestThreadCreateReportedBeforeReply(t *testing.T) {
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 			threads := f.threads.List("", "", false)
 			if len(threads) == 1 && threads[0].LatestTurn != nil && threads[0].LatestTurn.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC)) {
+				reportedFirst.Store(true)
 				break
 			}
 		}
@@ -816,6 +820,9 @@ func TestThreadCreateReportedBeforeReply(t *testing.T) {
 	rec := f.request(t, http.MethodPost, "/v1/threads", createThreadBody)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d; body %s", rec.Code, rec.Body)
+	}
+	if !reportedFirst.Load() {
+		t.Fatal("T3's report was not applied before the dispatch answered; the test proves nothing about that order")
 	}
 	thread := decodeThread(t, rec)
 	if thread.Status != api.ThreadWorking || thread.LatestTurn == nil || thread.LatestTurn.State != api.TurnRunning ||
