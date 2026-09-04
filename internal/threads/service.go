@@ -1168,6 +1168,9 @@ func (s *Service) DiscardExternal(ctx context.Context, integrationID, providerID
 	if terminalID != "" {
 		return fmt.Errorf("%w: open in terminal %s", ErrActive, terminalID)
 	}
+	if _, opening := s.opening[id]; opening {
+		return fmt.Errorf("%w: open in progress", ErrActive)
+	}
 	return s.remove(ctx, id)
 }
 

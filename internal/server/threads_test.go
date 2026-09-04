@@ -798,18 +798,18 @@ func TestThreadCreateReportedBeforeReply(t *testing.T) {
 	f.connectT3(t, f.projectDir)
 	sub := f.hub.Subscribe(0, false)
 	t.Cleanup(sub.Close)
+	// The fake's goroutine cannot fail the test itself: it polls with a
+	// bound and the assertions follow the request.
 	f.t3Server.SetDispatch(func(command map[string]any) t3codetest.DispatchReply {
 		t3ID := command["threadId"].(string)
 		f.t3Server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem(t3ID, "p1", "Fix the build",
 			t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("pt-1", "running", "2026-09-01T00:00:02Z", nil))))
-		waitUntil(t, "T3's report to apply", func() bool {
-			_, _, known := f.threads.LookupIdentity("t3code", t3ID)
-			if !known {
-				return false
-			}
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 			threads := f.threads.List("", "", false)
-			return len(threads) == 1 && threads[0].LatestTurn != nil && threads[0].LatestTurn.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC))
-		})
+			if len(threads) == 1 && threads[0].LatestTurn != nil && threads[0].LatestTurn.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC)) {
+				break
+			}
+		}
 		return t3codetest.DispatchReply{}
 	})
 

@@ -517,7 +517,9 @@ func (s *Service) applyEvent(ctx context.Context, event shellEvent) error {
 		delete(s.settled, event.ThreadID)
 		s.forget(ctx, event.ThreadID)
 	}
+	s.mu.Lock()
 	s.shell.sequence = *event.Sequence
+	s.mu.Unlock()
 	return nil
 }
 

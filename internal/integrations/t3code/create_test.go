@@ -334,14 +334,23 @@ func TestLostReplyAfterReportIsCreated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fake's goroutine cannot fail the test itself: it polls with a
+	// bound and the assertions follow the dispatch.
 	f.server.SetDispatch(func(command map[string]any) t3codetest.DispatchReply {
 		f.server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem(prepared.ProviderID, "p1", "hi", t3codetest.WithSession("running", "codex"))))
-		f.waitStatus(prepared.ProviderID, api.ThreadWorking)
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if _, _, known := f.threads.LookupIdentity(ID, prepared.ProviderID); known && f.thread(prepared.ProviderID).Status == api.ThreadWorking {
+				break
+			}
+		}
 		f.server.DropConns()
 		select {}
 	})
 	if err := prepared.Dispatch(ctx); err != nil {
 		t.Errorf("dispatch whose reply was lost after T3 reported the thread = %v; want created", err)
+	}
+	if thread := f.thread(prepared.ProviderID); thread.Status != api.ThreadWorking {
+		t.Errorf("thread after the lost reply = %+v; want T3's report applied", thread)
 	}
 	waitFor(t, "resubscription", func() bool { return len(f.server.Subscriptions()) == 2 })
 	f.waitState(api.IntegrationConnected)
