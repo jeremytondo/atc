@@ -1,11 +1,34 @@
 # ATC
 
-ATC is being rebuilt from a clean foundation under
-[ATC-243](https://linear.app/elevenideas/issue/ATC-243).
+## Overview
 
-The active tree holds the Go scaffold for the rebuild: a single Go module
-rooted at the repository with one entrypoint, [`cmd/atc`](cmd/atc/). Run
-`atc help` (or a bare `atc`) for the command reference.
+ATC brings the tools that make up a coding environment together into a single platform. It tracks and drives conversations with the coding agents on your machine, manages persistent terminals, and organizes both around your projects, all through one stable, secure API.
+
+ATC does not replace these tools. Each keeps owning what it owns: zmx owns terminal sessions, and Claude Code and Codex own conversations. ATC gives those things a stable identity, a normalized state, and relationships to each other, and exposes them to clients that never have to learn any tool's own interface.
+
+## Domains
+
+**Projects.** Organize work around a codebase. A Project has a root directory and gives shared context to the Threads inside it.
+
+**Terminals.** Persistent terminal sessions. Clients create and inspect them, attach for interactive input and output, and detach without stopping the process.
+
+**Threads.** A Thread is one conversation with an Agent, owned by its Provider and tracked by ATC. ATC gives it a stable identity, a normalized status, its latest Turn, and its relationships. Threads are discovered when a provider starts one, or created through ATC when the provider's Integration supports that.
+
+**Environments (future).** Where and under what runtime context work happens: shell, installed software, environment variables. Today ATC uses the user's normal environment on the local machine, and nothing is modeled yet.
+
+## Architecture
+
+**Core.** Defines the domains, their relationships, and their capabilities. Owns ATC identity and state, coordinates Integrations, and serves the API and event stream. Cross-tool workflows go through the domains. Integrations never talk to each other.
+
+**Integrations.** An Integration is ATC's built-in relationship with one external system. It can face either way. Most connect a Provider and implement capabilities for ATC's domains: T3 Code supports Threads with observe and create, Claude Code and Codex support Threads with observe, zmx supports Terminals with drive. Some connect a system that sends work into ATC and receives results, like Linear. Every Integration appears in the catalog with its availability and, where it keeps one, its connection state. An Integration may also expose the Apps it ships and the Agents it runs.
+
+**API.** One secure API and event stream, the same for local and remote clients. Clients can discover which Integrations are present, whether each is available, and what it supports.
+
+**Clients.** Anything that uses the API from outside ATC: the CLI, a desktop app, or an automation on another machine. Clients get no special access.
+
+## Glossary
+
+Glossary of terms can be found in GLOSSARY.md
 
 ## Installing and upgrading
 

@@ -99,3 +99,7 @@ When working in Linear, always use the ATC team:
 <https://linear.app/elevenideas/team/ATC>.
 
 When delegating work, select a cost-appropriate model and review its output.
+
+## Glossary of Terms
+
+Glossary of terms can be found in GLOSSARY.md
