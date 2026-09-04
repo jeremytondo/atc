@@ -36,7 +36,7 @@ func TestIntegrationListAndGetCLI(t *testing.T) {
 		`(?m)^id\s+t3code$`,
 		`(?m)^available\s+no$`,
 		`(?m)^connection\s+unavailable \(`,
-		`(?m)^capabilities\s+thread_observation$`,
+		`(?m)^capabilities\s+thread_observation, thread_creation$`,
 		`(?m)^agent\s+claudeAgent \(Claude Code\)$`,
 		`(?m)^app\s+t3code/web \(T3 Code \(web\)\): handoff$`,
 	} {

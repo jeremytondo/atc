@@ -59,7 +59,8 @@ type Options struct {
 	// http.ServeMux patterns, e.g. "POST /internal/claude/hooks".
 	InternalRoutes map[string]http.Handler
 	// Coordinator runs the cross-domain workflows (terminal and space
-	// deletion, project mutations); required with Terminals or Projects.
+	// deletion, project mutations, thread creation); required with
+	// Terminals, Projects, or Threads.
 	// Wired by the composition root so the domains stay decoupled and
 	// every entry point runs one workflow.
 	Coordinator *application.Coordinator
@@ -108,8 +109,8 @@ func NewHandler(opts Options) http.Handler {
 		return &HealthOutput{Body: api.Health{Status: "ok", Version: opts.Version}}, nil
 	})
 
-	if (opts.Terminals != nil || opts.Projects != nil) && opts.Coordinator == nil {
-		panic("server.NewHandler: Coordinator must accompany Terminals and Projects")
+	if (opts.Terminals != nil || opts.Projects != nil || opts.Threads != nil) && opts.Coordinator == nil {
+		panic("server.NewHandler: Coordinator must accompany Terminals, Projects, and Threads")
 	}
 	if opts.Terminals != nil {
 		registerTerminals(humaAPI, opts.Terminals, opts.Threads, opts.Coordinator)
@@ -122,7 +123,7 @@ func NewHandler(opts Options) http.Handler {
 		registerIntegrations(humaAPI, opts.Integrations)
 	}
 	if opts.Threads != nil {
-		registerThreads(humaAPI, opts.Threads)
+		registerThreads(humaAPI, opts.Threads, opts.Coordinator)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)

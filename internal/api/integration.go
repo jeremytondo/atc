@@ -23,6 +23,9 @@ const (
 	// the Threads domain — from an ATC-launched App or from an external
 	// program it observes.
 	CapabilityThreadObservation IntegrationCapability = "thread_observation"
+	// CapabilityThreadCreation: the Integration starts new conversations in
+	// its program with a first prompt (POST /v1/threads, ATC-289).
+	CapabilityThreadCreation IntegrationCapability = "thread_creation"
 )
 
 // AppInteraction is one typed interaction an App offers.

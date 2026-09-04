@@ -12,31 +12,49 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 )
 
 // Pairing is zero-touch (ATC-285): with no stored session, or one T3
 // rejects, ATC mints a five-minute pairing grant through T3's own CLI —
 // the one thing the CLI is used for — exchanges it at T3's OAuth token
-// endpoint for a session scoped to exactly orchestration:read, and
+// endpoint for a session scoped to exactly the set in scope, and
 // persists that session 0600 beside ATC's own auth token. The grant is
 // one-use, consumed by the exchange; the session outlives it, so the
-// previous ATC session is revoked before a new one is persisted.
+// previous ATC session is revoked before a new one is persisted. A
+// stored session holding any other scope set is retired the same way and
+// paired over once (ATC-289 widened the set); there is never a second
+// session or a user-visible step.
 
 const (
 	// sessionLabel names ATC's session in T3's client list; it is how the
 	// session id is found after the exchange, and what a user sees under
 	// T3's connections.
 	sessionLabel = "atc"
-	scope        = "orchestration:read"
+	// scope is the exact OAuth scope set ATC's session holds: read for the
+	// shell subscription, operate for dispatching commands (ATC-289). A
+	// grant of any other set — more or fewer — is refused.
+	scope = "orchestration:read orchestration:operate"
 )
 
-// session is the persisted credential.
+// session is the persisted credential. Scope records the set it was
+// granted, so a session from before a widening is recognized as stale.
 type session struct {
 	Origin    string `json:"origin"`
 	Token     string `json:"token"`
 	Label     string `json:"label"`
 	SessionID string `json:"sessionId"`
+	Scope     string `json:"scope"`
+}
+
+// sameScopes compares two OAuth scope strings as sets.
+func sameScopes(a, b string) bool {
+	as, bs := strings.Fields(a), strings.Fields(b)
+	sort.Strings(as)
+	sort.Strings(bs)
+	return slices.Equal(as, bs)
 }
 
 // authError marks a pairing or exchange that failed for a reason a retry
@@ -132,8 +150,8 @@ func runNodeCLI(home string) func(ctx context.Context, args ...string) ([]byte, 
 }
 
 // pair mints and exchanges a grant for a fresh session at origin.
-func (o *Observer) pair(ctx context.Context, origin string) (*session, error) {
-	out, err := o.runCLI(ctx, "auth", "pairing", "create", "--ttl", "5m", "--label", sessionLabel, "--json")
+func (s *Service) pair(ctx context.Context, origin string) (*session, error) {
+	out, err := s.runCLI(ctx, "auth", "pairing", "create", "--ttl", "5m", "--label", sessionLabel, "--json")
 	if err != nil {
 		var auth *authError
 		if errors.As(err, &auth) {
@@ -165,7 +183,7 @@ func (o *Observer) pair(ctx context.Context, origin string) (*session, error) {
 		AccessToken string `json:"access_token"`
 		Scope       string `json:"scope"`
 	}
-	if err := doJSON(o.httpClient, req, &token); err != nil {
+	if err := doJSON(s.httpClient, req, &token); err != nil {
 		var status *httpError
 		if errors.As(err, &status) && status.status < 500 {
 			return nil, authErrorf("T3 Code refused the pairing exchange: %w", err)
@@ -176,24 +194,24 @@ func (o *Observer) pair(ctx context.Context, origin string) (*session, error) {
 	if token.AccessToken == "" {
 		return nil, authErrorf("T3 Code's pairing exchange answered without a token")
 	}
-	if token.Scope != scope {
+	if !sameScopes(token.Scope, scope) {
 		return nil, authErrorf("T3 Code granted scope %q, not %q", token.Scope, scope)
 	}
-	s := &session{Origin: origin, Token: token.AccessToken, Label: sessionLabel}
+	sess := &session{Origin: origin, Token: token.AccessToken, Label: sessionLabel, Scope: scope}
 	// The exchange does not name the session it issued; T3's client list
 	// does, by label. Best effort: without the id the session still works,
 	// it just cannot be revoked at the next pairing.
-	if id, err := o.findSession(ctx); err != nil {
-		o.logger.Warn("t3code: session id not recorded", "error", err)
+	if id, err := s.findSession(ctx); err != nil {
+		s.logger.Warn("t3code: session id not recorded", "error", err)
 	} else {
-		s.SessionID = id
+		sess.SessionID = id
 	}
-	return s, nil
+	return sess, nil
 }
 
 // findSession returns the id of the newest session carrying ATC's label.
-func (o *Observer) findSession(ctx context.Context) (string, error) {
-	out, err := o.runCLI(ctx, "auth", "session", "list", "--json")
+func (s *Service) findSession(ctx context.Context) (string, error) {
+	out, err := s.runCLI(ctx, "auth", "session", "list", "--json")
 	if err != nil {
 		return "", err
 	}
@@ -208,9 +226,9 @@ func (o *Observer) findSession(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("t3 auth session list: %w", err)
 	}
 	var id, issued string
-	for _, s := range sessions {
-		if s.Client.Label == sessionLabel && s.IssuedAt >= issued {
-			id, issued = s.SessionID, s.IssuedAt
+	for _, entry := range sessions {
+		if entry.Client.Label == sessionLabel && entry.IssuedAt >= issued {
+			id, issued = entry.SessionID, entry.IssuedAt
 		}
 	}
 	if id == "" {
@@ -222,11 +240,11 @@ func (o *Observer) findSession(ctx context.Context) (string, error) {
 // revoke ends a stored session in T3, best effort: sessions must not
 // accumulate there across re-pairings, but a failure here never blocks
 // the new pairing.
-func (o *Observer) revoke(ctx context.Context, s *session) {
-	if s == nil || s.SessionID == "" {
+func (s *Service) revoke(ctx context.Context, sess *session) {
+	if sess == nil || sess.SessionID == "" {
 		return
 	}
-	if _, err := o.runCLI(ctx, "auth", "session", "revoke", s.SessionID); err != nil {
-		o.logger.Warn("t3code: revoking the previous session", "session", s.SessionID, "error", err)
+	if _, err := s.runCLI(ctx, "auth", "session", "revoke", sess.SessionID); err != nil {
+		s.logger.Warn("t3code: revoking the previous session", "session", sess.SessionID, "error", err)
 	}
 }

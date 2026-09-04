@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,13 +15,15 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations/t3code/t3codetest"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// observeThread plants an observed conversation in the fixture's threads
-// service — the seam the provider observers use in production (there is
-// deliberately no POST /v1/threads to do it over the wire). It originates
-// in the fixture project's directory, so it classifies into it.
+// observeThread plants a conversation observed inside a terminal in the
+// fixture's threads service — the seam the provider observers use in
+// production; POST /v1/threads creates only in T3 Code. It originates in
+// the fixture project's directory, so it classifies into it.
 func (f *fixture) observeThread(t *testing.T, terminalID, providerID string, status api.ThreadStatus) string {
 	t.Helper()
 	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
@@ -662,4 +667,257 @@ func TestThreadTurnOverTheWire(t *testing.T) {
 	if len(threads) != 1 || threads[0].LatestTurn == nil {
 		t.Errorf("list = %+v", threads)
 	}
+}
+
+// connectT3 brings the fixture's T3 Code Integration up against the fake
+// environment, which knows one project rooted at root, and keeps it
+// running until the test ends.
+func (f *fixture) connectT3(t *testing.T, root string) {
+	t.Helper()
+	t3codetest.Connect(t, f.t3Server, f.t3Home, root, f.t3.Run, f.t3.Connection)
+}
+
+func waitUntil(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// changes drains a hub subscription as "type id" strings.
+func changes(sub *events.Subscription) []string {
+	var got []string
+	for {
+		select {
+		case change := <-sub.C:
+			got = append(got, change.Type+" "+change.ID)
+		default:
+			return got
+		}
+	}
+}
+
+func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) api.Problem {
+	t.Helper()
+	var problem api.Problem
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decoding %q: %v", rec.Body, err)
+	}
+	return problem
+}
+
+var (
+	threadIDPattern = regexp.MustCompile(`^thrd-[a-z2-9]{5}$`)
+	turnIDPattern   = regexp.MustCompile(`^turn-[a-z2-9]{10}$`)
+)
+
+const createThreadBody = `{"integrationId":"t3code","agent":"codex","projectId":"proj-fixtr","prompt":"  Fix the   build ","model":"gpt-5.6-sol","options":[{"id":"reasoningEffort","value":"high"}]}`
+
+// The acceptance path: T3 connected and knowing the project's directory,
+// a create returns 201 with the thread already working on a provisional
+// turn, T3 received exactly one command, and T3's later report of the
+// thread updates the same record, binding its turn.
+func TestThreadCreateOverTheWire(t *testing.T) {
+	f := newFixture(t)
+	f.connectT3(t, f.projectDir)
+	sub := f.hub.Subscribe(0, false)
+	t.Cleanup(sub.Close)
+
+	rec := f.request(t, http.MethodPost, "/v1/threads", createThreadBody)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d; body %s", rec.Code, rec.Body)
+	}
+	thread := decodeThread(t, rec)
+	commands := f.t3Server.Commands()
+	if len(commands) != 1 {
+		t.Fatalf("T3 received %d commands; want 1", len(commands))
+	}
+	t3ID, _ := commands[0]["threadId"].(string)
+	if !threadIDPattern.MatchString(thread.ID) || thread.LatestTurn == nil || !turnIDPattern.MatchString(thread.LatestTurn.ID) || t3ID == "" {
+		t.Fatalf("thread = %+v; command %v", thread, commands[0])
+	}
+	want := api.Thread{
+		ID: thread.ID, IntegrationID: "t3code", AgentID: "codex", ProjectID: f.projectID, InitialDirectory: f.projectDir,
+		Title: "Fix the build", Model: "gpt-5.6-sol", Cwd: f.projectDir, Status: api.ThreadWorking,
+		LatestTurn:     &api.ThreadTurn{ID: thread.LatestTurn.ID, State: api.TurnRunning, StartedAt: thread.LatestTurn.StartedAt},
+		LastEvidenceAt: thread.LastEvidenceAt,
+		Links:          &api.ThreadLinks{Web: f.t3Server.Origin() + "/env-1/" + t3ID, App: "t3code://threads/env-1/" + t3ID},
+		CreatedAt:      thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
+	}
+	if diff := cmp.Diff(want, thread); diff != "" {
+		t.Errorf("thread (-want +got):\n%s", diff)
+	}
+	// The request's opaque values reached T3 untouched, in the project T3
+	// knows the directory as; the full payload is pinned in the
+	// Integration's own tests.
+	create := commands[0]["bootstrap"].(map[string]any)["createThread"].(map[string]any)
+	selection := map[string]any{"instanceId": "codex", "model": "gpt-5.6-sol", "options": []any{map[string]any{"id": "reasoningEffort", "value": "high"}}}
+	if diff := cmp.Diff(map[string]any{"projectId": "p1", "modelSelection": selection},
+		map[string]any{"projectId": create["projectId"], "modelSelection": create["modelSelection"]}); diff != "" {
+		t.Errorf("bootstrap (-want +got):\n%s", diff)
+	}
+	if got := changes(sub); !slices.Equal(got, []string{"thread.created " + thread.ID, "thread.updated " + thread.ID}) {
+		t.Errorf("events = %v; want created (pre-creation) then updated (the submitted turn)", got)
+	}
+
+	// T3 reports the thread: the same ATC record, T3's first turn bound to
+	// the provisional id with T3's timestamps.
+	f.t3Server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem(t3ID, "p1", "Fix the build",
+		t3codetest.Model("codex", "gpt-5.6-sol"), t3codetest.WithSession("running", "codex"),
+		t3codetest.LatestTurn("pt-1", "running", "2026-09-01T00:00:02Z", nil))))
+	started := time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC)
+	var reported api.Thread
+	waitUntil(t, "T3's turn to bind", func() bool {
+		reported, _ = f.threads.Get(thread.ID)
+		return reported.LatestTurn != nil && reported.LatestTurn.StartedAt.Equal(started)
+	})
+	if reported.LatestTurn.ID != thread.LatestTurn.ID || reported.LatestTurn.State != api.TurnRunning || reported.Status != api.ThreadWorking {
+		t.Errorf("after T3's report = %+v; want the provisional turn %s bound and running", reported.LatestTurn, thread.LatestTurn.ID)
+	}
+	rec = f.request(t, http.MethodGet, "/v1/threads", "")
+	var list api.ThreadList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Threads) != 1 {
+		t.Errorf("threads after T3's report = %d; want the one record", len(list.Threads))
+	}
+	if got := changes(sub); slices.Contains(got, "thread.created "+thread.ID) || !slices.Contains(got, "thread.updated "+thread.ID) {
+		t.Errorf("events after T3's report = %v; want an update and no second creation", got)
+	}
+}
+
+// T3's report can arrive before the dispatch reply does: the result is
+// the same record, and the response already reflects it.
+func TestThreadCreateReportedBeforeReply(t *testing.T) {
+	f := newFixture(t)
+	f.connectT3(t, f.projectDir)
+	sub := f.hub.Subscribe(0, false)
+	t.Cleanup(sub.Close)
+	f.t3Server.SetDispatch(func(command map[string]any) t3codetest.DispatchReply {
+		t3ID := command["threadId"].(string)
+		f.t3Server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem(t3ID, "p1", "Fix the build",
+			t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("pt-1", "running", "2026-09-01T00:00:02Z", nil))))
+		waitUntil(t, "T3's report to apply", func() bool {
+			_, _, known := f.threads.LookupIdentity("t3code", t3ID)
+			if !known {
+				return false
+			}
+			threads := f.threads.List("", "", false)
+			return len(threads) == 1 && threads[0].LatestTurn != nil && threads[0].LatestTurn.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC))
+		})
+		return t3codetest.DispatchReply{}
+	})
+
+	rec := f.request(t, http.MethodPost, "/v1/threads", createThreadBody)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d; body %s", rec.Code, rec.Body)
+	}
+	thread := decodeThread(t, rec)
+	if thread.Status != api.ThreadWorking || thread.LatestTurn == nil || thread.LatestTurn.State != api.TurnRunning ||
+		!thread.LatestTurn.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC)) {
+		t.Errorf("thread = %+v; want working with T3's turn already bound", thread)
+	}
+	if got := changes(sub); count(got, "thread.created "+thread.ID) != 1 {
+		t.Errorf("events = %v; want exactly one creation", got)
+	}
+	if list := f.threads.List("", "", false); len(list) != 1 {
+		t.Errorf("threads = %d; want one", len(list))
+	}
+}
+
+// T3 rejecting the command: 502 with T3's message (and the rollback when
+// T3 reports one), the pre-created record gone, thread.deleted published.
+func TestThreadCreateRejected(t *testing.T) {
+	f := newFixture(t)
+	f.connectT3(t, f.projectDir)
+	sub := f.hub.Subscribe(0, false)
+	t.Cleanup(sub.Close)
+	f.t3Server.SetDispatch(func(map[string]any) t3codetest.DispatchReply {
+		return t3codetest.DispatchReply{Reject: "provider instance codex is not configured", RolledBack: true}
+	})
+
+	rec := f.request(t, http.MethodPost, "/v1/threads", createThreadBody)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("create: got %d; body %s", rec.Code, rec.Body)
+	}
+	problem := decodeProblem(t, rec)
+	if problem.Code != api.CodeThreadCreationFailed || !strings.Contains(problem.Detail, "provider instance codex is not configured") ||
+		!strings.Contains(problem.Detail, "rolled back the thread") {
+		t.Errorf("problem = %+v", problem)
+	}
+	if list := f.threads.List("", "", true); len(list) != 0 {
+		t.Errorf("threads after a rejection = %+v; want none", list)
+	}
+	got := changes(sub)
+	if len(got) != 3 || !strings.HasPrefix(got[0], "thread.created ") || !strings.HasPrefix(got[1], "thread.updated ") || !strings.HasPrefix(got[2], "thread.deleted ") {
+		t.Errorf("events = %v; want created, updated, deleted for the discarded record", got)
+	}
+}
+
+// Every refusal before dispatch, each with its status and code, and none
+// of them reaching T3.
+func TestThreadCreateRefusals(t *testing.T) {
+	body := func(integration, agent, project, prompt, model, options string) string {
+		return fmt.Sprintf(`{"integrationId":%q,"agent":%q,"projectId":%q,"prompt":%q,"model":%q,"options":%s}`, integration, agent, project, prompt, model, options)
+	}
+	cases := []struct {
+		name   string
+		body   string
+		status int
+		code   string
+		detail string
+	}{
+		{"empty prompt", body("t3code", "codex", "proj-fixtr", " \n", "m", "[]"), http.StatusBadRequest, api.CodeValidationFailed, "prompt is empty"},
+		{"empty model", body("t3code", "codex", "proj-fixtr", "hi", "", "[]"), http.StatusBadRequest, api.CodeValidationFailed, "model is empty"},
+		{"unknown integration", body("nope", "codex", "proj-fixtr", "hi", "m", "[]"), http.StatusBadRequest, api.CodeIntegrationNotFound, `"nope"`},
+		{"integration without creation", body("claude", "claude", "proj-fixtr", "hi", "m", "[]"), http.StatusBadRequest, api.CodeThreadCreationUnsupported, "does not support thread creation"},
+		{"unlisted agent", body("t3code", "gpt", "proj-fixtr", "hi", "m", "[]"), http.StatusBadRequest, api.CodeAgentNotFound, `no agent "gpt"`},
+		{"option without id", body("t3code", "codex", "proj-fixtr", "hi", "m", `[{"id":"","value":"high"}]`), http.StatusBadRequest, api.CodeValidationFailed, "option has no id"},
+		{"unknown project", body("t3code", "codex", "proj-nope", "hi", "m", "[]"), http.StatusNotFound, api.CodeProjectNotFound, "project not found"},
+		{"not connected", body("t3code", "codex", "proj-fixtr", "hi", "m", "[]"), http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, "T3 Code is unavailable: "},
+	}
+	f := newFixture(t)
+	for _, tc := range cases {
+		rec := f.request(t, http.MethodPost, "/v1/threads", tc.body)
+		problem := decodeProblem(t, rec)
+		if rec.Code != tc.status || problem.Code != tc.code || !strings.Contains(problem.Detail, tc.detail) {
+			t.Errorf("%s: got %d %+v; want %d %s containing %q", tc.name, rec.Code, problem, tc.status, tc.code, tc.detail)
+		}
+	}
+	if list := f.threads.List("", "", true); len(list) != 0 {
+		t.Errorf("threads after refusals = %+v", list)
+	}
+	if commands := f.t3Server.Commands(); len(commands) != 0 {
+		t.Errorf("T3 received %d commands", len(commands))
+	}
+
+	// A project T3 does not know is a conflict, not a creation.
+	f = newFixture(t)
+	f.connectT3(t, t.TempDir())
+	rec := f.request(t, http.MethodPost, "/v1/threads", createThreadBody)
+	problem := decodeProblem(t, rec)
+	if rec.Code != http.StatusConflict || problem.Code != api.CodeProjectNotRegistered || !strings.Contains(problem.Detail, "not registered in T3 Code") {
+		t.Errorf("unregistered project: got %d %+v", rec.Code, problem)
+	}
+	if list := f.threads.List("", "", true); len(list) != 0 {
+		t.Errorf("threads after the conflict = %+v", list)
+	}
+	if commands := f.t3Server.Commands(); len(commands) != 0 {
+		t.Errorf("T3 received %d commands", len(commands))
+	}
+}
+
+func count(items []string, want string) int {
+	n := 0
+	for _, item := range items {
+		if item == want {
+			n++
+		}
+	}
+	return n
 }

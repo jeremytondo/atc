@@ -26,6 +26,7 @@ import (
 	"github.com/jeremytondo/atc/internal/integrations/claude"
 	"github.com/jeremytondo/atc/internal/integrations/codex"
 	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/t3code/t3codetest"
 	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
@@ -114,6 +115,9 @@ type fixture struct {
 	markers    string
 	projectID  string
 	projectDir string
+	t3         *t3code.Service
+	t3Server   *t3codetest.Server
+	t3Home     string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -188,20 +192,26 @@ func newFixture(t *testing.T) *fixture {
 		Terminals: service,
 		Now:       now,
 	})
-	// The T3 Code observer over an empty T3 home: registered for its
-	// catalog entry and links, never run — it reports unavailable.
-	t3Observer := t3code.New(t3code.Options{
-		Home:        t.TempDir(),
-		SessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
-		Threads:     threadService,
-		Hub:         hub,
-		Now:         now,
+	// The T3 Code service over a private T3 home and a fake environment:
+	// registered for its catalog entry and links, and run only by the
+	// tests that connect it (connectT3) — until then it reports
+	// unavailable.
+	t3Server := t3codetest.NewServer(t)
+	t3Home := t.TempDir()
+	t3Service := t3code.New(t3code.Options{
+		Home:         t3Home,
+		SessionPath:  filepath.Join(t.TempDir(), "t3code-session.json"),
+		Threads:      threadService,
+		Hub:          hub,
+		Now:          now,
+		RunCLI:       t3codetest.NewCLI(t3Server).Run,
+		ProcessAlive: func(int) bool { return true },
 	})
-	threadService.SetLinker(t3code.ID, t3Observer.Links)
+	threadService.SetLinker(t3code.ID, t3Service.Links)
 	binaries := map[string]bool{"claude": true, "zmx": true}
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
-			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
 		},
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {
@@ -230,7 +240,7 @@ func newFixture(t *testing.T) *fixture {
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
-		binaries: binaries, markers: markers, projectDir: projectDir}
+		binaries: binaries, markers: markers, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectID = "proj-fixtr"

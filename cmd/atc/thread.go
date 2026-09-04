@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -14,23 +15,97 @@ import (
 )
 
 // The atc thread family: the front door to agent conversations (ATC-282)
-// — open puts you in front of any conversation, live or dormant — plus
-// the reads and the two mutations over observed conversations (ATC-255).
-// There is no create: a thread record exists from the conversation's
-// first prompt, observed inside the app that started it (`atc terminal
-// create --app`). archive/unarchive are thin sugar over PATCH.
+// — open puts you in front of any conversation, live or dormant — create
+// starts one with a prompt in an integration's own program (ATC-289) —
+// plus the reads and the two mutations over observed conversations
+// (ATC-255). Conversations started in an ATC terminal app (`atc terminal
+// create --app`) are observed into existence from their first prompt.
+// archive/unarchive are thin sugar over PATCH.
 
 func newThreadCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "thread",
-		Short: "Open and manage agent conversations",
+		Short: "Start, open, and manage agent conversations",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc thread <open|list|get|update|archive|unarchive|delete>")
+			return fmt.Errorf("usage: atc thread <create|open|list|get|update|archive|unarchive|delete>")
 		},
 	}
-	cmd.AddCommand(newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(),
+	cmd.AddCommand(newThreadCreateCmd(), newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(),
 		newThreadUpdateCmd(), newThreadArchiveCmd(), newThreadUnarchiveCmd(), newThreadDeleteCmd())
+	return cmd
+}
+
+func newThreadCreateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create --integration <id> --agent <id> --project <id> --model <name> [prompt]",
+		Short: "Start a conversation with a prompt in an integration's program",
+		Long: `Start a new conversation with its first prompt in the named integration's
+own program (t3code), for the given agent, in the given project. The prompt is
+the positional argument; when it is absent or "-", it is read from standard
+input.
+
+The model name and any --option pairs are passed to the integration untouched:
+ATC keeps no model catalog, and a value the program rejects shows up afterwards
+as the thread's status and detail. The command returns as soon as the program
+has committed the thread and its first turn, printing the thread as
+` + "`atc thread get`" + ` does; the program's own events drive it from there.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
+			flags := cmd.Flags()
+			params := api.ThreadCreateParams{}
+			var err error
+			if params.IntegrationID, err = flags.GetString("integration"); err != nil {
+				return err
+			}
+			if params.Agent, err = flags.GetString("agent"); err != nil {
+				return err
+			}
+			if params.ProjectID, err = flags.GetString("project"); err != nil {
+				return err
+			}
+			if params.Model, err = flags.GetString("model"); err != nil {
+				return err
+			}
+			options, err := flags.GetStringArray("option")
+			if err != nil {
+				return err
+			}
+			for _, option := range options {
+				id, value, ok := strings.Cut(option, "=")
+				if !ok || id == "" {
+					return fmt.Errorf("--option %q is not id=value", option)
+				}
+				params.Options = append(params.Options, api.ThreadOption{ID: id, Value: value})
+			}
+			if len(args) == 1 && args[0] != "-" {
+				params.Prompt = args[0]
+			} else {
+				prompt, err := io.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return fmt.Errorf("reading the prompt from stdin: %w", err)
+				}
+				params.Prompt = string(prompt)
+			}
+			if strings.TrimSpace(params.Prompt) == "" {
+				return fmt.Errorf("the prompt is empty; pass it as an argument or on stdin")
+			}
+			thread, err := client.CreateThread(cmd.Context(), params)
+			if err != nil {
+				return err
+			}
+			printThread(cmd.OutOrStdout(), thread)
+			return nil
+		}),
+	}
+	cmd.Flags().String("integration", "", "integration that runs the work (t3code)")
+	cmd.Flags().String("agent", "", "agent id the integration lists (codex, claudeAgent, ...)")
+	cmd.Flags().String("project", "", "project the conversation runs in")
+	cmd.Flags().String("model", "", "model identifier, passed through untouched")
+	cmd.Flags().StringArray("option", nil, "provider option as id=value, passed through untouched (repeatable)")
+	for _, flag := range []string{"integration", "agent", "project", "model"} {
+		_ = cmd.MarkFlagRequired(flag)
+	}
 	return cmd
 }
 

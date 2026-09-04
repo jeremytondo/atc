@@ -69,11 +69,12 @@ type ThreadTurn struct {
 }
 
 // Thread is the /v1/threads resource: one exact provider conversation,
-// observed inside an ATC-launched App or mirrored from an external
-// program its Integration observes (ATC-285). Threads are observed into
-// existence — there is no create verb — and persist as the durable index
-// of conversations until deleted. The provider's own conversation id
-// never appears here; the ATC thread id is the public identity.
+// observed inside an ATC-launched App, mirrored from an external program
+// its Integration observes (ATC-285), or started through ATC in an
+// Integration that can create one (ATC-289). Threads persist as the
+// durable index of conversations until deleted. The provider's own
+// conversation id never appears here; the ATC thread id is the public
+// identity.
 type Thread struct {
 	ID            string `json:"id" doc:"Server-minted identifier; the public identity of the conversation."`
 	IntegrationID string `json:"integrationId" doc:"Integration that produced the thread; the namespace of its private provider identity. Immutable."`
@@ -120,6 +121,25 @@ type ThreadUpdateParams struct {
 	Title     Optional[string] `json:"title,omitzero" minLength:"1" nullable:"false" doc:"New display title. Observation never overwrites a title set here."`
 	Archived  Optional[bool]   `json:"archived,omitzero" nullable:"false" doc:"true archives the thread, false unarchives it. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused."`
 	ProjectID Optional[string] `json:"projectId,omitzero" minLength:"1" doc:"Project to assign, any project regardless of directory; null clears the association, leaving the thread unassigned until a project is created or moved to contain its initial directory."`
+}
+
+// ThreadCreateParams is the POST /v1/threads request body (ATC-289): start
+// a new conversation with its first prompt in the named Integration's
+// program. Model and options are opaque to ATC — copied to the
+// Integration untouched, judged only by the program that runs them.
+type ThreadCreateParams struct {
+	IntegrationID string         `json:"integrationId" doc:"Integration that runs the work; it must support thread creation (t3code)."`
+	Agent         string         `json:"agent" doc:"Integration-scoped agent id, one the Integration lists."`
+	ProjectID     string         `json:"projectId" doc:"Project the conversation runs in; its directory must be registered in the Integration's program."`
+	Prompt        string         `json:"prompt" doc:"The first user message. Must be non-empty after trimming."`
+	Model         string         `json:"model" doc:"Model identifier, passed to the Integration untouched and never validated by ATC."`
+	Options       []ThreadOption `json:"options,omitempty" doc:"Provider option pairs passed to the Integration untouched (Codex's reasoningEffort, for example)."`
+}
+
+// ThreadOption is one opaque provider knob on a thread create.
+type ThreadOption struct {
+	ID    string `json:"id" doc:"Option id as the provider names it."`
+	Value string `json:"value" doc:"Option value, passed through as a string."`
 }
 
 // ThreadList is the GET /v1/threads response body.

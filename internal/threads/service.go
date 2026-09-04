@@ -634,7 +634,10 @@ func (s *Service) TerminalRemoved(ctx context.Context, terminalID string) {
 // classified. The Integration's connection holds the thread from here —
 // live statuses are accepted, and archive or delete are refused — until
 // the Integration releases it. A conversation the program reports again
-// after ATC archived it comes back unarchived. Returns the thread id.
+// after ATC archived it comes back unarchived. It is also how a
+// conversation ATC is about to start in the program is recorded (ATC-289),
+// under the identity the Integration chose, before the program reports
+// it. Returns the thread id.
 func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (string, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
@@ -1141,6 +1144,37 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		// re-mint it on the first evidence.
 		return fmt.Errorf("%w: open in progress", ErrActive)
 	}
+	return s.remove(ctx, id)
+}
+
+// DiscardExternal deletes a thread its Integration recorded ahead of a
+// creation its program then refused (ATC-289). The Integration's own hold
+// — the only hold such a thread can have — does not refuse this the way
+// it refuses a user's delete; a terminal holding the thread still does.
+// An unknown identity is nothing to discard.
+func (s *Service) DiscardExternal(ctx context.Context, integrationID, providerID string) error {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	s.mu.Lock()
+	id, known := s.identities[identityKey{integrationID, providerID}]
+	terminalID := ""
+	if known {
+		terminalID = s.activeHolder(id)
+	}
+	s.mu.Unlock()
+	if !known {
+		return nil
+	}
+	if terminalID != "" {
+		return fmt.Errorf("%w: open in terminal %s", ErrActive, terminalID)
+	}
+	return s.remove(ctx, id)
+}
+
+// remove commits a delete: the record and its identity mapping go, any
+// pending submission with them, and thread.deleted publishes. Caller
+// holds ops.
+func (s *Service) remove(ctx context.Context, id string) error {
 	deleted, err := s.repository.Delete(ctx, id)
 	if err != nil {
 		return err

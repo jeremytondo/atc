@@ -2,7 +2,9 @@
 // /v1/threads. A thread is one exact provider conversation, observed into
 // existence — inside an ATC-launched terminal App at its first prompt, or
 // mirrored from an external program its Integration observes (ATC-285) —
-// there is no create verb. Open (ATC-282, ATC-297) is the one decision
+// or recorded ahead of a conversation ATC starts in such a program
+// (ATC-289; the application coordinator sequences that create, this
+// domain only records and discards). Open (ATC-282, ATC-297) is the one decision
 // the domain makes for the application coordinator's terminal create: it
 // resolves a thread to the terminal holding it, resuming the conversation
 // in a new terminal when nothing does.

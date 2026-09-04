@@ -20,6 +20,7 @@ import (
 	"github.com/jeremytondo/atc/internal/integrations/claude"
 	"github.com/jeremytondo/atc/internal/integrations/codex"
 	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/t3code/t3codetest"
 	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
@@ -72,14 +73,38 @@ const cliTestToken = "atc_cli-test-token"
 // remote client uses.
 func startTestServer(t *testing.T) *cliDriver {
 	t.Helper()
-	driver, _ := startTestServerWithThreads(t)
-	return driver
+	return startTestServerFull(t).driver
 }
 
 // startTestServerWithThreads additionally exposes the threads service so
 // thread tests can plant observed conversations — the seam providers use
-// in production; there is no create verb on the wire.
+// in production.
 func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
+	t.Helper()
+	ts := startTestServerFull(t)
+	return ts.driver, ts.threads
+}
+
+// testServer is the chassis behind the CLI under test: the fake terminal
+// driver, the threads service, and the T3 Code Integration over a fake
+// T3 environment that connectT3 brings up on demand.
+type testServer struct {
+	driver   *cliDriver
+	threads  *threads.Service
+	t3       *t3code.Service
+	t3Server *t3codetest.Server
+	t3Home   string
+}
+
+// connectT3 brings the T3 Code Integration up against the fake
+// environment, which knows one project rooted at root, and keeps it
+// running until the test ends.
+func (ts *testServer) connectT3(t *testing.T, root string) {
+	t.Helper()
+	t3codetest.Connect(t, ts.t3Server, ts.t3Home, root, ts.t3.Run, ts.t3.Connection)
+}
+
+func startTestServerFull(t *testing.T) *testServer {
 	t.Helper()
 	// The server is local, so an unplaced create opens in this process's
 	// cwd: a scratch directory, never the repository the tests run from.
@@ -130,16 +155,23 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		Threads:   threadService,
 		Terminals: service,
 	})
-	t3Observer := t3code.New(t3code.Options{
-		Home:        t.TempDir(),
-		SessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
-		Threads:     threadService,
-		Hub:         hub,
+	// The T3 Code service over a private home and a fake environment:
+	// registered for its catalog entry and links, and run only by tests
+	// that connect it.
+	t3Server := t3codetest.NewServer(t)
+	t3Home := t.TempDir()
+	t3Service := t3code.New(t3code.Options{
+		Home:         t3Home,
+		SessionPath:  filepath.Join(t.TempDir(), "t3code-session.json"),
+		Threads:      threadService,
+		Hub:          hub,
+		RunCLI:       t3codetest.NewCLI(t3Server).Run,
+		ProcessAlive: func(int) bool { return true },
 	})
-	threadService.SetLinker(t3code.ID, t3Observer.Links)
+	threadService.SetLinker(t3code.ID, t3Service.Links)
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
-			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
 		},
 		// The probe never consults this machine's PATH: claude and zmx
 		// "exist", codex does not.
@@ -167,7 +199,7 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 	t.Cleanup(srv.Close)
 	t.Setenv("ATC_SERVER", srv.URL)
 	t.Setenv("ATC_TOKEN", cliTestToken)
-	return driver, threadService
+	return &testServer{driver: driver, threads: threadService, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
 }
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {

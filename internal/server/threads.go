@@ -8,15 +8,19 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
+	"github.com/jeremytondo/atc/internal/integrations"
+	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// Four verbs on /v1/threads (ATC-255): deliberately no POST /v1/threads
-// — threads are observed into existence, not created — and
-// archive/unarchive is a PATCH of archived. Putting a user in front of a
-// conversation is a terminal create with threadId (ATC-297), not an
-// action here. Handlers are thin Huma wrappers around the shared wire
-// structs; policy lives in the threads service.
+// Five verbs on /v1/threads (ATC-255, ATC-289): create starts a
+// conversation in an Integration's program — the one write that reaches
+// outside ATC — and archive/unarchive is a PATCH of archived. Putting a
+// user in front of a conversation is a terminal create with threadId
+// (ATC-297), not an action here. Handlers are thin Huma wrappers around
+// the shared wire structs; policy lives in the threads service and, for
+// create, the application coordinator.
 
 type threadOutput struct {
 	Body api.Thread
@@ -30,7 +34,24 @@ type threadIDInput struct {
 	ID string `path:"id" doc:"Thread identifier."`
 }
 
-func registerThreads(humaAPI huma.API, service *threads.Service) {
+func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *application.Coordinator) {
+	huma.Register(humaAPI, huma.Operation{
+		OperationID:   "create-thread",
+		Method:        http.MethodPost,
+		Path:          "/v1/threads",
+		Summary:       "Create a thread",
+		Description:   "Starts a new conversation with its first prompt in the named Integration's program (only t3code creates threads). The Project resolves by directory to the program's own project. The thread is returned as soon as the program has committed the thread and its first turn, working on a provisional latestTurn until the program reports it; the program's events drive it from there exactly as for a conversation started inside the program. Model and options are opaque and never validated by ATC: a value the program rejects surfaces later as the thread's status and detail. Refusals: 400 for the request (unknown or non-creating Integration, unlisted agent, empty prompt or model, option without an id), 404 for an unknown Project, 409 for a Project the program has not registered, 503 while the Integration is not connected (the detail names the state), 502 when the program rejects the command (the detail is its message; no thread remains).",
+		DefaultStatus: http.StatusCreated,
+	}, func(ctx context.Context, input *struct {
+		Body api.ThreadCreateParams
+	}) (*threadOutput, error) {
+		thread, err := coordinator.CreateThread(ctx, input.Body)
+		if err != nil {
+			return nil, mapThreadCreateError(err)
+		}
+		return &threadOutput{Body: thread}, nil
+	})
+
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "list-threads",
 		Method:      http.MethodGet,
@@ -90,6 +111,34 @@ func registerThreads(humaAPI huma.API, service *threads.Service) {
 		}
 		return nil, nil
 	})
+}
+
+// mapThreadCreateError maps the create's refusals, each to the status the
+// caller acts on: fix the request (400), the Project (404), register it
+// in the program (409), start or pair the program (503), or read the
+// program's own rejection (502).
+func mapThreadCreateError(err error) error {
+	switch {
+	case errors.Is(err, application.ErrThreadCreateInvalid):
+		return problem(http.StatusBadRequest, api.CodeValidationFailed, err.Error())
+	case errors.Is(err, integrations.ErrNotFound):
+		return problem(http.StatusBadRequest, api.CodeIntegrationNotFound, err.Error())
+	case errors.Is(err, integrations.ErrThreadCreationUnsupported):
+		return problem(http.StatusBadRequest, api.CodeThreadCreationUnsupported, err.Error())
+	case errors.Is(err, integrations.ErrAgentNotFound):
+		return problem(http.StatusBadRequest, api.CodeAgentNotFound, err.Error())
+	case errors.Is(err, projects.ErrNotFound):
+		return problem(http.StatusNotFound, api.CodeProjectNotFound, "project not found")
+	case errors.Is(err, integrations.ErrProjectNotRegistered):
+		return problem(http.StatusConflict, api.CodeProjectNotRegistered, err.Error())
+	case errors.Is(err, integrations.ErrNotConnected):
+		return problem(http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, err.Error())
+	case errors.Is(err, integrations.ErrThreadCreationFailed):
+		return problem(http.StatusBadGateway, api.CodeThreadCreationFailed, err.Error())
+	case errors.Is(err, threads.ErrNoLocalDirectory):
+		return problem(http.StatusUnprocessableEntity, api.CodeProjectDirectoryInvalid, err.Error())
+	}
+	return mapThreadError(err)
 }
 
 func mapThreadError(err error) error {

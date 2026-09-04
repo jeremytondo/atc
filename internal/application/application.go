@@ -3,7 +3,8 @@
 // terminal in any of its modes, resuming a thread into one, deleting a
 // terminal and everything other domains hold about it, deleting a space
 // and every terminal in it, a project change and the thread
-// classification that follows it — composed once here and called from
+// classification that follows it, starting a thread in an Integration's
+// program (ATC-289) — composed once here and called from
 // every entry point that needs them, so the HTTP handlers stay thin and
 // no domain imports another. Domains keep their own invariants; this
 // package only orders their calls.
@@ -12,7 +13,9 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
@@ -25,6 +28,10 @@ import (
 // command, appId, and threadId: the modes are exclusive and never
 // silently resolved.
 var ErrLaunchModeConflict = errors.New("command, appId, and threadId are mutually exclusive")
+
+// ErrThreadCreateInvalid refuses a thread create whose input cannot be
+// acted on: an empty prompt or model, or an option pair without an id.
+var ErrThreadCreateInvalid = errors.New("invalid thread create")
 
 // Options wires a Coordinator; every domain is required. Cleanups run
 // after a terminal delete commits: each clears per-terminal state owned
@@ -210,6 +217,75 @@ func (c *Coordinator) UpdateProject(ctx context.Context, id string, params api.P
 // back. Threads survive, unassigned.
 func (c *Coordinator) DeleteProject(ctx context.Context, id string) error {
 	return c.threads.DeleteProject(ctx, id, func() error { return c.projects.Delete(ctx, id) })
+}
+
+// CreateThread starts a new conversation with its first prompt in an
+// Integration's program (ATC-289). The record is created, with a
+// provisional running turn, before the command is dispatched: the
+// program's first report of the conversation — which can arrive before
+// the dispatch answers — must find the record and bind its turn, never
+// mint a second thread. A failed dispatch discards that record, so no
+// thread remains; the thread returned is the record as it stands once the
+// program has committed the creation. Model and options pass through
+// untouched: the program is their only judge.
+func (c *Coordinator) CreateThread(ctx context.Context, params api.ThreadCreateParams) (api.Thread, error) {
+	switch {
+	case strings.TrimSpace(params.Prompt) == "":
+		return api.Thread{}, fmt.Errorf("%w: prompt is empty", ErrThreadCreateInvalid)
+	case strings.TrimSpace(params.Model) == "":
+		return api.Thread{}, fmt.Errorf("%w: model is empty", ErrThreadCreateInvalid)
+	}
+	for _, option := range params.Options {
+		if strings.TrimSpace(option.ID) == "" {
+			return api.Thread{}, fmt.Errorf("%w: an option has no id", ErrThreadCreateInvalid)
+		}
+	}
+	prepare, err := c.integrations.ResolveThreadCreation(params.IntegrationID, params.Agent)
+	if err != nil {
+		return api.Thread{}, err
+	}
+	project, err := c.projects.Get(ctx, params.ProjectID)
+	if err != nil {
+		return api.Thread{}, err
+	}
+	prepared, err := prepare(ctx, integrations.ThreadCreation{
+		AgentID: params.Agent, Directory: project.Directory, Prompt: params.Prompt, Model: params.Model, Options: params.Options,
+	})
+	if err != nil {
+		return api.Thread{}, err
+	}
+	id, err := c.threads.ObserveExternal(ctx, threads.ExternalObservation{
+		IntegrationID:    params.IntegrationID,
+		ProviderID:       prepared.ProviderID,
+		InitialDirectory: project.Directory,
+		AgentID:          params.Agent,
+		Title:            prepared.Title,
+		Metadata:         threads.Metadata{Model: params.Model, Cwd: project.Directory},
+	})
+	if err != nil {
+		return api.Thread{}, err
+	}
+	if _, err := c.threads.SubmitTurn(ctx, id); err != nil {
+		c.discard(ctx, params.IntegrationID, prepared.ProviderID)
+		return api.Thread{}, err
+	}
+	if err := prepared.Dispatch(ctx); err != nil {
+		c.discard(ctx, params.IntegrationID, prepared.ProviderID)
+		return api.Thread{}, err
+	}
+	return c.threads.Get(id)
+}
+
+// discard removes the record a thread create pre-created when the
+// creation did not happen. Detached: a client that gave up mid-dispatch
+// must not leave a record for a conversation that does not exist. A
+// failure is logged, not surfaced — the dispatch failure is the answer,
+// and the orphan coerces to unknown at the next boot like any unheld
+// thread.
+func (c *Coordinator) discard(ctx context.Context, integrationID, providerID string) {
+	if err := c.threads.DiscardExternal(context.WithoutCancel(ctx), integrationID, providerID); err != nil {
+		c.logger.Error("discarding the thread pre-created for a failed create", "integration", integrationID, "error", err)
+	}
 }
 
 // backfill reclassifies the unassigned threads after a project is created

@@ -1,6 +1,8 @@
 // Package integrations is the Integration catalog (ATC-294): a
-// compiled-in, read-only model of the external tools ATC works with, and
-// the launch glue that turns an App reference into a terminal create.
+// compiled-in, read-only model of the external tools ATC works with, the
+// launch glue that turns an App reference into a terminal create, and the
+// routing of a thread create to the Integration that performs it
+// (ATC-289).
 //
 // An Integration is ATC's stable relationship with one tool — claude,
 // codex, t3code, zmx. Its id is durable provenance, persisted on every
@@ -11,7 +13,8 @@
 // storage or lifecycle), a live connection when ATC keeps one to the
 // tool's program, and implementations of the narrow typed interfaces the
 // domains define — the Terminals Driver, the Threads observation seams,
-// the App terminal interactions here. There is no universal Integration
+// the App terminal interactions and the thread creation seam here. There
+// is no universal Integration
 // interface and no direct/external kind: a tool implements whichever
 // seams apply, and the wire summary of its capabilities is display only.
 //
@@ -56,6 +59,42 @@ type Integration struct {
 	// long-lived connection to its program; nil otherwise. A connected
 	// Integration is available; its executable (if any) is not consulted.
 	Connection func() api.IntegrationConnection
+	// PrepareThread is the Integration's thread-creation seam (ATC-289):
+	// it resolves a create against the program's live state without
+	// sending anything, refusing with ErrNotConnected (the state and
+	// detail in the message) while the program is not reachable and with
+	// ErrProjectNotRegistered when the directory is not a project the
+	// program knows. Nil for an Integration that cannot start
+	// conversations in its program.
+	PrepareThread func(ctx context.Context, req ThreadCreation) (PreparedThread, error)
+}
+
+// ThreadCreation is one request to start a conversation in an
+// Integration's program (ATC-289): what the caller chose, with the Project
+// already resolved to its canonical directory. Model and options are
+// opaque strings the Integration copies to its program untouched — ATC
+// keeps no model catalog and judges neither.
+type ThreadCreation struct {
+	AgentID   string
+	Directory string
+	Prompt    string
+	Model     string
+	Options   []api.ThreadOption
+}
+
+// PreparedThread is a creation the Integration has resolved against its
+// live state but not yet sent: the provider conversation id it chose —
+// the private identity the thread record is created under before
+// anything is dispatched, and how the program's later reports of the
+// conversation find that record — the title it will give the thread, and
+// Dispatch, which sends the command and returns once the program has
+// committed the thread and its first turn. A failed Dispatch wraps
+// ErrThreadCreationFailed with the program's own message; ErrNotConnected
+// when the connection went away since preparation.
+type PreparedThread struct {
+	ProviderID string
+	Title      string
+	Dispatch   func(ctx context.Context) error
 }
 
 // Executable names a tool's binary and how to install it.

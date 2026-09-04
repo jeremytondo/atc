@@ -39,6 +39,22 @@ var (
 	// the catalog no longer has, or that lies outside the thread's own
 	// Integration — provenance ATC cannot act on.
 	ErrOriginUnavailable = errors.New("thread's app is no longer available")
+	// ErrThreadCreationUnsupported refuses creating a thread in an
+	// Integration that has no creation seam.
+	ErrThreadCreationUnsupported = errors.New("integration does not support thread creation")
+	// ErrAgentNotFound refuses an agent id the Integration does not list.
+	ErrAgentNotFound = errors.New("agent not found")
+	// ErrNotConnected refuses a thread create while the Integration's
+	// connection to its program is not up; the message names the state and
+	// its detail.
+	ErrNotConnected = errors.New("integration not connected")
+	// ErrProjectNotRegistered refuses a thread create in a directory the
+	// Integration's program does not know as a project; ATC never
+	// registers one there.
+	ErrProjectNotRegistered = errors.New("project not registered")
+	// ErrThreadCreationFailed reports the program refusing or failing a
+	// dispatched creation; the message is the program's own.
+	ErrThreadCreationFailed = errors.New("thread creation failed")
 )
 
 // Options wires a Service.
@@ -52,10 +68,11 @@ type Options struct {
 	LookPath func(name string) (string, error)
 }
 
-// Service is the read-only catalog plus the launch resolution: turn an
-// App reference, or a thread's provenance, into the opaque launch input
-// the terminals domain takes. Reads re-probe availability on every call
-// — no cache, no version probing.
+// Service is the read-only catalog plus the resolution of the actions
+// Integrations perform: turn an App reference, or a thread's provenance,
+// into the opaque launch input the terminals domain takes, and a thread
+// create into its Integration's creation seam. Reads re-probe
+// availability on every call — no cache, no version probing.
 type Service struct {
 	integrations []Integration
 	index        map[string]int
@@ -63,8 +80,9 @@ type Service struct {
 }
 
 // NewService assembles the catalog. A duplicate Integration id, an agent
-// or App declared twice by one Integration, or an Integration or App id
-// that is empty or contains the qualifier separator is an error — the
+// or App declared twice by one Integration, an Integration or App id that
+// is empty or contains the qualifier separator, or a thread-creation seam
+// declared without its capability (or the reverse) is an error — the
 // composition root fails the boot.
 func NewService(opts Options) (*Service, error) {
 	if opts.LookPath == nil {
@@ -81,6 +99,9 @@ func NewService(opts Options) (*Service, error) {
 		}
 		if _, taken := service.index[integration.ID]; taken {
 			return nil, fmt.Errorf("duplicate integration id %q", integration.ID)
+		}
+		if (integration.PrepareThread != nil) != slices.Contains(integration.Capabilities, api.CapabilityThreadCreation) {
+			return nil, fmt.Errorf("integration %q: the %s capability and the creation seam must be declared together", integration.ID, api.CapabilityThreadCreation)
 		}
 		agents := make(map[string]bool, len(integration.Agents))
 		for _, agent := range integration.Agents {
@@ -285,6 +306,25 @@ func (s *Service) ResolveResume(ctx context.Context, req threads.ResumeRequest) 
 		return terminals.AppLaunch{}, fmt.Errorf("%w: %s conversations open in %s, not in an ATC terminal", ErrNotResumable, integration.Name, integration.Name)
 	}
 	return s.launch(ctx, integration, app, req.ProviderID)
+}
+
+// ResolveThreadCreation routes a thread create to its Integration's
+// creation seam (ATC-289): the Integration must exist, implement
+// creation, and list the agent. The program's live state is not consulted
+// here — the seam gates on it.
+func (s *Service) ResolveThreadCreation(integrationID, agentID string) (func(context.Context, ThreadCreation) (PreparedThread, error), error) {
+	i, ok := s.index[integrationID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrNotFound, integrationID)
+	}
+	integration := s.integrations[i]
+	if integration.PrepareThread == nil {
+		return nil, fmt.Errorf("%w: %s", ErrThreadCreationUnsupported, integration.Name)
+	}
+	if !slices.ContainsFunc(integration.Agents, func(agent api.IntegrationAgent) bool { return agent.ID == agentID }) {
+		return nil, fmt.Errorf("%w: %s lists no agent %q", ErrAgentNotFound, integration.Name, agentID)
+	}
+	return integration.PrepareThread, nil
 }
 
 // launch composes the launch input: the App's command once the id is
