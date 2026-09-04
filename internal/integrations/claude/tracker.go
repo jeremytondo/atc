@@ -61,7 +61,8 @@ func waiting(status api.ThreadStatus) bool {
 // payload carried a signal worth forwarding (unrecognized events without
 // a snapshot are never guessed at), and the root turn evidence the
 // payload carries: a prompt starts a turn, Stop completes it, StopFailure
-// fails it with whatever detail the payload supplies.
+// fails it with whatever detail the payload supplies, and either end
+// carries the payload's last assistant message as the turn's response.
 func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, turn *threads.TurnObservation) {
 	// Level snapshots first — authoritative wherever they appear. A
 	// retained id keeps its waiting flavor: the coarse snapshot status
@@ -115,13 +116,13 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, turn *
 	case "Stop":
 		if root {
 			t.root = api.ThreadIdle
-			return t.aggregate(), true, &threads.TurnObservation{State: api.TurnCompleted}
+			return t.aggregate(), true, &threads.TurnObservation{State: api.TurnCompleted, Response: p.LastAssistantMessage}
 		}
 		return t.aggregate(), signal, nil
 	case "StopFailure":
 		if root {
 			t.root = api.ThreadIdle
-			return t.aggregate(), true, &threads.TurnObservation{State: api.TurnFailed, Error: failureDetail(p)}
+			return t.aggregate(), true, &threads.TurnObservation{State: api.TurnFailed, Error: failureDetail(p), Response: p.LastAssistantMessage}
 		}
 		return t.aggregate(), signal, nil
 	case "SubagentStart":

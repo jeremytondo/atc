@@ -74,6 +74,12 @@ type TurnObservation struct {
 	// Error is the provider's failure detail; recorded only for a failed
 	// turn.
 	Error string
+	// Response is the provider-identified final assistant message of the
+	// turn (ATC-303), reported only with an ended state — never alongside
+	// a running one. Empty means none recovered this time, which never
+	// clears a response already recorded. An Integration that recovers
+	// the response after the fact reports it through ObserveTurnResponse.
+	Response string
 }
 
 // pendingTurn is a submitted turn not yet bound to a provider turn: the
@@ -216,7 +222,9 @@ func (s *Service) applyTurn(record *store.ThreadRecord, o TurnObservation, at ti
 			o.ProviderID == "" && current.ProviderID == "" && current.State == string(api.TurnRunning) && state != api.TurnRunning
 		if same {
 			if ended(current.State) {
-				return false
+				// An ended turn is final, whoever ended it; only its
+				// response can still arrive.
+				return adoptResponse(current, state, o.Response)
 			}
 			return updateTurn(current, o, state, at)
 		}
@@ -256,7 +264,74 @@ func updateTurn(turn *store.TurnRecord, o TurnObservation, state api.TurnState, 
 	if state == api.TurnFailed {
 		turn.Error = o.Error
 	}
+	// A response belongs to a turn that ended; a running or unknown turn
+	// never carries one.
+	turn.Response = ""
+	if ended(string(state)) {
+		turn.Response = o.Response
+	}
 	return !turnEqual(before, *turn)
+}
+
+// adoptResponse records a response reported for a turn that already
+// ended — a non-empty text, reported with an ended state, that differs
+// from the one recorded. Reports whether the turn changed.
+func adoptResponse(turn *store.TurnRecord, state api.TurnState, response string) bool {
+	if !ended(string(state)) || response == "" || response == turn.Response {
+		return false
+	}
+	turn.Response = response
+	return true
+}
+
+// ObserveTurnResponse records a final assistant message an Integration
+// recovered after the turn had ended (ATC-303). The read that recovers
+// it finishes later than the observation that settled the turn, so it
+// arrives on its own rather than on a turn observation — which would
+// claim the turn as the latest — and applies only when the thread's
+// latest turn is the named provider turn and has ended. A late result
+// for an earlier turn, a turn running or unknown, an unknown thread, and
+// an empty text are dropped; a text that changes the recorded response
+// publishes thread.updated, the same text again publishes nothing.
+func (s *Service) ObserveTurnResponse(ctx context.Context, threadID, providerTurnID, response string) error {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	s.mu.Lock()
+	entry, known := s.view[threadID]
+	var record store.ThreadRecord
+	if known {
+		record = *entry
+	}
+	s.mu.Unlock()
+	if !known {
+		s.logger.Debug("turn response for an unknown thread dropped", "thread", threadID)
+		return nil
+	}
+	if record.Turn == nil || providerTurnID == "" || record.Turn.ProviderID != providerTurnID {
+		s.logger.Debug("turn response for a turn no longer latest dropped", "thread", threadID)
+		return nil
+	}
+	if !adoptResponse(ownTurn(&record), api.TurnState(record.Turn.State), response) {
+		return nil
+	}
+	at := s.now()
+	record.LastEvidenceAt = &at
+	record.UpdatedAt = at
+	updated, err := s.repository.Update(ctx, record)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		s.logger.Debug("turn response for a deleted thread dropped", "thread", threadID)
+		return nil
+	}
+	s.mu.Lock()
+	if entry, ok := s.view[threadID]; ok {
+		*entry = record
+	}
+	s.mu.Unlock()
+	s.hub.Publish(api.EventThreadUpdated, resource, threadID)
+	return nil
 }
 
 // settleTurn ties a running turn to the thread's status: a faulted
@@ -326,15 +401,11 @@ func ownTurn(record *store.ThreadRecord) *store.TurnRecord {
 
 // ended reports a terminal turn state: completed, failed, or interrupted.
 func ended(state string) bool {
-	switch api.TurnState(state) {
-	case api.TurnCompleted, api.TurnFailed, api.TurnInterrupted:
-		return true
-	}
-	return false
+	return api.TurnState(state).Ended()
 }
 
 func turnEqual(a, b store.TurnRecord) bool {
-	if a.ID != b.ID || a.ProviderID != b.ProviderID || a.State != b.State || a.Error != b.Error || !a.StartedAt.Equal(b.StartedAt) {
+	if a.ID != b.ID || a.ProviderID != b.ProviderID || a.State != b.State || a.Error != b.Error || a.Response != b.Response || !a.StartedAt.Equal(b.StartedAt) {
 		return false
 	}
 	if a.CompletedAt == nil || b.CompletedAt == nil {

@@ -31,6 +31,15 @@ const (
 	// httpTimeout bounds each HTTP exchange with T3 and the WebSocket
 	// handshake; the subscription itself is unbounded.
 	httpTimeout = 10 * time.Second
+	// responseReads bounds the thread snapshot reads spent recovering one
+	// turn's final response (ATC-303), responseRetry apart: the snapshot
+	// normally holds the finished message by the time the shell reports
+	// the turn ended, so the retries cover a message T3 is still
+	// streaming or has not named yet. responseWorkers bounds how many
+	// recoveries read at once — a snapshot can start one per thread.
+	responseReads   = 3
+	responseRetry   = 2 * time.Second
+	responseWorkers = 2
 
 	resource = "integration"
 )
@@ -39,9 +48,11 @@ const (
 // observations in, no T3 vocabulary out.
 type ThreadObserver interface {
 	ObserveExternal(ctx context.Context, o threads.ExternalObservation) (string, error)
+	ObserveTurnResponse(ctx context.Context, threadID, providerTurnID, response string) error
 	ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error
 	ReleaseIntegration(ctx context.Context, integrationID string)
 	UnarchivedProviderIDs(integrationID string) []string
+	Get(id string) (api.Thread, error)
 }
 
 // Options wires a Service.
@@ -84,10 +95,18 @@ type Service struct {
 	alive       func(pid int) bool
 
 	// Production cadences; tests shrink them.
-	pollInterval, backoffMin, backoffMax, authRetry time.Duration
+	pollInterval, backoffMin, backoffMax, authRetry, responseRetry time.Duration
+	// reads tracks the response recovery goroutines, responseSlots how
+	// many of them read at once; Run joins them before returning.
+	reads         sync.WaitGroup
+	responseSlots chan struct{}
 
 	// Run-goroutine state.
 	session *session
+	// recovery holds, by T3 thread id, the turn whose response recovery
+	// this connection has started, so each (thread, turn) is read once
+	// per connection (response.go).
+	recovery map[string]string
 	// retryAt gates pairing after an auth failure; a T3 restart (a
 	// different runtime than last seen) clears it.
 	retryAt time.Time
@@ -137,21 +156,24 @@ func New(opts Options) *Service {
 		opts.ProcessAlive = processAlive
 	}
 	s := &Service{
-		home:         opts.Home,
-		sessionPath:  opts.SessionPath,
-		threads:      opts.Threads,
-		hub:          opts.Hub,
-		logger:       opts.Logger,
-		now:          opts.Now,
-		runCLI:       opts.RunCLI,
-		httpClient:   opts.HTTPClient,
-		alive:        opts.ProcessAlive,
-		pollInterval: pollInterval,
-		backoffMin:   backoffMin,
-		backoffMax:   backoffMax,
-		authRetry:    authRetry,
-		skipped:      map[string]string{},
-		settled:      map[string]bool{},
+		home:          opts.Home,
+		sessionPath:   opts.SessionPath,
+		threads:       opts.Threads,
+		hub:           opts.Hub,
+		logger:        opts.Logger,
+		now:           opts.Now,
+		runCLI:        opts.RunCLI,
+		httpClient:    opts.HTTPClient,
+		alive:         opts.ProcessAlive,
+		pollInterval:  pollInterval,
+		backoffMin:    backoffMin,
+		backoffMax:    backoffMax,
+		authRetry:     authRetry,
+		responseRetry: responseRetry,
+		responseSlots: make(chan struct{}, responseWorkers),
+		skipped:       map[string]string{},
+		settled:       map[string]bool{},
+		recovery:      map[string]string{},
 	}
 	// The report is honest before Run starts: one discovery decides
 	// between "not running" and "about to connect".
@@ -208,6 +230,7 @@ func (s *Service) setState(state api.IntegrationConnectionState, detail string) 
 // every hold, and reconnect with backoff — quietly polling for a runtime
 // file while T3 is not running.
 func (s *Service) Run(ctx context.Context) {
+	defer s.reads.Wait()
 	backoff := s.backoffMin
 	for {
 		state, err := discover(s.home, s.alive)
@@ -365,6 +388,9 @@ func (s *Service) serve(ctx context.Context, state runtime) error {
 	if s.shell.initialized {
 		payload["afterSequence"] = s.shell.sequence
 	}
+	// Every connection is a fresh chance at each response still absent,
+	// replay and snapshot alike.
+	s.recovery = map[string]string{}
 	// After a replay (no snapshot in this subscription) every hold has to
 	// be re-established from the local copy once the marker arrives; the
 	// Integration is connected — statuses current, holds in place — only
@@ -515,6 +541,7 @@ func (s *Service) applyEvent(ctx context.Context, event shellEvent) error {
 		delete(s.shell.threads, event.ThreadID)
 		s.mu.Unlock()
 		delete(s.settled, event.ThreadID)
+		delete(s.recovery, event.ThreadID)
 		s.forget(ctx, event.ThreadID)
 	}
 	s.mu.Lock()
@@ -564,7 +591,7 @@ func (s *Service) observe(ctx context.Context, thread threadShell, project proje
 		}
 	}
 	observation.Turn = turnObservation(thread.LatestTurn, observation.StatusDetail)
-	_, err := s.threads.ObserveExternal(ctx, observation)
+	id, err := s.threads.ObserveExternal(ctx, observation)
 	if errors.Is(err, threads.ErrNoLocalDirectory) {
 		s.skipped[thread.ID] = fmt.Sprintf("workspace %s: %v", project.WorkspaceRoot, err)
 		return
@@ -574,6 +601,9 @@ func (s *Service) observe(ctx context.Context, thread threadShell, project proje
 		return
 	}
 	delete(s.skipped, thread.ID)
+	if id != "" {
+		s.recoverResponse(ctx, id, thread.ID, observation.Turn)
+	}
 }
 
 // forget mirrors a thread T3 no longer reports as active — removed or

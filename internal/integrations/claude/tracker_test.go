@@ -82,8 +82,8 @@ func TestTrackerTurnEvidence(t *testing.T) {
 	if turn := turnOf(`{` + sess + `"hook_event_name":"UserPromptSubmit","agent_id":"a1"}`); turn != nil {
 		t.Errorf("a descendant prompt claimed a turn: %+v", turn)
 	}
-	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop"}`); turn == nil || turn.State != api.TurnCompleted {
-		t.Fatalf("Stop turn = %+v; want completed", turn)
+	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop"}`); turn == nil || turn.State != api.TurnCompleted || turn.Response != "" {
+		t.Fatalf("Stop turn = %+v; want completed with no response", turn)
 	}
 	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop","agent_id":"a1"}`); turn != nil {
 		t.Errorf("a descendant Stop claimed a turn: %+v", turn)
@@ -103,6 +103,33 @@ func TestTrackerTurnEvidence(t *testing.T) {
 	}
 	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure"}`); turn == nil || turn.Error != "" {
 		t.Errorf("StopFailure with nothing = %+v; want no invented detail", turn)
+	}
+}
+
+// The turn's response (ATC-303) is the Stop payload's last assistant
+// message, read from StopFailure too; a later Stop carries its own, and
+// a prompt never carries one.
+func TestTrackerResponse(t *testing.T) {
+	tr := newTracker()
+	turnOf := func(raw string) *threads.TurnObservation {
+		t.Helper()
+		_, _, turn := tr.apply(event(raw))
+		return turn
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"UserPromptSubmit","prompt":"fix","last_assistant_message":"stale"}`); turn == nil || turn.Response != "" {
+		t.Errorf("prompt turn = %+v; want no response", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop","last_assistant_message":"Fixed the **build**."}`); turn == nil || turn.State != api.TurnCompleted || turn.Response != "Fixed the **build**." {
+		t.Errorf("Stop turn = %+v; want completed with the message", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop","last_assistant_message":"Also tidied the tests."}`); turn == nil || turn.Response != "Also tidied the tests." {
+		t.Errorf("second Stop turn = %+v; want its own message", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure","error":"rate_limit","last_assistant_message":"Partial answer."}`); turn == nil || turn.State != api.TurnFailed || turn.Error != "rate_limit" || turn.Response != "Partial answer." {
+		t.Errorf("StopFailure turn = %+v; want failed with detail and message", turn)
+	}
+	if turn := turnOf(`{` + sess + `"hook_event_name":"Stop","agent_id":"a1","last_assistant_message":"child"}`); turn != nil {
+		t.Errorf("a descendant Stop claimed a turn: %+v", turn)
 	}
 }
 

@@ -66,6 +66,17 @@ type ThreadTurn struct {
 	StartedAt   time.Time  `json:"startedAt" doc:"When the turn began, as best ATC knows."`
 	CompletedAt *time.Time `json:"completedAt,omitempty" doc:"When the turn ended; omitted while running and when the end went unobserved."`
 	Error       string     `json:"error,omitempty" doc:"Failure detail from the provider; present only for a failed turn that supplied one."`
+	Response    string     `json:"response,omitempty" doc:"The provider's final assistant message for the turn, as produced (Markdown in practice); omitted until known, and always while running."`
+}
+
+// Ended reports a turn that is over — completed, failed, or interrupted —
+// as opposed to running or unknown.
+func (s TurnState) Ended() bool {
+	switch s {
+	case TurnCompleted, TurnFailed, TurnInterrupted:
+		return true
+	}
+	return false
 }
 
 // Thread is the /v1/threads resource: one exact provider conversation,

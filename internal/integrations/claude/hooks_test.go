@@ -284,8 +284,13 @@ func TestSessionLifecycleObservations(t *testing.T) {
 		t.Errorf("idle nudge = %+v; want idle with no turn claim", got)
 	}
 	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"again"}`)
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":"Done again."}`)
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadIdle || got.Turn == nil || got.Turn.State != api.TurnCompleted || got.Turn.Response != "Done again." {
+		t.Errorf("stop = %+v; want idle with a completed turn carrying the message", got)
+	}
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"once more"}`)
 	f.post(t, secret, `{"session_id":"s1","hook_event_name":"StopFailure","error":"server_error"}`)
-	if got := f.observer.lastStatus(t); got.Status != api.ThreadIdle || got.Turn == nil || got.Turn.State != api.TurnFailed || got.Turn.Error != "server_error" {
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadIdle || got.Turn == nil || got.Turn.State != api.TurnFailed || got.Turn.Error != "server_error" || got.Turn.Response != "" {
 		t.Errorf("stop failure = %+v; want idle with a failed turn", got)
 	}
 

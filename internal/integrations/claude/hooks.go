@@ -207,11 +207,15 @@ type payload struct {
 	Reason           string  `json:"reason"`
 	// Error and ErrorDetails ride StopFailure: the failure kind and, when
 	// Claude supplies one, the detail.
-	Error          string `json:"error"`
-	ErrorDetails   string `json:"error_details"`
-	Cwd            string `json:"cwd"`
-	PermissionMode string `json:"permission_mode"`
-	Effort         struct {
+	Error        string `json:"error"`
+	ErrorDetails string `json:"error_details"`
+	// LastAssistantMessage rides Stop (and StopFailure, when present): the
+	// turn's final assistant text (ATC-303). There is no backfill — a
+	// missed hook leaves the turn without a response.
+	LastAssistantMessage string `json:"last_assistant_message"`
+	Cwd                  string `json:"cwd"`
+	PermissionMode       string `json:"permission_mode"`
+	Effort               struct {
 		Level string `json:"level"`
 	} `json:"effort"`
 }

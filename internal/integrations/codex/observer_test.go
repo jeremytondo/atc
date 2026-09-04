@@ -164,6 +164,26 @@ func (f *fakeAppServer) setThread(id string, thread fakeThread) {
 	f.threads[id] = thread
 }
 
+// agentMessage is an agentMessage thread item; phase "" omits the phase,
+// as providers that do not classify do.
+func agentMessage(id, text, phase string) map[string]any {
+	item := map[string]any{"type": "agentMessage", "id": id, "text": text}
+	if phase != "" {
+		item["phase"] = phase
+	}
+	return item
+}
+
+// withItems puts items on a turn notification's turn.
+func withItems(notification map[string]any, items ...map[string]any) map[string]any {
+	list := make([]any, 0, len(items))
+	for _, item := range items {
+		list = append(list, item)
+	}
+	notification["turn"].(map[string]any)["items"] = list
+	return notification
+}
+
 // broadcast pushes one notification to every connection.
 func (f *fakeAppServer) broadcast(method string, params any) {
 	data, err := json.Marshal(map[string]any{"method": method, "params": params})
@@ -1243,5 +1263,76 @@ func TestTurnStartMints(t *testing.T) {
 	session := f.threads.lastSession(t)
 	if session.ProviderID != "t1" || session.Status != api.ThreadWorking || session.Turn == nil || session.Turn.ProviderID != "tu-1" || session.Turn.State != api.TurnRunning || session.Metadata.Title != "fix the build" {
 		t.Errorf("session observation = %+v turn %+v", session, session.Turn)
+	}
+}
+
+// The turn's response (ATC-303): turn/completed carries its items, and
+// the last agent message — a final_answer preferred — is the response;
+// a completion without one is recorded without a response, and a running
+// turn never carries one.
+func TestTurnResponse(t *testing.T) {
+	f := newFixture(t, false)
+	f.mint(t, "term-aaaaa", "t1")
+	completed := func(turnID string) map[string]any {
+		return turn("t1", turnID, "completed", int64(1700000000), int64(1700000009), "")
+	}
+	f.server.broadcast("turn/completed", withItems(completed("tu-1"),
+		agentMessage("m1", "Working on it.", "commentary"),
+		agentMessage("m2", "Fixed the **build**.", "final_answer"),
+		agentMessage("m3", "PS: tests pass.", "commentary"),
+	))
+	waitFor(t, func() bool { return f.threads.statusCount() == 1 })
+	if got := f.threads.lastStatus(t); got.Turn == nil || got.Turn.State != api.TurnCompleted || got.Turn.Response != "Fixed the **build**." {
+		t.Errorf("completed with items = %+v", got.Turn)
+	}
+
+	// Unclassified messages: the last agent message, other items ignored.
+	f.server.broadcast("turn/completed", withItems(completed("tu-2"),
+		agentMessage("m4", "first", ""),
+		map[string]any{"type": "commandExecution", "id": "c1", "command": "go test"},
+		agentMessage("m5", "last", ""),
+	))
+	waitFor(t, func() bool { return f.threads.statusCount() == 2 })
+	if got := f.threads.lastStatus(t); got.Turn == nil || got.Turn.Response != "last" {
+		t.Errorf("completed without phases = %+v", got.Turn)
+	}
+
+	// No agent message among the items: the turn is recorded, response
+	// absent, and nothing is read.
+	f.server.broadcast("turn/completed", turn("t1", "tu-3", "interrupted", int64(1700000000), int64(1700000009), ""))
+	waitFor(t, func() bool { return f.threads.statusCount() == 3 })
+	if got := f.threads.lastStatus(t); got.Turn == nil || got.Turn.State != api.TurnInterrupted || got.Turn.Response != "" {
+		t.Errorf("interrupted without items = %+v", got.Turn)
+	}
+
+	// A running turn carries no response, whatever its items say.
+	f.server.broadcast("turn/started", withItems(turn("t1", "tu-4", "inProgress", int64(1700000010), nil, ""), agentMessage("m6", "streaming", "final_answer")))
+	waitFor(t, func() bool { return f.threads.statusCount() == 4 })
+	if got := f.threads.lastStatus(t); got.Turn == nil || got.Turn.State != api.TurnRunning || got.Turn.Response != "" {
+		t.Errorf("running turn = %+v; want no response", got.Turn)
+	}
+	if requests := f.server.count("thread/read") + f.server.count("thread/items/list"); requests != f.server.count("thread/read") {
+		t.Errorf("a completion read the server: %d items reads", f.server.count("thread/items/list"))
+	}
+}
+
+func TestResponseFromTable(t *testing.T) {
+	cases := []struct {
+		name  string
+		items []wireItem
+		want  string
+	}{
+		{"none", nil, ""},
+		{"no agent messages", []wireItem{{Type: "commandExecution"}}, ""},
+		{"last message", []wireItem{{Type: "agentMessage", Text: "a"}, {Type: "agentMessage", Text: "b"}}, "b"},
+		{"final answer preferred", []wireItem{{Type: "agentMessage", Text: "a", Phase: "final_answer"}, {Type: "agentMessage", Text: "b", Phase: "commentary"}}, "a"},
+		{"last final answer", []wireItem{{Type: "agentMessage", Text: "a", Phase: "final_answer"}, {Type: "agentMessage", Text: "b", Phase: "final_answer"}}, "b"},
+		{"empty final answer is absent", []wireItem{{Type: "agentMessage", Text: "a"}, {Type: "agentMessage", Text: "", Phase: "final_answer"}}, ""},
+		{"empty last message is absent", []wireItem{{Type: "agentMessage", Text: "a"}, {Type: "agentMessage", Text: ""}}, ""},
+	}
+	for _, c := range cases {
+		if got := responseFrom(c.items); got != c.want {
+			t.Errorf("%s: responseFrom = %q, want %q", c.name, got, c.want)
+		}
 	}
 }

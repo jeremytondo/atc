@@ -651,9 +651,42 @@ func TestThreadTurnOverTheWire(t *testing.T) {
 		thread.LatestTurn.State != api.TurnRunning || thread.LatestTurn.CompletedAt != nil {
 		t.Errorf("latest turn = %+v", thread.LatestTurn)
 	}
-	if body := rec.Body.String(); strings.Contains(body, "provider-turn-1") || strings.Contains(body, `"completedAt"`) || strings.Contains(body, `"statusDetail"`) {
+	if body := rec.Body.String(); strings.Contains(body, "provider-turn-1") || strings.Contains(body, `"completedAt"`) || strings.Contains(body, `"statusDetail"`) || strings.Contains(body, `"response"`) {
 		t.Errorf("wire body = %s", body)
 	}
+
+	// The turn ends with its response (ATC-303): on the Thread, one
+	// thread.updated; the same text recovered again publishes nothing, a
+	// changed text publishes once; a new turn clears it.
+	observe(api.ThreadIdle, "", &threads.TurnObservation{ProviderID: "provider-turn-1", State: api.TurnCompleted, Response: "Fixed the **build**.\n\n- one\n- two"})
+	thread = decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
+	if thread.LatestTurn.State != api.TurnCompleted || thread.LatestTurn.Response != "Fixed the **build**.\n\n- one\n- two" {
+		t.Errorf("completed turn = %+v", thread.LatestTurn)
+	}
+	if got := changes(sub); !slices.Equal(got, []string{"thread.updated " + id}) {
+		t.Errorf("events on completion = %v", got)
+	}
+	if err := f.threads.ObserveTurnResponse(context.Background(), id, "provider-turn-1", "Fixed the **build**.\n\n- one\n- two"); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(sub); len(got) != 0 {
+		t.Errorf("events on an identical recovery = %v", got)
+	}
+	if err := f.threads.ObserveTurnResponse(context.Background(), id, "provider-turn-1", "Fixed the build."); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(sub); !slices.Equal(got, []string{"thread.updated " + id}) {
+		t.Errorf("events on a changed recovery = %v", got)
+	}
+	if list := decodeThreadList(t, f.request(t, http.MethodGet, "/v1/threads", "")); len(list) != 1 || list[0].LatestTurn == nil || list[0].LatestTurn.Response != "Fixed the build." {
+		t.Errorf("list = %+v", list)
+	}
+	observe(api.ThreadWorking, "", &threads.TurnObservation{ProviderID: "provider-turn-2", State: api.TurnRunning})
+	rec = f.request(t, http.MethodGet, "/v1/threads/"+id, "")
+	if thread = decodeThread(t, rec); thread.LatestTurn.State != api.TurnRunning || strings.Contains(rec.Body.String(), `"response"`) {
+		t.Errorf("new turn = %+v; body %s", thread.LatestTurn, rec.Body)
+	}
+	changes(sub)
 
 	observe(api.ThreadError, "session broke", nil)
 	thread = decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
