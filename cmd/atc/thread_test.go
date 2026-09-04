@@ -7,14 +7,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// observeThreadCLI plants an observed conversation behind the test server
-// and returns its thread id — the seam providers use in production; the
-// wire has no create verb.
+// observeThreadCLI plants a conversation observed inside a terminal behind
+// the test server and returns its thread id — the seam providers use in
+// production; the wire's create starts conversations in T3 Code only.
 func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, directory, providerID string) string {
 	t.Helper()
 	id, err := service.ObserveSession(context.Background(), threads.SessionObservation{
@@ -396,5 +398,86 @@ func TestThreadUpdateProjectCLI(t *testing.T) {
 	}
 	if _, _, err := runCLI(t, "thread", "update", id); err == nil {
 		t.Error("update with no flags was accepted")
+	}
+}
+
+// thread create starts a conversation in T3 Code: the prompt from the
+// argument or from stdin, options repeated and passed through verbatim,
+// and the thread printed exactly as get prints it.
+func TestThreadCreateCLI(t *testing.T) {
+	ts := startTestServerFull(t)
+	projectDir, err := paths.CanonicalDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := createProjectCLI(t, projectDir)
+	ts.connectT3(t, projectDir)
+	flags := []string{"thread", "create", "--integration", "t3code", "--agent", "codex", "--project", projectID, "--model", "gpt-5.6-sol"}
+
+	stdout, _, err := runCLI(t, append(flags, "--option", "reasoningEffort=high", "--option", "verbosity=low", "Fix the build")...)
+	if err != nil {
+		t.Fatalf("thread create: %v", err)
+	}
+	id := regexp.MustCompile(`thrd-[a-z2-9]{5}`).FindString(stdout)
+	if id == "" {
+		t.Fatalf("create output has no id:\n%s", stdout)
+	}
+	for _, want := range []string{"t3code", "codex", "working", "Fix the build", projectID, "gpt-5.6-sol", "latest turn", "turn-", "running",
+		ts.t3Server.Origin() + "/env-1/", "t3code://threads/env-1/"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("create output lacks %q:\n%s", want, stdout)
+		}
+	}
+	get, _, err := runCLI(t, "thread", "get", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if get != stdout {
+		t.Errorf("create printed:\n%s\nget printed:\n%s", stdout, get)
+	}
+	commands := ts.t3Server.Commands()
+	if len(commands) != 1 {
+		t.Fatalf("T3 received %d commands", len(commands))
+	}
+	if text := commands[0]["message"].(map[string]any)["text"]; text != "Fix the build" {
+		t.Errorf("prompt sent = %v", text)
+	}
+	wantOptions := []any{map[string]any{"id": "reasoningEffort", "value": "high"}, map[string]any{"id": "verbosity", "value": "low"}}
+	if diff := cmp.Diff(wantOptions, commands[0]["modelSelection"].(map[string]any)["options"]); diff != "" {
+		t.Errorf("options (-want +got):\n%s", diff)
+	}
+
+	// The prompt comes from stdin when the argument is "-" or absent.
+	for _, args := range [][]string{append(flags, "-"), flags} {
+		if _, _, err := runCLIInput(t, "From stdin\n", args...); err != nil {
+			t.Fatalf("thread create %v: %v", args, err)
+		}
+	}
+	commands = ts.t3Server.Commands()
+	if len(commands) != 3 {
+		t.Fatalf("T3 received %d commands", len(commands))
+	}
+	for _, command := range commands[1:] {
+		if text := command["message"].(map[string]any)["text"]; text != "From stdin\n" {
+			t.Errorf("prompt from stdin sent = %q", text)
+		}
+	}
+
+	// Local refusals send nothing.
+	if _, _, err := runCLI(t, append(flags, "--option", "novalue", "hi")...); err == nil || !strings.Contains(err.Error(), `"novalue" is not id=value`) {
+		t.Errorf("malformed option = %v", err)
+	}
+	if _, _, err := runCLIInput(t, "  \n", flags...); err == nil || !strings.Contains(err.Error(), "prompt is empty") {
+		t.Errorf("empty stdin = %v", err)
+	}
+	if _, _, err := runCLI(t, "thread", "create", "--integration", "t3code", "hi"); err == nil || !strings.Contains(err.Error(), "required flag") {
+		t.Errorf("missing flags = %v", err)
+	}
+	if got := ts.t3Server.Commands(); len(got) != 3 {
+		t.Errorf("refusals sent commands: %d", len(got)-3)
+	}
+	// The server's refusals surface as the CLI's error.
+	if _, _, err := runCLI(t, "thread", "create", "--integration", "claude", "--agent", "claude", "--project", projectID, "--model", "m", "hi"); err == nil || !strings.Contains(err.Error(), "does not support thread creation") {
+		t.Errorf("non-creating integration = %v", err)
 	}
 }

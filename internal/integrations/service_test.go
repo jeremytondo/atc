@@ -83,13 +83,14 @@ func testIntegrations(connection api.IntegrationConnection) []Integration {
 		{ID: "beta", Name: "Beta",
 			Apps:       []App{{ID: "tui", Name: "Beta", Terminal: fakeTerminalApp{command: "beta"}}},
 			Executable: &Executable{Binary: "beta-bin", InstallHint: "install beta"}},
-		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
+		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation},
 			Agents: []api.IntegrationAgent{{ID: "alpha", Name: "Alpha (as Watcher names it)"}, {ID: "gamma", Name: "Gamma"}},
 			Apps: []App{
 				{ID: "web", Name: "Watcher (web)", Agents: []string{"alpha", "gamma"}, Handoff: true},
 				{ID: "desktop", Name: "Watcher (desktop)", Handoff: true},
 			},
-			Connection: func() api.IntegrationConnection { return connection }},
+			Connection:    func() api.IntegrationConnection { return connection },
+			PrepareThread: fakePrepareThread},
 		{ID: "mux", Name: "Mux", Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
 			Executable: &Executable{Binary: "mux", InstallHint: "install mux"}},
 	}
@@ -117,13 +118,15 @@ func TestNewServiceRejectsDuplicates(t *testing.T) {
 		integrations []Integration
 		want         string
 	}{
-		"integration id": {[]Integration{{ID: "alpha"}, {ID: "alpha"}}, `duplicate integration id "alpha"`},
-		"agent id":       {[]Integration{{ID: "alpha", Agents: []api.IntegrationAgent{{ID: "x"}, {ID: "x"}}}}, `declares agent "x" twice`},
-		"app id":         {[]Integration{{ID: "alpha", Apps: []App{{ID: "tui"}, {ID: "tui"}}}}, `declares app "tui" twice`},
-		"qualified app":  {[]Integration{{ID: "alpha", Apps: []App{{ID: "alpha/tui"}}}}, `ids are one non-empty segment`},
-		"empty app":      {[]Integration{{ID: "alpha", Apps: []App{{ID: ""}}}}, `ids are one non-empty segment`},
-		"qualified id":   {[]Integration{{ID: "alpha/beta"}}, `ids are one non-empty segment`},
-		"empty id":       {[]Integration{{ID: ""}}, `ids are one non-empty segment`},
+		"integration id":              {[]Integration{{ID: "alpha"}, {ID: "alpha"}}, `duplicate integration id "alpha"`},
+		"agent id":                    {[]Integration{{ID: "alpha", Agents: []api.IntegrationAgent{{ID: "x"}, {ID: "x"}}}}, `declares agent "x" twice`},
+		"app id":                      {[]Integration{{ID: "alpha", Apps: []App{{ID: "tui"}, {ID: "tui"}}}}, `declares app "tui" twice`},
+		"qualified app":               {[]Integration{{ID: "alpha", Apps: []App{{ID: "alpha/tui"}}}}, `ids are one non-empty segment`},
+		"empty app":                   {[]Integration{{ID: "alpha", Apps: []App{{ID: ""}}}}, `ids are one non-empty segment`},
+		"qualified id":                {[]Integration{{ID: "alpha/beta"}}, `ids are one non-empty segment`},
+		"empty id":                    {[]Integration{{ID: ""}}, `ids are one non-empty segment`},
+		"creation without capability": {[]Integration{{ID: "alpha", PrepareThread: fakePrepareThread}}, `thread_creation capability and the creation seam must be declared together`},
+		"capability without creation": {[]Integration{{ID: "alpha", Capabilities: []api.IntegrationCapability{api.CapabilityThreadCreation}}}, `must be declared together`},
 	}
 	for name, tc := range cases {
 		_, err := NewService(Options{Integrations: tc.integrations})
@@ -175,7 +178,7 @@ func TestListAndGetReportAvailability(t *testing.T) {
 		{ID: "beta", Name: "Beta", Capabilities: []api.IntegrationCapability{}, Agents: []api.IntegrationAgent{},
 			Apps:      []api.App{{ID: "beta/tui", Name: "Beta", Agents: []string{}, Interactions: terminal, Available: &no}},
 			Available: false, InstallHint: "install beta"},
-		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
+		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation},
 			Agents: []api.IntegrationAgent{{ID: "alpha", Name: "Alpha (as Watcher names it)"}, {ID: "gamma", Name: "Gamma"}},
 			Apps: []api.App{
 				{ID: "watcher/web", Name: "Watcher (web)", Agents: []string{"alpha", "gamma"}, Interactions: handoff},

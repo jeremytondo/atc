@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# ATC-289 live smoke check (manual; not part of `mise test`): start a
+# private T3 Code environment from the installed T3 runtime, run the atc
+# binary built from this checkout against it with private state, create one
+# thread through `atc thread create`, and wait for its first turn to end.
+# Everything it starts is stopped and everything it paired is revoked on
+# exit. Run it before adopting a T3 nightly.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/atc-289 --model <name> [--agent <id>] [--option <id>=<value>]...
+                  [--project-root <dir>] [--prompt <text>] [--timeout <seconds>]
+
+Starts a private T3 Code environment (its own base dir, its own port) from the
+T3 runtime installed under ${T3CODE_HOME:-~/.t3}, then an ATC server with
+private XDG state pointed at it, and drives `atc thread create`. Waits until
+the thread's first turn completes, fails, or the timeout passes, printing
+`atc thread get` along the way.
+
+Options:
+  --model <name>         Model passed to T3 untouched (required).
+  --agent <id>           T3 provider kind (default: codex).
+  --option <id>=<value>  Provider option, repeatable (e.g. reasoningEffort=high).
+  --project-root <dir>   Workspace for the T3 project (default: a temp dir).
+  --prompt <text>        First prompt (default: asks for a fixed reply).
+  --timeout <seconds>    Bound on the whole turn (default: 180).
+USAGE
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd "$script_dir/.." && pwd)"
+real_home="${T3CODE_HOME:-$HOME/.t3}"
+state_file="$real_home/runtime/service-state.json"
+
+model=""
+agent="codex"
+options=()
+workspace=""
+prompt="Reply with exactly ATC_T3_SMOKE_OK and nothing else. Do not run any tools."
+timeout=180
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model|--agent|--option|--project-root|--prompt|--timeout)
+      [[ $# -ge 2 ]] || { echo "atc-289: missing value for $1" >&2; usage >&2; exit 2; }
+      ;;
+  esac
+  case "$1" in
+    --model) model="$2"; shift 2 ;;
+    --agent) agent="$2"; shift 2 ;;
+    --option) options+=(--option "$2"); shift 2 ;;
+    --project-root) workspace="$2"; shift 2 ;;
+    --prompt) prompt="$2"; shift 2 ;;
+    --timeout) timeout="$2"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "atc-289: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+[[ -n "$model" ]] || { echo "atc-289: --model is required" >&2; usage >&2; exit 2; }
+
+for dependency in node jq curl mise mktemp; do
+  command -v "$dependency" >/dev/null || {
+    echo "atc-289: required command not found: $dependency" >&2
+    exit 1
+  }
+done
+[[ -f "$state_file" ]] || {
+  echo "atc-289: no installed T3 Code runtime under $real_home (missing $state_file)" >&2
+  exit 1
+}
+active_version="$(jq -er .activeVersion "$state_file")"
+t3_bin="$real_home/runtime/versions/$active_version/node_modules/t3/dist/bin.mjs"
+[[ -f "$t3_bin" ]] || {
+  echo "atc-289: active T3 Code CLI not found at $t3_bin" >&2
+  exit 1
+}
+t3_package="$(cd "$(dirname "$t3_bin")/.." && pwd)"
+
+# Private state: a T3 base dir that borrows the installed runtime (so the
+# Integration's pairing finds the CLI where a service-run home keeps it),
+# private XDG dirs for ATC, and a disposable workspace unless one is given.
+scratch="$(mktemp -d -t atc-289.XXXXXX)"
+t3_home="$scratch/t3"
+mkdir -p "$t3_home/runtime/versions/$active_version/node_modules"
+ln -s "$t3_package" "$t3_home/runtime/versions/$active_version/node_modules/t3"
+printf '{"activeVersion":"%s"}\n' "$active_version" >"$t3_home/runtime/service-state.json"
+created_workspace=""
+if [[ -z "$workspace" ]]; then
+  workspace="$scratch/workspace"
+  mkdir -p "$workspace"
+  created_workspace="$workspace"
+fi
+workspace="$(cd "$workspace" && pwd -P)"
+export XDG_CONFIG_HOME="$scratch/xdg/config" XDG_DATA_HOME="$scratch/xdg/data" XDG_STATE_HOME="$scratch/xdg/state"
+export T3CODE_HOME="$t3_home"
+
+t3_pid=""
+atc_pid=""
+cleanup() {
+  set +e
+  if [[ -n "$atc_pid" ]] && kill -0 "$atc_pid" 2>/dev/null; then
+    kill -TERM "$atc_pid" 2>/dev/null
+    wait "$atc_pid" 2>/dev/null
+  fi
+  # Revoke the session ATC paired before the private environment goes,
+  # the way any ATC session in a T3 home should end.
+  if [[ -n "$t3_pid" ]] && kill -0 "$t3_pid" 2>/dev/null; then
+    NODE_NO_WARNINGS=1 node "$t3_bin" auth session list --base-dir "$t3_home" --json 2>/dev/null |
+      jq -r '.[] | select(.client.label == "atc") | .sessionId' |
+      while read -r session; do
+        NODE_NO_WARNINGS=1 node "$t3_bin" auth session revoke --base-dir "$t3_home" "$session" >/dev/null 2>&1
+      done
+    kill -TERM "$t3_pid" 2>/dev/null
+    wait "$t3_pid" 2>/dev/null
+  fi
+  rm -rf "$scratch"
+}
+
+# show_logs prints the tail of both servers' logs, for a failure.
+show_logs() {
+  for log in t3 atc; do
+    if [[ -f "$scratch/logs/$log.log" ]]; then
+      echo "atc-289: last lines of $log.log:" >&2
+      tail -n 40 "$scratch/logs/$log.log" >&2
+    fi
+  done
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
+mkdir -p "$scratch/logs"
+mise exec -C "$repo_dir" -- go build -o "$scratch/atc" ./cmd/atc
+atc="$scratch/atc"
+
+random_port() { echo $((20000 + RANDOM % 20000)); }
+t3_port="$(random_port)"
+atc_port="$(random_port)"
+
+echo "atc-289: starting a private T3 Code environment on 127.0.0.1:$t3_port (base dir $t3_home)" >&2
+NODE_NO_WARNINGS=1 node "$t3_bin" serve --base-dir "$t3_home" --host 127.0.0.1 --port "$t3_port" \
+  --no-browser --auto-bootstrap-project-from-cwd "$workspace" >"$scratch/logs/t3.log" 2>&1 &
+t3_pid=$!
+for _ in $(seq 1 120); do
+  [[ -f "$t3_home/userdata/server-runtime.json" ]] && break
+  kill -0 "$t3_pid" 2>/dev/null || { echo "atc-289: T3 Code exited; see $scratch/logs/t3.log" >&2; cat "$scratch/logs/t3.log" >&2; exit 1; }
+  sleep 0.5
+done
+[[ -f "$t3_home/userdata/server-runtime.json" ]] || { echo "atc-289: T3 Code never wrote its runtime file" >&2; exit 1; }
+
+echo "atc-289: starting ATC on 127.0.0.1:$atc_port with private state under $scratch/xdg" >&2
+export ATC_SERVER="http://127.0.0.1:$atc_port"
+ATC_TOKEN="$("$atc" server token)"
+export ATC_TOKEN
+"$atc" server run --bind 127.0.0.1 --port "$atc_port" >"$scratch/logs/atc.log" 2>&1 &
+atc_pid=$!
+for _ in $(seq 1 60); do
+  curl --silent --fail --max-time 2 -H "Authorization: Bearer $ATC_TOKEN" "$ATC_SERVER/v1/health" >/dev/null 2>&1 && break
+  kill -0 "$atc_pid" 2>/dev/null || { echo "atc-289: ATC exited; see $scratch/logs/atc.log" >&2; cat "$scratch/logs/atc.log" >&2; exit 1; }
+  sleep 0.5
+done
+
+project_id="$("$atc" project create "$workspace" | grep -oE 'proj-[a-z2-9]{5}' | head -1)"
+[[ -n "$project_id" ]] || { echo "atc-289: project create printed no id" >&2; exit 1; }
+
+echo "atc-289: waiting for ATC to pair with T3 Code and connect" >&2
+connected=""
+for _ in $(seq 1 120); do
+  if "$atc" integration get t3code | grep -Eq '^connection +connected'; then
+    connected=1
+    break
+  fi
+  sleep 0.5
+done
+[[ -n "$connected" ]] || { echo "atc-289: T3 Code never connected:" >&2; "$atc" integration get t3code >&2; exit 1; }
+
+echo "atc-289: creating the thread" >&2
+created="$("$atc" thread create --integration t3code --agent "$agent" --project "$project_id" --model "$model" "${options[@]}" "$prompt")"
+echo "$created"
+thread_id="$(grep -oE 'thrd-[a-z2-9]{5}' <<<"$created" | head -1)"
+[[ -n "$thread_id" ]] || { echo "atc-289: thread create printed no id" >&2; exit 1; }
+
+started=$SECONDS
+ended=""
+state=""
+thread_status=""
+while (( SECONDS - started < timeout )); do
+  detail="$("$atc" thread get "$thread_id")"
+  thread_status="$(awk '$1 == "status" {print $2}' <<<"$detail")"
+  state="$(awk '$1 == "turn" && $2 == "state" {print $3}' <<<"$detail")"
+  case "$state" in completed|failed|interrupted) ended=1; break ;; esac
+  [[ "$thread_status" == "error" ]] && { ended=1; break; }
+  sleep 2
+done
+echo
+echo "atc-289: final thread after $((SECONDS - started))s"
+"$atc" thread get "$thread_id"
+if [[ -z "$ended" ]]; then
+  echo "atc-289: FAIL — the turn did not end within ${timeout}s (status $thread_status, turn $state)" >&2
+  show_logs
+  exit 1
+fi
+if [[ "$state" == "completed" && "$thread_status" != "error" ]]; then
+  echo "atc-289: PASS — the first turn completed (status $thread_status)" >&2
+  exit 0
+fi
+echo "atc-289: FAIL — the turn ended $state (status $thread_status)" >&2
+show_logs
+exit 1

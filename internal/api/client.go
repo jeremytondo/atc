@@ -174,6 +174,15 @@ func (c *Client) Threads(ctx context.Context, projectID, terminalID string, incl
 	return list.Threads, err
 }
 
+// CreateThread starts a new conversation with its first prompt in an
+// Integration's program (ATC-289), returning the thread as it stands once
+// the program has committed the creation.
+func (c *Client) CreateThread(ctx context.Context, params ThreadCreateParams) (Thread, error) {
+	var thread Thread
+	err := c.do(ctx, http.MethodPost, "/v1/threads", params, &thread)
+	return thread, err
+}
+
 // Thread fetches one thread by ID.
 func (c *Client) Thread(ctx context.Context, id string) (Thread, error) {
 	var thread Thread

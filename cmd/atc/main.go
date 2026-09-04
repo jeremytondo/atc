@@ -635,10 +635,11 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Logger:        logger,
 	})
 
-	// T3 Code (ATC-285): a read-only mirror of the local T3 environment's
-	// threads, self-discovering and self-pairing; its session lives beside
-	// the auth token. Links on its threads derive from its live state;
-	// the threads domain classifies them into projects by origin.
+	// T3 Code (ATC-285, ATC-289): a mirror of the local T3 environment's
+	// threads and the seam that starts new ones there, self-discovering and
+	// self-pairing; its session lives beside the auth token. Links on its
+	// threads derive from its live state; the threads domain classifies
+	// them into projects by origin.
 	t3Home, err := t3code.Home()
 	if err != nil {
 		return err
@@ -647,21 +648,21 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	t3Observer := t3code.New(t3code.Options{
+	t3Service := t3code.New(t3code.Options{
 		Home:        t3Home,
 		SessionPath: t3SessionPath,
 		Threads:     threadService,
 		Hub:         hub,
 		Logger:      logger,
 	})
-	threadService.SetLinker(t3code.ID, t3Observer.Links)
+	threadService.SetLinker(t3code.ID, t3Service.Links)
 
 	// One registration line per built-in Integration; a duplicate id fails
 	// the boot. The typed seams each implements are wired above — the
 	// catalog only describes them.
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
-			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
 		},
 	})
 	if err != nil {
@@ -707,7 +708,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	background.Go(func() { terminalService.Run(loopCtx) })
 	background.Go(func() { threadService.Run(loopCtx) })
 	background.Go(func() { codexObserver.Run(loopCtx) })
-	background.Go(func() { t3Observer.Run(loopCtx) })
+	background.Go(func() { t3Service.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

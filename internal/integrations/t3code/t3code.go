@@ -1,18 +1,21 @@
-// Package t3code is T3 Code's Integration (ATC-294, ATC-285): a
-// read-only mirror of the threads a local T3 Code environment owns. T3
-// stays the source of truth — ATC never starts, prompts, approves,
-// archives, or otherwise mutates a T3 thread — and its threads appear in
-// ATC's normal thread list as ordinary records with near-real-time status
-// and deep links back into T3's Apps (its web UI and desktop app), which
-// are handoff Apps: the server never launches them, and no thread records
-// which one started it.
+// Package t3code is T3 Code's Integration (ATC-294, ATC-285, ATC-289): a
+// mirror of the threads a local T3 Code environment owns, and the one
+// place ATC starts a thread there. T3 stays the source of truth — ATC
+// creates a thread with its first prompt (create.go) and then only
+// watches; it never prompts again, approves, archives, or otherwise
+// mutates a T3 thread — and its threads appear in ATC's normal thread
+// list as ordinary records with near-real-time status and deep links
+// back into T3's Apps (its web UI and desktop app), which are handoff
+// Apps: the server never launches them, and no thread records which one
+// started it.
 //
 // The Integration is always on and self-discovering: it finds the local
 // server through T3's runtime state file, pairs with it zero-touch (a
 // pairing grant minted by T3's own CLI, exchanged for a session scoped to
-// exactly orchestration:read, persisted 0600 under ATC's data dir), and
-// keeps one long-lived subscription to T3's shell projection over its
-// Effect RPC WebSocket. There is no configuration and no remote origin:
+// exactly orchestration:read and orchestration:operate, persisted 0600
+// under ATC's data dir), and keeps one WebSocket to T3's Effect RPC,
+// carrying the long-lived subscription to its shell projection and any
+// command it dispatches. There is no configuration and no remote origin:
 // the only T3 it ever talks to is on this machine. The id is persisted on
 // every thread it produces — never rename it.
 package t3code
@@ -45,11 +48,12 @@ var agents = []api.IntegrationAgent{
 }
 
 // Integration is T3 Code's catalog registration: the agents T3 drives,
-// its two handoff Apps, and its live connection. It launches nothing —
-// a T3 conversation opens in T3, through the thread's links.
-func Integration(observer *Observer) integrations.Integration {
-	if observer == nil {
-		panic("t3code.Integration: observer must not be nil")
+// its two handoff Apps, its live connection, and its thread creation. It
+// launches nothing — a T3 conversation opens in T3, through the thread's
+// links.
+func Integration(service *Service) integrations.Integration {
+	if service == nil {
+		panic("t3code.Integration: service must not be nil")
 	}
 	agentIDs := make([]string, 0, len(agents))
 	for _, agent := range agents {
@@ -58,13 +62,14 @@ func Integration(observer *Observer) integrations.Integration {
 	return integrations.Integration{
 		ID:           ID,
 		Name:         "T3 Code",
-		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
+		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation},
 		Agents:       agents,
 		Apps: []integrations.App{
 			{ID: "web", Name: "T3 Code (web)", Agents: agentIDs, Handoff: true},
 			{ID: "desktop", Name: "T3 Code (desktop)", Agents: agentIDs, Handoff: true},
 		},
-		Connection: observer.Connection,
+		Connection:    service.Connection,
+		PrepareThread: service.PrepareThread,
 	}
 }
 

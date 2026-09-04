@@ -16,6 +16,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations/t3code/t3codetest"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/threads"
@@ -34,15 +35,15 @@ func (noTerminals) Get(string) (api.Terminal, error) {
 // CLI — so every assertion reads what the API would serve.
 type fixture struct {
 	t           *testing.T
-	server      *fakeT3
-	cli         *fakeCLI
+	server      *t3codetest.Server
+	cli         *t3codetest.CLI
 	home        string
 	sessionPath string
 	threads     *threads.Service
 	projects    *projects.Service
 	hub         *events.Hub
 	sub         *events.Subscription
-	observer    *Observer
+	service     *Service
 	alive       atomic.Bool
 	authRetry   time.Duration
 	cancel      context.CancelFunc
@@ -62,9 +63,9 @@ func newFixture(t *testing.T) *fixture {
 	if err := threadService.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	server := newFakeT3(t)
+	server := t3codetest.NewServer(t)
 	f := &fixture{
-		t: t, server: server, cli: &fakeCLI{server: server},
+		t: t, server: server, cli: t3codetest.NewCLI(server),
 		home: t.TempDir(), sessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
 		threads: threadService, projects: projectService, hub: hub,
 		authRetry: 300 * time.Millisecond,
@@ -87,27 +88,27 @@ func (f *fixture) writeRuntime(origin string) {
 	}
 }
 
-// start builds the observer with shrunk cadences and runs it until the
+// start builds the service with shrunk cadences and runs it until the
 // test ends.
 func (f *fixture) start() {
 	f.t.Helper()
-	f.observer = New(Options{
+	f.service = New(Options{
 		Home: f.home, SessionPath: f.sessionPath,
 		Threads: f.threads, Hub: f.hub,
-		RunCLI:       f.cli.run,
+		RunCLI:       f.cli.Run,
 		ProcessAlive: func(int) bool { return f.alive.Load() },
 	})
-	f.observer.pollInterval = 20 * time.Millisecond
-	f.observer.backoffMin = 20 * time.Millisecond
-	f.observer.backoffMax = 100 * time.Millisecond
-	f.observer.authRetry = f.authRetry
-	f.threads.SetLinker(ID, f.observer.Links)
+	f.service.pollInterval = 20 * time.Millisecond
+	f.service.backoffMin = 20 * time.Millisecond
+	f.service.backoffMax = 100 * time.Millisecond
+	f.service.authRetry = f.authRetry
+	f.threads.SetLinker(ID, f.service.Links)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
 	f.done = make(chan struct{})
 	go func() {
 		defer close(f.done)
-		f.observer.Run(ctx)
+		f.service.Run(ctx)
 	}()
 	f.t.Cleanup(func() {
 		cancel()
@@ -128,8 +129,8 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 
 func (f *fixture) waitState(state api.IntegrationConnectionState) api.IntegrationConnection {
 	f.t.Helper()
-	waitFor(f.t, "integration state "+string(state), func() bool { return f.observer.Connection().State == state })
-	return f.observer.Connection()
+	waitFor(f.t, "integration state "+string(state), func() bool { return f.service.Connection().State == state })
+	return f.service.Connection()
 }
 
 // thread resolves a T3 thread id to its ATC record, waiting for it.
@@ -209,11 +210,11 @@ func TestSnapshotMirrorsThreads(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	project := f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(7, []any{projectItem("p1", "T3 title", workspace)}, []any{
-			threadItem("t1", "p1", "Fix the build", withSession("running", "codex")),
-		}), synchronizedItem()}
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(7, []any{t3codetest.ProjectItem("p1", "T3 title", workspace)}, []any{
+			t3codetest.ThreadItem("t1", "p1", "Fix the build", t3codetest.WithSession("running", "codex")),
+		}), t3codetest.SynchronizedItem()}
 	})
 	f.events()
 	f.start()
@@ -227,7 +228,7 @@ func TestSnapshotMirrorsThreads(t *testing.T) {
 		ID: thread.ID, IntegrationID: "t3code", AgentID: "codex", ProjectID: project.ID, InitialDirectory: workspace,
 		Title: "Fix the build", Model: "gpt-5", Cwd: workspace, Status: api.ThreadWorking,
 		LastEvidenceAt: thread.LastEvidenceAt, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
-		Links: &api.ThreadLinks{Web: f.server.origin() + "/env-1/t1", App: "t3code://threads/env-1/t1"},
+		Links: &api.ThreadLinks{Web: f.server.Origin() + "/env-1/t1", App: "t3code://threads/env-1/t1"},
 	}
 	if diff := cmp.Diff(want, thread); diff != "" {
 		t.Errorf("thread (-want +got):\n%s", diff)
@@ -237,12 +238,12 @@ func TestSnapshotMirrorsThreads(t *testing.T) {
 	}
 
 	// Pairing left one session, persisted 0600, and the exchange asked for
-	// exactly the read scope (the fake refuses anything else).
-	if f.cli.count("auth pairing create") != 1 {
-		t.Errorf("pairing create calls = %v", f.cli.calls)
+	// exactly the scope set (the fake refuses anything else).
+	if f.cli.Count("auth pairing create") != 1 {
+		t.Errorf("pairing create calls = %v", f.cli.Calls())
 	}
 	stored := f.readSession()
-	if stored.Origin != f.server.origin() || stored.Token != "token-1" || stored.Label != "atc" || stored.SessionID != "sess-1" {
+	if stored.Origin != f.server.Origin() || stored.Token != "token-1" || stored.Label != "atc" || stored.SessionID != "sess-1" {
 		t.Errorf("session = %+v", stored)
 	}
 	if info, err := os.Stat(f.sessionPath); err != nil || info.Mode().Perm() != 0o600 {
@@ -264,32 +265,32 @@ func TestUpsertsDriveStatus(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
-			threadItem("t1", "p1", "One", withSession("running", "codex")),
-		}), synchronizedItem()}
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+			t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex")),
+		}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	f.waitStatus("t1", api.ThreadWorking)
 
 	steps := []struct {
 		sequence uint64
-		opts     []threadOpt
+		opts     []t3codetest.ThreadOpt
 		want     api.ThreadStatus
 	}{
-		{2, []threadOpt{withSession("running", "codex"), pending(true, false)}, api.ThreadWaitingForPermission},
-		{3, []threadOpt{withSession("running", "codex"), pending(false, true)}, api.ThreadWaitingForInput},
-		{4, []threadOpt{withSession("error", "codex"), lastError("boom")}, api.ThreadError},
-		{5, []threadOpt{withSession("idle", "codex")}, api.ThreadIdle},
-		{6, []threadOpt{withSession("ready", "codex"), liveness("monitoring")}, api.ThreadWorking},
-		{7, []threadOpt{withSession("stopped", "codex")}, api.ThreadIdle},
-		{8, []threadOpt{withSession("hibernating", "codex")}, api.ThreadUnknown},
-		{9, []threadOpt{liveness("dreaming")}, api.ThreadUnknown},
+		{2, []t3codetest.ThreadOpt{t3codetest.WithSession("running", "codex"), t3codetest.Pending(true, false)}, api.ThreadWaitingForPermission},
+		{3, []t3codetest.ThreadOpt{t3codetest.WithSession("running", "codex"), t3codetest.Pending(false, true)}, api.ThreadWaitingForInput},
+		{4, []t3codetest.ThreadOpt{t3codetest.WithSession("error", "codex"), t3codetest.LastError("boom")}, api.ThreadError},
+		{5, []t3codetest.ThreadOpt{t3codetest.WithSession("idle", "codex")}, api.ThreadIdle},
+		{6, []t3codetest.ThreadOpt{t3codetest.WithSession("ready", "codex"), t3codetest.Liveness("monitoring")}, api.ThreadWorking},
+		{7, []t3codetest.ThreadOpt{t3codetest.WithSession("stopped", "codex")}, api.ThreadIdle},
+		{8, []t3codetest.ThreadOpt{t3codetest.WithSession("hibernating", "codex")}, api.ThreadUnknown},
+		{9, []t3codetest.ThreadOpt{t3codetest.Liveness("dreaming")}, api.ThreadUnknown},
 		{10, nil, api.ThreadIdle},
 	}
 	for _, step := range steps {
-		f.server.push(upserted(step.sequence, threadItem("t1", "p1", "One", step.opts...)))
+		f.server.Push(t3codetest.Upserted(step.sequence, t3codetest.ThreadItem("t1", "p1", "One", step.opts...)))
 		thread := f.waitStatus("t1", step.want)
 		if step.want == api.ThreadError && thread.StatusDetail != "boom" {
 			t.Errorf("statusDetail = %q after the error step", thread.StatusDetail)
@@ -304,8 +305,8 @@ func TestUpsertsDriveStatus(t *testing.T) {
 
 	// A stale sequence is ignored: the status stays where sequence 10
 	// left it.
-	f.server.push(upserted(4, threadItem("t1", "p1", "One", withSession("error", "codex"))))
-	f.server.push(upserted(11, threadItem("t1", "p1", "Renamed", withSession("idle", "claudeAgent"))))
+	f.server.Push(t3codetest.Upserted(4, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("error", "codex"))))
+	f.server.Push(t3codetest.Upserted(11, t3codetest.ThreadItem("t1", "p1", "Renamed", t3codetest.WithSession("idle", "claudeAgent"))))
 	thread := f.thread("t1")
 	waitFor(t, "sequence 11", func() bool { thread = f.thread("t1"); return thread.Title == "Renamed" })
 	if thread.Status != api.ThreadIdle || thread.AgentID != "claudeAgent" {
@@ -320,11 +321,11 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
-			threadItem("t1", "p1", "One", withSession("running", "codex")),
-		}), synchronizedItem()}
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+			t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex")),
+		}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	thread := f.waitStatus("t1", api.ThreadWorking)
@@ -342,7 +343,7 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 		t.Errorf("title patch while reported = %v", err)
 	}
 
-	f.server.push(removed(2, "t1"))
+	f.server.Push(t3codetest.Removed(2, "t1"))
 	waitFor(t, "archive", func() bool { return f.thread("t1").Archived })
 	got := f.thread("t1")
 	if got.Status != api.ThreadUnknown || got.ArchivedAt == nil {
@@ -351,7 +352,7 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 
 	// T3 reports it again (unarchived there): same record, back in the
 	// default list, the user's title kept.
-	f.server.push(upserted(3, threadItem("t1", "p1", "T3 renamed it", withSession("idle", "codex"))))
+	f.server.Push(t3codetest.Upserted(3, t3codetest.ThreadItem("t1", "p1", "T3 renamed it", t3codetest.WithSession("idle", "codex"))))
 	waitFor(t, "unarchive", func() bool { return !f.thread("t1").Archived })
 	got = f.thread("t1")
 	if got.ID != thread.ID || got.Title != "my title" || got.Status != api.ThreadIdle {
@@ -359,7 +360,7 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 	}
 
 	// Removed again: now archive and delete are the user's to do.
-	f.server.push(removed(4, "t1"))
+	f.server.Push(t3codetest.Removed(4, "t1"))
 	waitFor(t, "second archive", func() bool { return f.thread("t1").Archived })
 	unarchived := false
 	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Archived: api.Some(unarchived)}); err != nil {
@@ -378,18 +379,18 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(after *uint64) []any {
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(after *uint64) []any {
 		if after == nil {
-			return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
-				threadItem("t-live", "p1", "Live", withSession("running", "codex")),
-				threadItem("t-history", "p1", "Old", settledOverride("settled")),
-			}), synchronizedItem()}
+			return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+				t3codetest.ThreadItem("t-live", "p1", "Live", t3codetest.WithSession("running", "codex")),
+				t3codetest.ThreadItem("t-history", "p1", "Old", t3codetest.SettledOverride("settled")),
+			}), t3codetest.SynchronizedItem()}
 		}
-		return []any{snapshotItem(9, []any{projectItem("p1", "T3", workspace)}, []any{
-			threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled")),
-			threadItem("t-history", "p1", "Old", settledOverride("settled")),
-		}), synchronizedItem()}
+		return []any{t3codetest.SnapshotItem(9, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+			t3codetest.ThreadItem("t-live", "p1", "Live", t3codetest.WithSession("idle", "codex"), t3codetest.SettledOverride("settled")),
+			t3codetest.ThreadItem("t-history", "p1", "Old", t3codetest.SettledOverride("settled")),
+		}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	live := f.waitStatus("t-live", api.ThreadWorking)
@@ -402,7 +403,7 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 	}
 
 	// Settled live: archived, coerced, hold released.
-	f.server.push(upserted(2, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled"))))
+	f.server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem("t-live", "p1", "Live", t3codetest.WithSession("idle", "codex"), t3codetest.SettledOverride("settled"))))
 	waitFor(t, "archive on settle", func() bool { return f.thread("t-live").Archived })
 	if got := f.thread("t-live"); got.ID != live.ID || got.Status != api.ThreadUnknown {
 		t.Errorf("settled = %+v", got)
@@ -414,7 +415,7 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 
 	// Reactivated (explicitly, then by clearing the override): the same
 	// record returns and holds again.
-	f.server.push(upserted(3, threadItem("t-live", "p1", "Live", withSession("running", "codex"), settledOverride("active"))))
+	f.server.Push(t3codetest.Upserted(3, t3codetest.ThreadItem("t-live", "p1", "Live", t3codetest.WithSession("running", "codex"), t3codetest.SettledOverride("active"))))
 	restored := f.waitStatus("t-live", api.ThreadWorking)
 	if restored.ID != live.ID || restored.Archived {
 		t.Errorf("reactivated = %+v; want %s unarchived", restored, live.ID)
@@ -423,16 +424,16 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, threads.ErrActive) {
 		t.Errorf("archive while active again = %v; want ErrActive", err)
 	}
-	f.server.push(upserted(4, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled"))))
+	f.server.Push(t3codetest.Upserted(4, t3codetest.ThreadItem("t-live", "p1", "Live", t3codetest.WithSession("idle", "codex"), t3codetest.SettledOverride("settled"))))
 	waitFor(t, "second settle", func() bool { return f.thread("t-live").Archived })
-	f.server.push(upserted(5, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride(nil))))
+	f.server.Push(t3codetest.Upserted(5, t3codetest.ThreadItem("t-live", "p1", "Live", t3codetest.WithSession("idle", "codex"), t3codetest.SettledOverride(nil))))
 	waitFor(t, "unsettle by null", func() bool { return !f.thread("t-live").Archived })
 	if got := f.thread("t-live"); got.ID != restored.ID || got.Status != api.ThreadIdle {
 		t.Errorf("unsettled = %+v; want %s idle", got, restored.ID)
 	}
 
 	// A reconnect snapshot that reports it settled archives it again.
-	f.server.dropConns()
+	f.server.DropConns()
 	waitFor(t, "archive on reconnect snapshot", func() bool { return f.thread("t-live").Archived })
 	if connection := f.waitState(api.IntegrationConnected); !strings.Contains(connection.Detail, "0 threads mirrored, 2 settled") {
 		t.Errorf("detail after reconnect = %q", connection.Detail)
@@ -447,19 +448,19 @@ func TestReconnectResumes(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(after *uint64) []any {
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(after *uint64) []any {
 		if after == nil {
-			return []any{snapshotItem(5, []any{projectItem("p1", "T3", workspace)}, []any{
-				threadItem("t1", "p1", "One", withSession("running", "codex")),
-				threadItem("t2", "p1", "Two", withSession("idle", "codex")),
-			}), synchronizedItem()}
+			return []any{t3codetest.SnapshotItem(5, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+				t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex")),
+				t3codetest.ThreadItem("t2", "p1", "Two", t3codetest.WithSession("idle", "codex")),
+			}), t3codetest.SynchronizedItem()}
 		}
 		// A replay: one event at the cursor (already applied), one new.
 		return []any{
-			upserted(5, threadItem("t1", "p1", "One", withSession("error", "codex"))),
-			upserted(6, threadItem("t2", "p1", "Two", withSession("running", "codex"))),
-			synchronizedItem(),
+			t3codetest.Upserted(5, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("error", "codex"))),
+			t3codetest.Upserted(6, t3codetest.ThreadItem("t2", "p1", "Two", t3codetest.WithSession("running", "codex"))),
+			t3codetest.SynchronizedItem(),
 		}
 	})
 	f.start()
@@ -467,7 +468,7 @@ func TestReconnectResumes(t *testing.T) {
 	two := f.waitStatus("t2", api.ThreadIdle)
 	f.events()
 
-	f.server.dropConns()
+	f.server.DropConns()
 	f.waitState(api.IntegrationConnecting)
 	f.waitStatus("t1", api.ThreadUnknown)
 	if got := f.thread("t2"); got.Status != api.ThreadIdle {
@@ -477,11 +478,11 @@ func TestReconnectResumes(t *testing.T) {
 	f.waitState(api.IntegrationConnected)
 	f.waitStatus("t1", api.ThreadWorking)
 	f.waitStatus("t2", api.ThreadWorking)
-	subscriptions := f.server.subscriptions()
+	subscriptions := f.server.Subscriptions()
 	if len(subscriptions) != 2 || subscriptions[0] != nil || subscriptions[1] == nil || *subscriptions[1] != 5 {
 		t.Errorf("subscriptions = %v; want a fresh one then afterSequence 5", subscriptions)
 	}
-	if tickets, exchanges := f.server.counts(); tickets != 2 || exchanges != 1 {
+	if tickets, exchanges := f.server.Counts(); tickets != 2 || exchanges != 1 {
 		t.Errorf("tickets = %d, exchanges = %d; want a ticket per connection and one pairing", tickets, exchanges)
 	}
 	got := f.events()
@@ -502,26 +503,26 @@ func TestReplayConnectsAtTheMarker(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(after *uint64) []any {
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(after *uint64) []any {
 		if after == nil {
-			return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
-				threadItem("t1", "p1", "One", withSession("running", "codex")),
-			}), synchronizedItem()}
+			return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+				t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex")),
+			}), t3codetest.SynchronizedItem()}
 		}
 		// The replay's events without its marker: the marker is pushed by
 		// the test.
-		return []any{upserted(2, threadItem("t1", "p1", "One", withSession("idle", "codex")))}
+		return []any{t3codetest.Upserted(2, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex")))}
 	})
 	f.start()
 	f.waitStatus("t1", api.ThreadWorking)
-	f.server.dropConns()
+	f.server.DropConns()
 	f.waitState(api.IntegrationConnecting)
 	f.waitStatus("t1", api.ThreadIdle)
-	if state := f.observer.Connection().State; state != api.IntegrationConnecting {
+	if state := f.service.Connection().State; state != api.IntegrationConnecting {
 		t.Errorf("state after a replayed event = %s; want connecting until synchronized", state)
 	}
-	f.server.push(synchronizedItem())
+	f.server.Push(t3codetest.SynchronizedItem())
 	f.waitState(api.IntegrationConnected)
 	archived := true
 	if _, err := f.threads.Update(context.Background(), f.thread("t1").ID, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, threads.ErrActive) {
@@ -536,24 +537,24 @@ func TestSnapshotFallbackDiffApplies(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(after *uint64) []any {
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(after *uint64) []any {
 		if after == nil {
-			return []any{snapshotItem(5, []any{projectItem("p1", "T3", workspace)}, []any{
-				threadItem("t1", "p1", "One", withSession("running", "codex")),
-				threadItem("t2", "p1", "Two", withSession("idle", "codex")),
-			}), synchronizedItem()}
+			return []any{t3codetest.SnapshotItem(5, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+				t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex")),
+				t3codetest.ThreadItem("t2", "p1", "Two", t3codetest.WithSession("idle", "codex")),
+			}), t3codetest.SynchronizedItem()}
 		}
-		return []any{snapshotItem(40, []any{projectItem("p1", "T3", workspace)}, []any{
-			threadItem("t2", "p1", "Two", withSession("running", "codex")),
-			threadItem("t3", "p1", "Three"),
-		}), synchronizedItem()}
+		return []any{t3codetest.SnapshotItem(40, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+			t3codetest.ThreadItem("t2", "p1", "Two", t3codetest.WithSession("running", "codex")),
+			t3codetest.ThreadItem("t3", "p1", "Three"),
+		}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	one := f.waitStatus("t1", api.ThreadWorking)
 	f.waitStatus("t2", api.ThreadIdle)
 
-	f.server.dropConns()
+	f.server.DropConns()
 	f.waitStatus("t2", api.ThreadWorking)
 	f.waitStatus("t3", api.ThreadIdle)
 	waitFor(t, "t1 archived", func() bool { return f.thread("t1").Archived })
@@ -561,9 +562,9 @@ func TestSnapshotFallbackDiffApplies(t *testing.T) {
 		t.Errorf("t1 after fallback = %+v", got)
 	}
 	// The next resume starts from the fallback's sequence.
-	f.server.dropConns()
-	waitFor(t, "third subscription", func() bool { return len(f.server.subscriptions()) == 3 })
-	if after := f.server.subscriptions()[2]; after == nil || *after != 40 {
+	f.server.DropConns()
+	waitFor(t, "third subscription", func() bool { return len(f.server.Subscriptions()) == 3 })
+	if after := f.server.Subscriptions()[2]; after == nil || *after != 40 {
 		t.Errorf("resume after fallback = %v; want 40", after)
 	}
 }
@@ -590,19 +591,19 @@ func TestProjectAssociation(t *testing.T) {
 	exactProject := f.project(exact, "exact")
 	rootProject := f.project(root, "root")
 	parentProject := f.project(parent, "parent")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(1, []any{
-			projectItem("p-exact", "Exact", exact),
-			projectItem("p-nested", "Nested", nested),
-			projectItem("p-fresh", "Fresh Workspace", fresh),
-			projectItem("p-missing", "Missing", missing),
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{
+			t3codetest.ProjectItem("p-exact", "Exact", exact),
+			t3codetest.ProjectItem("p-nested", "Nested", nested),
+			t3codetest.ProjectItem("p-fresh", "Fresh Workspace", fresh),
+			t3codetest.ProjectItem("p-missing", "Missing", missing),
 		}, []any{
-			threadItem("t-exact", "p-exact", "A"),
-			threadItem("t-nested", "p-nested", "B", worktree(filepath.Join(nested, "wt"))),
-			threadItem("t-fresh", "p-fresh", "C"),
-			threadItem("t-missing", "p-missing", "D"),
-		}), synchronizedItem()}
+			t3codetest.ThreadItem("t-exact", "p-exact", "A"),
+			t3codetest.ThreadItem("t-nested", "p-nested", "B", t3codetest.Worktree(filepath.Join(nested, "wt"))),
+			t3codetest.ThreadItem("t-fresh", "p-fresh", "C"),
+			t3codetest.ThreadItem("t-missing", "p-missing", "D"),
+		}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	connection := f.waitState(api.IntegrationConnected)
@@ -634,11 +635,11 @@ func TestProjectAssociation(t *testing.T) {
 	if err := os.MkdirAll(missing, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f.server.push(upserted(2, threadItem("t-missing", "p-missing", "D")))
+	f.server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem("t-missing", "p-missing", "D")))
 	if got := f.thread("t-missing"); got.Cwd != missing {
 		t.Errorf("re-evaluated = %+v", got)
 	}
-	waitFor(t, "skip cleared", func() bool { return strings.HasSuffix(f.observer.Connection().Detail, "4 threads mirrored") })
+	waitFor(t, "skip cleared", func() bool { return strings.HasSuffix(f.service.Connection().Detail, "4 threads mirrored") })
 }
 
 // A stored session T3 no longer honors: one re-pairing that revokes the
@@ -648,24 +649,24 @@ func TestRejectedSessionRepairsOnce(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	if err := saveSession(f.sessionPath, &session{Origin: f.server.origin(), Token: "stale", Label: "atc", SessionID: "sess-stale"}); err != nil {
+	f.writeRuntime(f.server.Origin())
+	if err := saveSession(f.sessionPath, &session{Origin: f.server.Origin(), Token: "stale", Label: "atc", SessionID: "sess-stale", Scope: scope}); err != nil {
 		t.Fatal(err)
 	}
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{threadItem("t1", "p1", "One")}), synchronizedItem()}
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{t3codetest.ThreadItem("t1", "p1", "One")}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	f.waitState(api.IntegrationConnected)
 	f.thread("t1")
 
-	if f.cli.count("auth session revoke sess-stale") != 1 || f.cli.count("auth pairing create") != 1 {
-		t.Errorf("CLI calls = %v; want one revoke of the stale session and one pairing", f.cli.calls)
+	if f.cli.Count("auth session revoke sess-stale") != 1 || f.cli.Count("auth pairing create") != 1 {
+		t.Errorf("CLI calls = %v; want one revoke of the stale session and one pairing", f.cli.Calls())
 	}
 	if stored := f.readSession(); stored.Token != "token-1" || stored.SessionID != "sess-1" {
 		t.Errorf("session after re-pair = %+v", stored)
 	}
-	if tickets, _ := f.server.counts(); tickets != 2 {
+	if tickets, _ := f.server.Counts(); tickets != 2 {
 		t.Errorf("ticket calls = %d; want the rejected one and the good one", tickets)
 	}
 }
@@ -676,79 +677,69 @@ func TestRejectedSessionRepairsOnce(t *testing.T) {
 func TestAuthFailures(t *testing.T) {
 	t.Run("scope denied", func(t *testing.T) {
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
-		f.server.mu.Lock()
-		f.server.scopeDenied = true
-		f.server.mu.Unlock()
+		f.writeRuntime(f.server.Origin())
+		f.server.SetScopeDenied(true)
 		f.start()
 		connection := f.waitState(api.IntegrationAuthFailed)
-		if !strings.Contains(connection.Detail, "refused the orchestration:read scope") {
+		if !strings.Contains(connection.Detail, "refused the scope") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
 		time.Sleep(150 * time.Millisecond)
-		if _, exchanges := f.server.counts(); exchanges != 1 {
+		if _, exchanges := f.server.Counts(); exchanges != 1 {
 			t.Errorf("exchanges = %d; want one pairing, then a wait", exchanges)
 		}
 		// After the wait, pairing is tried again.
-		waitFor(t, "second pairing", func() bool { _, exchanges := f.server.counts(); return exchanges == 2 })
+		waitFor(t, "second pairing", func() bool { _, exchanges := f.server.Counts(); return exchanges == 2 })
 	})
 	t.Run("subscription refused", func(t *testing.T) {
 		// T3 checks the subscription's scope inside the stream, not at the
 		// ticket: the refusal there retires the session the same way.
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
-		f.server.mu.Lock()
-		f.server.streamDenied = true
-		f.server.mu.Unlock()
+		f.writeRuntime(f.server.Origin())
+		f.server.SetStreamDenied(true)
 		f.start()
 		connection := f.waitState(api.IntegrationAuthFailed)
-		if !strings.Contains(connection.Detail, "refused the orchestration:read scope") || !strings.Contains(connection.Detail, "subscription refused") {
+		if !strings.Contains(connection.Detail, "refused the scope") || !strings.Contains(connection.Detail, "subscription refused") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
-		if f.cli.count("auth session revoke sess-1") != 1 {
-			t.Errorf("CLI calls = %v; want the refused session revoked", f.cli.calls)
+		if f.cli.Count("auth session revoke sess-1") != 1 {
+			t.Errorf("CLI calls = %v; want the refused session revoked", f.cli.Calls())
 		}
-		waitFor(t, "second pairing", func() bool { _, exchanges := f.server.counts(); return exchanges == 2 })
+		waitFor(t, "second pairing", func() bool { _, exchanges := f.server.Counts(); return exchanges == 2 })
 	})
 	t.Run("exchange unavailable", func(t *testing.T) {
 		// A T3 that cannot answer the exchange is a reconnect, not a
 		// pairing failure.
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
-		f.server.mu.Lock()
-		f.server.exchangeStatus = http.StatusInternalServerError
-		f.server.mu.Unlock()
+		f.writeRuntime(f.server.Origin())
+		f.server.SetExchangeStatus(http.StatusInternalServerError)
 		f.start()
 		waitFor(t, "a reported exchange failure", func() bool {
-			connection := f.observer.Connection()
+			connection := f.service.Connection()
 			return connection.State == api.IntegrationConnecting && strings.Contains(connection.Detail, "pairing exchange")
 		})
-		waitFor(t, "retries", func() bool { _, exchanges := f.server.counts(); return exchanges >= 3 })
-		f.server.mu.Lock()
-		f.server.exchangeStatus = 0
-		f.server.mu.Unlock()
+		waitFor(t, "retries", func() bool { _, exchanges := f.server.Counts(); return exchanges >= 3 })
+		f.server.SetExchangeStatus(0)
 		f.waitState(api.IntegrationConnected)
 	})
 	t.Run("session not persisted", func(t *testing.T) {
 		// A session that cannot be stored would be paired over at every
 		// restart: it is retired and the failure reported.
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
+		f.writeRuntime(f.server.Origin())
 		f.sessionPath = filepath.Join(f.home, "userdata", "server-runtime.json", "session.json")
 		f.start()
 		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "persisting the T3 Code session") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
-		if f.cli.count("auth session revoke sess-1") != 1 {
-			t.Errorf("CLI calls = %v; want the unpersisted session revoked", f.cli.calls)
+		if f.cli.Count("auth session revoke sess-1") != 1 {
+			t.Errorf("CLI calls = %v; want the unpersisted session revoked", f.cli.Calls())
 		}
 	})
 	t.Run("wider scope granted", func(t *testing.T) {
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
-		f.server.mu.Lock()
-		f.server.grantScope = "orchestration:read orchestration:write"
-		f.server.mu.Unlock()
+		f.writeRuntime(f.server.Origin())
+		f.server.SetGrantScope("orchestration:read orchestration:write")
 		f.start()
 		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "granted scope") {
 			t.Errorf("detail = %q", connection.Detail)
@@ -756,11 +747,12 @@ func TestAuthFailures(t *testing.T) {
 	})
 	t.Run("cli missing", func(t *testing.T) {
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
-		_, f.cli.fail = runNodeCLI(f.home)(context.Background(), "auth", "pairing", "create")
+		f.writeRuntime(f.server.Origin())
+		_, fail := runNodeCLI(f.home)(context.Background(), "auth", "pairing", "create")
+		f.cli.SetFail(fail)
 		var auth *authError
-		if !errors.As(f.cli.fail, &auth) || !strings.Contains(f.cli.fail.Error(), "T3 Code CLI not found") {
-			t.Fatalf("real runner over an empty home = %v; want an auth error naming the CLI", f.cli.fail)
+		if !errors.As(fail, &auth) || !strings.Contains(fail.Error(), "T3 Code CLI not found") {
+			t.Fatalf("real runner over an empty home = %v; want an auth error naming the CLI", fail)
 		}
 		f.start()
 		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "T3 Code CLI not found") {
@@ -769,7 +761,7 @@ func TestAuthFailures(t *testing.T) {
 	})
 	t.Run("node missing", func(t *testing.T) {
 		f := newFixture(t)
-		f.writeRuntime(f.server.origin())
+		f.writeRuntime(f.server.Origin())
 		// A T3 install without node on PATH.
 		if err := os.MkdirAll(filepath.Dir(serviceStateFile(f.home)), 0o700); err != nil {
 			t.Fatal(err)
@@ -785,9 +777,10 @@ func TestAuthFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", t.TempDir())
-		_, f.cli.fail = runNodeCLI(f.home)(context.Background(), "auth", "pairing", "create")
-		if f.cli.fail == nil || !strings.Contains(f.cli.fail.Error(), "node not found") {
-			t.Fatalf("real runner without node = %v", f.cli.fail)
+		_, fail := runNodeCLI(f.home)(context.Background(), "auth", "pairing", "create")
+		f.cli.SetFail(fail)
+		if fail == nil || !strings.Contains(fail.Error(), "node not found") {
+			t.Fatalf("real runner without node = %v", fail)
 		}
 		f.start()
 		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "node not found") {
@@ -801,18 +794,14 @@ func TestAuthFailures(t *testing.T) {
 // polls.
 func TestAuthRetryGateClearsOnRestart(t *testing.T) {
 	f := newFixture(t)
-	f.writeRuntime(f.server.origin())
-	f.server.mu.Lock()
-	f.server.scopeDenied = true
-	f.server.mu.Unlock()
+	f.writeRuntime(f.server.Origin())
+	f.server.SetScopeDenied(true)
 	f.authRetry = time.Hour
 	f.start()
 	f.waitState(api.IntegrationAuthFailed)
-	f.server.mu.Lock()
-	f.server.scopeDenied = false
-	f.server.mu.Unlock()
+	f.server.SetScopeDenied(false)
 	// Same origin, new pid: a restarted T3.
-	data, _ := json.Marshal(map[string]any{"pid": os.Getpid() + 1, "origin": f.server.origin()})
+	data, _ := json.Marshal(map[string]any{"pid": os.Getpid() + 1, "origin": f.server.Origin()})
 	if err := os.WriteFile(runtimeFile(f.home), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -825,8 +814,8 @@ func TestNotRunning(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{threadItem("t1", "p1", "One", withSession("running", "codex"))}), synchronizedItem()}
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"))}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	connection := f.waitState(api.IntegrationUnavailable)
@@ -837,17 +826,17 @@ func TestNotRunning(t *testing.T) {
 	if got := f.events(); count(got, "integration.updated t3code") != 0 {
 		t.Errorf("polling for a runtime file published %v", got)
 	}
-	if _, exchanges := f.server.counts(); exchanges != 0 {
+	if _, exchanges := f.server.Counts(); exchanges != 0 {
 		t.Error("pairing was attempted with no T3 running")
 	}
 
-	f.writeRuntime(f.server.origin())
+	f.writeRuntime(f.server.Origin())
 	f.waitState(api.IntegrationConnected)
 	f.waitStatus("t1", api.ThreadWorking)
 
 	// The recorded process dies: unavailable, statuses coerced.
 	f.alive.Store(false)
-	f.server.dropConns()
+	f.server.DropConns()
 	connection = f.waitState(api.IntegrationUnavailable)
 	if !strings.Contains(connection.Detail, "is gone") {
 		t.Errorf("detail after death = %q", connection.Detail)
@@ -862,17 +851,17 @@ func TestSchemaFailure(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(after *uint64) []any {
-		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{threadItem("t1", "p1", "One", withSession("idle", "codex"))}), synchronizedItem()}
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(after *uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"))}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	f.waitStatus("t1", api.ThreadIdle)
 
 	// An upsert missing a required field: reported, not applied.
-	broken := threadItem("t1", "p1", "Broken", withSession("running", "codex"))
+	broken := t3codetest.ThreadItem("t1", "p1", "Broken", t3codetest.WithSession("running", "codex"))
 	delete(broken, "hasPendingApprovals")
-	f.server.push(upserted(2, broken))
+	f.server.Push(t3codetest.Upserted(2, broken))
 	connection := f.waitState(api.IntegrationUnavailable)
 	if !strings.Contains(connection.Detail, "shell schema") || !strings.Contains(connection.Detail, "pending-action flags") {
 		t.Errorf("detail = %q", connection.Detail)
@@ -882,13 +871,13 @@ func TestSchemaFailure(t *testing.T) {
 	}
 	// Recovery takes a fresh snapshot, not a resume.
 	f.waitState(api.IntegrationConnected)
-	subscriptions := f.server.subscriptions()
+	subscriptions := f.server.Subscriptions()
 	if len(subscriptions) < 2 || subscriptions[len(subscriptions)-1] != nil {
 		t.Errorf("subscriptions after a schema failure = %v; want a fresh one last", subscriptions)
 	}
 
 	// A protocol defect likewise.
-	f.server.raw(`{"_tag":"Defect","requestId":"1","defect":"boom"}`)
+	f.server.Raw(`{"_tag":"Defect","requestId":"SUB","defect":"boom"}`)
 	if connection := f.waitState(api.IntegrationUnavailable); !strings.Contains(connection.Detail, "protocol") {
 		t.Errorf("detail = %q", connection.Detail)
 	}
@@ -899,13 +888,13 @@ func TestSchemaFailure(t *testing.T) {
 func TestProjectRemovedLeavesATCProjects(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
-	f.writeRuntime(f.server.origin())
-	f.server.setInitial(func(*uint64) []any {
-		return []any{snapshotItem(1, []any{projectItem("p1", "Workspace", workspace)}, []any{threadItem("t1", "p1", "One")}), synchronizedItem()}
+	f.writeRuntime(f.server.Origin())
+	f.server.SetInitial(func(*uint64) []any {
+		return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "Workspace", workspace)}, []any{t3codetest.ThreadItem("t1", "p1", "One")}), t3codetest.SynchronizedItem()}
 	})
 	f.start()
 	thread := f.thread("t1")
-	f.server.push(removed(2, "t1"), projectRemoved(3, "p1"))
+	f.server.Push(t3codetest.Removed(2, "t1"), t3codetest.ProjectRemoved(3, "p1"))
 	waitFor(t, "archive", func() bool { return f.thread("t1").Archived })
 	list, err := f.projects.List(context.Background())
 	if err != nil {
@@ -916,7 +905,7 @@ func TestProjectRemovedLeavesATCProjects(t *testing.T) {
 	}
 	// And a project T3 announces later can carry threads.
 	other := t.TempDir()
-	f.server.push(projectUpserted(4, projectItem("p2", "Other", other)), upserted(5, threadItem("t2", "p2", "Two")))
+	f.server.Push(t3codetest.ProjectUpserted(4, t3codetest.ProjectItem("p2", "Other", other)), t3codetest.Upserted(5, t3codetest.ThreadItem("t2", "p2", "Two")))
 	if got := f.thread("t2"); got.Cwd != other {
 		t.Errorf("thread under a later project = %+v", got)
 	}
@@ -926,24 +915,22 @@ func TestProjectRemovedLeavesATCProjects(t *testing.T) {
 // the descriptor at connect time.
 func TestLinksFollowTheEnvironment(t *testing.T) {
 	f := newFixture(t)
-	f.writeRuntime(f.server.origin())
-	f.server.mu.Lock()
-	f.server.environmentID = "env-xyz"
-	f.server.mu.Unlock()
+	f.writeRuntime(f.server.Origin())
+	f.server.SetEnvironmentID("env-xyz")
 	f.start()
-	if links := f.observer.Links("t1"); links != nil {
+	if links := f.service.Links("t1"); links != nil {
 		t.Errorf("links before connecting = %+v", links)
 	}
 	f.waitState(api.IntegrationConnected)
-	want := &api.ThreadLinks{Web: f.server.origin() + "/env-xyz/t1", App: "t3code://threads/env-xyz/t1"}
-	if diff := cmp.Diff(want, f.observer.Links("t1")); diff != "" {
+	want := &api.ThreadLinks{Web: f.server.Origin() + "/env-xyz/t1", App: "t3code://threads/env-xyz/t1"}
+	if diff := cmp.Diff(want, f.service.Links("t1")); diff != "" {
 		t.Errorf("links (-want +got):\n%s", diff)
 	}
 }
 
 func TestProjectStatusTable(t *testing.T) {
-	item := func(opts ...threadOpt) threadShell {
-		data, _ := json.Marshal(threadItem("t", "p", "T", opts...))
+	item := func(opts ...t3codetest.ThreadOpt) threadShell {
+		data, _ := json.Marshal(t3codetest.ThreadItem("t", "p", "T", opts...))
 		var thread threadShell
 		if err := json.Unmarshal(data, &thread); err != nil {
 			t.Fatal(err)
@@ -952,20 +939,20 @@ func TestProjectStatusTable(t *testing.T) {
 	}
 	cases := []struct {
 		name string
-		opts []threadOpt
+		opts []t3codetest.ThreadOpt
 		want api.ThreadStatus
 	}{
-		{"input outranks approval and running", []threadOpt{withSession("running", "codex"), pending(true, true)}, api.ThreadWaitingForInput},
-		{"approval outranks running", []threadOpt{withSession("running", "codex"), pending(true, false)}, api.ThreadWaitingForPermission},
-		{"input outranks running", []threadOpt{withSession("running", "codex"), pending(false, true)}, api.ThreadWaitingForInput},
-		{"starting", []threadOpt{withSession("starting", "codex")}, api.ThreadWorking},
-		{"error outranks liveness", []threadOpt{withSession("error", "codex"), liveness("working")}, api.ThreadError},
-		{"interrupted with liveness", []threadOpt{withSession("interrupted", "codex"), liveness("working")}, api.ThreadWorking},
-		{"no session with liveness", []threadOpt{liveness("monitoring")}, api.ThreadWorking},
-		{"no session, null liveness", []threadOpt{liveness(nil)}, api.ThreadIdle},
+		{"input outranks approval and running", []t3codetest.ThreadOpt{t3codetest.WithSession("running", "codex"), t3codetest.Pending(true, true)}, api.ThreadWaitingForInput},
+		{"approval outranks running", []t3codetest.ThreadOpt{t3codetest.WithSession("running", "codex"), t3codetest.Pending(true, false)}, api.ThreadWaitingForPermission},
+		{"input outranks running", []t3codetest.ThreadOpt{t3codetest.WithSession("running", "codex"), t3codetest.Pending(false, true)}, api.ThreadWaitingForInput},
+		{"starting", []t3codetest.ThreadOpt{t3codetest.WithSession("starting", "codex")}, api.ThreadWorking},
+		{"error outranks liveness", []t3codetest.ThreadOpt{t3codetest.WithSession("error", "codex"), t3codetest.Liveness("working")}, api.ThreadError},
+		{"interrupted with liveness", []t3codetest.ThreadOpt{t3codetest.WithSession("interrupted", "codex"), t3codetest.Liveness("working")}, api.ThreadWorking},
+		{"no session with liveness", []t3codetest.ThreadOpt{t3codetest.Liveness("monitoring")}, api.ThreadWorking},
+		{"no session, null liveness", []t3codetest.ThreadOpt{t3codetest.Liveness(nil)}, api.ThreadIdle},
 		{"no session, no liveness", nil, api.ThreadIdle},
-		{"unknown session status", []threadOpt{withSession("paused", "codex")}, api.ThreadUnknown},
-		{"unknown liveness", []threadOpt{withSession("idle", "codex"), liveness("napping")}, api.ThreadUnknown},
+		{"unknown session status", []t3codetest.ThreadOpt{t3codetest.WithSession("paused", "codex")}, api.ThreadUnknown},
+		{"unknown liveness", []t3codetest.ThreadOpt{t3codetest.WithSession("idle", "codex"), t3codetest.Liveness("napping")}, api.ThreadUnknown},
 	}
 	for _, c := range cases {
 		if got := projectStatus(item(c.opts...)); got != c.want {
@@ -1002,8 +989,8 @@ func TestDiscover(t *testing.T) {
 
 func TestIntegrationRegistration(t *testing.T) {
 	f := newFixture(t)
-	f.observer = New(Options{Home: f.home, SessionPath: f.sessionPath, Threads: f.threads, Hub: f.hub, RunCLI: f.cli.run})
-	integration := Integration(f.observer)
+	f.service = New(Options{Home: f.home, SessionPath: f.sessionPath, Threads: f.threads, Hub: f.hub, RunCLI: f.cli.Run})
+	integration := Integration(f.service)
 	if integration.ID != ID || integration.Name != "T3 Code" || integration.Connection == nil || integration.Executable != nil {
 		t.Errorf("registration = %+v", integration)
 	}
@@ -1037,7 +1024,7 @@ func TestIntegrationRegistration(t *testing.T) {
 // A session file that is not a session is paired over, not reported.
 func TestUnreadableSessionFileIsRepaired(t *testing.T) {
 	f := newFixture(t)
-	f.writeRuntime(f.server.origin())
+	f.writeRuntime(f.server.Origin())
 	if err := os.WriteFile(f.sessionPath, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1057,24 +1044,24 @@ func TestLatestTurnMirrors(t *testing.T) {
 	f := newFixture(t)
 	workspace := t.TempDir()
 	f.project(workspace, "mine")
-	f.writeRuntime(f.server.origin())
+	f.writeRuntime(f.server.Origin())
 	reconnects := 0
-	f.server.setInitial(func(after *uint64) []any {
+	f.server.SetInitial(func(after *uint64) []any {
 		if after == nil {
-			return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
-				threadItem("t1", "p1", "One"),
-			}), synchronizedItem()}
+			return []any{t3codetest.SnapshotItem(1, []any{t3codetest.ProjectItem("p1", "T3", workspace)}, []any{
+				t3codetest.ThreadItem("t1", "p1", "One"),
+			}), t3codetest.SynchronizedItem()}
 		}
 		reconnects++
 		switch reconnects {
 		case 1:
 			// The turn that was running finished while ATC was away.
-			return []any{upserted(10, threadItem("t1", "p1", "One", withSession("idle", "codex"),
-				latestTurn("tu-3b", "completed", "2026-09-01T00:00:03Z", "2026-09-01T00:00:04Z"))), synchronizedItem()}
+			return []any{t3codetest.Upserted(10, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"),
+				t3codetest.LatestTurn("tu-3b", "completed", "2026-09-01T00:00:03Z", "2026-09-01T00:00:04Z"))), t3codetest.SynchronizedItem()}
 		default:
 			// A different turn altogether.
-			return []any{upserted(20, threadItem("t1", "p1", "One", withSession("idle", "codex"),
-				latestTurn("tu-5", "interrupted", "2026-09-01T00:00:05Z", "2026-09-01T00:00:06Z"))), synchronizedItem()}
+			return []any{t3codetest.Upserted(20, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"),
+				t3codetest.LatestTurn("tu-5", "interrupted", "2026-09-01T00:00:05Z", "2026-09-01T00:00:06Z"))), t3codetest.SynchronizedItem()}
 		}
 	})
 	f.start()
@@ -1104,12 +1091,12 @@ func TestLatestTurnMirrors(t *testing.T) {
 	}
 
 	// Running with startedAt null: requestedAt stands in.
-	f.server.push(upserted(2, threadItem("t1", "p1", "One", withSession("running", "codex"), latestTurn("tu-1", "running", nil, nil))))
+	f.server.Push(t3codetest.Upserted(2, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("tu-1", "running", nil, nil))))
 	first := waitTurn(api.TurnRunning)
 	if !first.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 1, 0, time.UTC)) || first.CompletedAt != nil {
 		t.Errorf("running turn = %+v; want started at requestedAt", first)
 	}
-	f.server.push(upserted(3, threadItem("t1", "p1", "One", withSession("idle", "codex"), latestTurn("tu-1", "completed", "2026-09-01T00:00:02Z", "2026-09-01T00:00:03Z"))))
+	f.server.Push(t3codetest.Upserted(3, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"), t3codetest.LatestTurn("tu-1", "completed", "2026-09-01T00:00:02Z", "2026-09-01T00:00:03Z"))))
 	done := waitTurn(api.TurnCompleted)
 	if done.ID != first.ID || !done.StartedAt.Equal(time.Date(2026, 9, 1, 0, 0, 2, 0, time.UTC)) || done.CompletedAt == nil || !done.CompletedAt.Equal(time.Date(2026, 9, 1, 0, 0, 3, 0, time.UTC)) {
 		t.Errorf("completed turn = %+v; want %s with T3's timestamps", done, first.ID)
@@ -1120,7 +1107,7 @@ func TestLatestTurnMirrors(t *testing.T) {
 
 	// A T3 turn ending in error: the thread is idle, the turn failed with
 	// the session's error text, and no statusDetail.
-	f.server.push(upserted(4, threadItem("t1", "p1", "One", withSession("idle", "codex"), lastError("provider refused"), latestTurn("tu-2", "error", "2026-09-01T00:00:02Z", "2026-09-01T00:00:03Z"))))
+	f.server.Push(t3codetest.Upserted(4, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"), t3codetest.LastError("provider refused"), t3codetest.LatestTurn("tu-2", "error", "2026-09-01T00:00:02Z", "2026-09-01T00:00:03Z"))))
 	failed := waitTurn(api.TurnFailed)
 	if failed.ID == first.ID || failed.Error != "provider refused" {
 		t.Errorf("failed turn = %+v; want a fresh id with the session's error", failed)
@@ -1130,7 +1117,7 @@ func TestLatestTurnMirrors(t *testing.T) {
 	}
 	// The session itself faulting mid-turn: error status with the text,
 	// and the running turn failed with it too.
-	f.server.push(upserted(5, threadItem("t1", "p1", "One", withSession("error", "codex"), lastError("session died"), latestTurn("tu-3", "running", "2026-09-01T00:00:03Z", nil))))
+	f.server.Push(t3codetest.Upserted(5, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("error", "codex"), t3codetest.LastError("session died"), t3codetest.LatestTurn("tu-3", "running", "2026-09-01T00:00:03Z", nil))))
 	f.waitStatus("t1", api.ThreadError)
 	faulted := waitTurn(api.TurnFailed)
 	if thread := f.thread("t1"); thread.StatusDetail != "session died" || faulted.Error != "session died" || faulted.ID == failed.ID {
@@ -1138,16 +1125,16 @@ func TestLatestTurnMirrors(t *testing.T) {
 	}
 	// The session recovers on a new turn: the detail clears, and the
 	// turn ATC failed stays failed — an ended turn is final.
-	f.server.push(upserted(6, threadItem("t1", "p1", "One", withSession("running", "codex"), latestTurn("tu-3", "running", "2026-09-01T00:00:03Z", nil))))
+	f.server.Push(t3codetest.Upserted(6, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("tu-3", "running", "2026-09-01T00:00:03Z", nil))))
 	if thread := f.waitStatus("t1", api.ThreadWorking); thread.StatusDetail != "" || thread.LatestTurn.ID != faulted.ID || thread.LatestTurn.State != api.TurnFailed {
 		t.Errorf("recovered session = detail %q turn %+v; want the failed turn kept", thread.StatusDetail, thread.LatestTurn)
 	}
-	f.server.push(upserted(7, threadItem("t1", "p1", "One", withSession("running", "codex"), latestTurn("tu-3b", "running", "2026-09-01T00:00:03Z", nil))))
+	f.server.Push(t3codetest.Upserted(7, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("tu-3b", "running", "2026-09-01T00:00:03Z", nil))))
 	running := waitTurn(api.TurnRunning)
 
 	// Subscription drops: the running turn ends unknown; on reconnect
 	// T3 reports the same turn finished — same ATC id, reported outcome.
-	f.server.dropConns()
+	f.server.DropConns()
 	f.waitStatus("t1", api.ThreadUnknown)
 	if got := turn(); got.ID != running.ID || got.State != api.TurnUnknown {
 		t.Errorf("turn while disconnected = %+v; want %s unknown", got, running.ID)
@@ -1159,9 +1146,9 @@ func TestLatestTurnMirrors(t *testing.T) {
 	}
 
 	// A different turn after the next drop: fresh id with its state.
-	f.server.push(upserted(11, threadItem("t1", "p1", "One", withSession("running", "codex"), latestTurn("tu-4", "running", "2026-09-01T00:00:05Z", nil))))
+	f.server.Push(t3codetest.Upserted(11, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("tu-4", "running", "2026-09-01T00:00:05Z", nil))))
 	fourth := waitTurn(api.TurnRunning)
-	f.server.dropConns()
+	f.server.DropConns()
 	f.waitStatus("t1", api.ThreadUnknown)
 	f.waitState(api.IntegrationConnected)
 	fifth := waitTurn(api.TurnInterrupted)
@@ -1170,11 +1157,11 @@ func TestLatestTurnMirrors(t *testing.T) {
 	}
 
 	// A malformed turn is a schema failure like any other.
-	f.server.push(upserted(21, threadItem("t1", "p1", "One", withSession("idle", "codex"), latestTurn("tu-6", "paused", nil, nil))))
+	f.server.Push(t3codetest.Upserted(21, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("idle", "codex"), t3codetest.LatestTurn("tu-6", "paused", nil, nil))))
 	if got := waitTurn(api.TurnUnknown); got.ID == fifth.ID {
 		t.Errorf("unrecognized state reused the id: %+v", got)
 	}
-	f.server.push(upserted(22, threadItem("t1", "p1", "One", func(m map[string]any) {
+	f.server.Push(t3codetest.Upserted(22, t3codetest.ThreadItem("t1", "p1", "One", func(m map[string]any) {
 		m["latestTurn"] = map[string]any{"turnId": "tu-7", "state": "running", "requestedAt": "yesterday", "startedAt": nil, "completedAt": nil}
 	})))
 	if connection := f.waitState(api.IntegrationUnavailable); !strings.Contains(connection.Detail, "schema") {
