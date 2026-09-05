@@ -304,6 +304,60 @@ func newIngressFixture(t *testing.T, executable, tailscaleExecutable, dir string
 
 func (f *ingressFixture) status() api.Webhooks { return f.service.Status(context.Background()) }
 
+func TestChannelWaitsIndependentlyAndBoundsStartedHeaders(t *testing.T) {
+	channel, err := newChannel(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(channel.close)
+	server := &http.Server{
+		ReadHeaderTimeout: 100 * time.Millisecond,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = server.Serve(channel) }()
+	t.Cleanup(func() { _ = server.Close(); <-done })
+	clients := make([]net.Conn, 2)
+	for i, file := range channel.receiverEnds {
+		clients[i], err = net.FileConn(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = clients[i].Close() })
+		if err := clients[i].SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The second connection works while the first remains unused; Accept
+	// cannot wait for connections in the order they were created.
+	if _, err := io.WriteString(clients[1], "GET / HTTP/1.1\r\nHost: core\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(clients[1]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("response = %d, want 204", response.StatusCode)
+	}
+	// Once even one byte arrives, a stalled header must still time out.
+	if _, err := io.WriteString(clients[0], "G"); err != nil {
+		t.Fatal(err)
+	}
+	// net/http may send a 400 for the incomplete request line before
+	// closing. In either case the server must close before our deadline.
+	data, err := io.ReadAll(clients[0])
+	if err != nil {
+		t.Fatalf("stalled header did not close after its timeout: %v", err)
+	}
+	if len(data) != 0 && !strings.HasPrefix(string(data), "HTTP/1.1 400 Bad Request\r\n") {
+		t.Fatalf("stalled header response = %q, want rejection", data)
+	}
+}
+
 func (f *ingressFixture) waitState(t *testing.T, want api.WebhookState) api.Webhooks {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -373,6 +427,11 @@ func TestIngressExposesOnlyRoutesAndRecoversFromReceiverFailure(t *testing.T) {
 	if got := strings.TrimSpace(string(args)); got != fmt.Sprintf("funnel --https=443 localhost:%d", targetPort) {
 		t.Errorf("funnel args = %q, want the receiver's port on 443", got)
 	}
+
+	// A new Funnel can sit unused while DNS propagates. Its preconnected
+	// channel must survive longer than the public header-read timeout,
+	// including connections that have never carried a request.
+	time.Sleep(receiver.ReadHeaderTimeout + time.Second)
 
 	if resp := f.post(t, "/probe", probeSecret, "evt-1", `{"n":1}`); resp.StatusCode != http.StatusAccepted {
 		t.Errorf("valid delivery = %d, want 202", resp.StatusCode)

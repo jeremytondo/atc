@@ -295,14 +295,17 @@ func (g *ingress) runReceiver(ctx context.Context, target *net.TCPListener) (per
 	return false, fmt.Errorf("webhook receiver exited: %s", exitReason(waitErr, &errTail))
 }
 
-// channel is the preconnected socket pairs between Core and one receiver:
-// a net.Listener over Core's ends (Accept hands them out once, then blocks
-// until Close) and the receiver's ends as files to inherit.
+// channel is the preconnected socket pairs between Core and one receiver.
+// A Core end becomes acceptable only when its first request arrives, so
+// http.Server's initial header deadline cannot expire an unused connection.
+// Each end waits independently: an unused one must not block active ones.
 type channel struct {
 	coreEnds     chan net.Conn
+	coreConns    []net.Conn
 	receiverEnds []*os.File
 	done         chan struct{}
 	once         sync.Once
+	readers      sync.WaitGroup
 }
 
 func newChannel(count int) (*channel, error) {
@@ -321,8 +324,19 @@ func newChannel(count int) (*channel, error) {
 			c.close()
 			return nil, fmt.Errorf("cannot adopt the receiver channel: %w", err)
 		}
-		c.coreEnds <- conn
+		c.coreConns = append(c.coreConns, conn)
 		c.receiverEnds = append(c.receiverEnds, os.NewFile(uintptr(fds[1]), "channel-receiver"))
+		c.readers.Go(func() {
+			reader := bufio.NewReader(conn)
+			if _, err := reader.Peek(1); err != nil {
+				_ = conn.Close()
+				return
+			}
+			select {
+			case c.coreEnds <- &channelConn{Conn: conn, reader: reader}:
+			case <-c.done:
+			}
+		})
 	}
 	return c, nil
 }
@@ -353,19 +367,23 @@ func (c *channel) closeReceiverEnds() {
 	}
 }
 
-// close releases everything not handed to the server or the child.
+// close releases all ends, including those still waiting for first bytes.
 func (c *channel) close() {
 	_ = c.Close()
 	c.closeReceiverEnds()
-	for {
-		select {
-		case conn := <-c.coreEnds:
-			_ = conn.Close()
-		default:
-			return
-		}
+	for _, conn := range c.coreConns {
+		_ = conn.Close()
 	}
+	c.readers.Wait()
 }
+
+// channelConn preserves the bytes buffered before Accept handed it to HTTP.
+type channelConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *channelConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
 type channelAddr struct{}
 
