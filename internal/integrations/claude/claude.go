@@ -40,7 +40,7 @@ func Integration(hooks *Hooks) integrations.Integration {
 		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
 		Agents:       []api.IntegrationAgent{{ID: AgentID, Name: "Claude Code"}},
 		Apps: []integrations.App{
-			{ID: "tui", Name: "Claude Code", Agents: []string{AgentID}, Terminal: tui{hooks: hooks}},
+			{ID: "tui", Name: "Claude Code CLI", Agents: []string{AgentID}, Terminal: tui{hooks: hooks}},
 		},
 		Executable: &integrations.Executable{Binary: "claude", InstallHint: "npm install -g @anthropic-ai/claude-code"},
 	}

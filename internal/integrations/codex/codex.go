@@ -45,7 +45,7 @@ func Integration(observer *Observer) integrations.Integration {
 		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
 		Agents:       []api.IntegrationAgent{{ID: AgentID, Name: "Codex"}},
 		Apps: []integrations.App{
-			{ID: "tui", Name: "Codex", Agents: []string{AgentID}, Terminal: tui{observer: observer}},
+			{ID: "tui", Name: "Codex CLI", Agents: []string{AgentID}, Terminal: tui{observer: observer}},
 		},
 		Executable: &integrations.Executable{Binary: "codex", InstallHint: "npm install -g @openai/codex"},
 	}

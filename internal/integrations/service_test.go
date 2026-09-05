@@ -71,7 +71,7 @@ var observedSince = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 // testIntegrations is the fixture catalog: two executable-backed
 // Integrations with one terminal App each; a connection-backed one that
-// observes an external program, exposes several agents (one sharing
+// observes a provider's own program, exposes several agents (one sharing
 // alpha's id — implying nothing) and two handoff Apps; and an
 // infrastructure Integration with neither Apps nor agents.
 func testIntegrations(connection api.IntegrationConnection) []Integration {
@@ -125,7 +125,7 @@ func TestNewServiceRejectsDuplicates(t *testing.T) {
 		"empty app":                   {[]Integration{{ID: "alpha", Apps: []App{{ID: ""}}}}, `ids are one non-empty segment`},
 		"qualified id":                {[]Integration{{ID: "alpha/beta"}}, `ids are one non-empty segment`},
 		"empty id":                    {[]Integration{{ID: ""}}, `ids are one non-empty segment`},
-		"creation without capability": {[]Integration{{ID: "alpha", PrepareThread: fakePrepareThread}}, `thread_creation capability and the creation seam must be declared together`},
+		"creation without capability": {[]Integration{{ID: "alpha", PrepareThread: fakePrepareThread}}, `threads.create capability and the creation seam must be declared together`},
 		"capability without creation": {[]Integration{{ID: "alpha", Capabilities: []api.IntegrationCapability{api.CapabilityThreadCreation}}}, `must be declared together`},
 	}
 	for name, tc := range cases {

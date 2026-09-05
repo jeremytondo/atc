@@ -86,7 +86,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *ap
 		Method:      http.MethodPatch,
 		Path:        "/v1/threads/{id}",
 		Summary:     "Update a thread",
-		Description: "A merge patch of title, archived, and projectId: omitted fields are unchanged, null clears projectId (title and archived cannot be null). A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder. A project assignment may name any project; a cleared thread stays unassigned until a project is created or moved to contain its initial directory.",
+		Description: "A merge patch of title, archived, and projectId: omitted fields are unchanged, null clears projectId (title and archived cannot be null). A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its provider still reports — is refused, naming the holder. A project assignment may name any project; a cleared thread stays unassigned until a project is created or moved to contain its initial directory.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Thread identifier."`
 		Body api.ThreadUpdateParams
@@ -103,7 +103,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *ap
 		Method:        http.MethodDelete,
 		Path:          "/v1/threads/{id}",
 		Summary:       "Delete a thread",
-		Description:   "Removes ATC's record and its private identity mapping only; the provider-side conversation is never touched. An active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder.",
+		Description:   "Removes ATC's record and its private identity mapping only; the provider-side conversation is never touched. An active thread — one a terminal has open, or one its provider still reports — is refused, naming the holder.",
 		DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, input *threadIDInput) (*struct{}, error) {
 		if err := service.Delete(ctx, input.ID); err != nil {
