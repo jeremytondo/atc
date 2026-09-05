@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -174,9 +175,10 @@ func runReceiverDirect(t *testing.T, executable string, public *net.TCPListener,
 }
 
 // The actual restricted process attempts what it must not be able to do —
-// read a credential, list the filesystem, create a file, connect to or
-// bind the API port, open UDP or unix sockets, trace or signal its parent,
-// spawn a process — and every attempt is refused by policy; its inherited
+// read, chmod, or truncate a credential, list the filesystem, create a
+// file, connect to or bind the API port, open UDP or unix sockets, set up
+// io_uring, make an x32 syscall, trace or signal its parent, spawn a
+// process — and every attempt is refused by policy; its inherited
 // channel works and the forwarding path carries requests intact. Closing
 // stdin (Core gone) ends it.
 func TestReceiverProvesIsolationBeforeServing(t *testing.T) {
@@ -201,7 +203,11 @@ func TestReceiverProvesIsolationBeforeServing(t *testing.T) {
 		}
 		t.Fatalf("receiver refused to serve: %+v", report)
 	}
-	for _, check := range []string{"read_credential", "list_root", "create_file", "connect_tcp", "bind_tcp", "udp_socket", "unix_socket", "trace_parent", "signal_parent", "spawn_process"} {
+	checks := []string{"read_credential", "chmod_credential", "truncate_credential", "list_root", "create_file", "connect_tcp", "bind_tcp", "udp_socket", "unix_socket", "io_uring", "trace_parent", "signal_parent", "spawn_process"}
+	if runtime.GOARCH == "amd64" {
+		checks = append(checks, "x32_syscall")
+	}
+	for _, check := range checks {
 		if report.Checks[check] != "denied" {
 			t.Errorf("check %s = %q, want denied", check, report.Checks[check])
 		}
@@ -209,8 +215,12 @@ func TestReceiverProvesIsolationBeforeServing(t *testing.T) {
 	if got := report.Checks["channel"]; got != strconv.Itoa(receiver.Concurrency)+" connections" {
 		t.Errorf("channel = %q, want every inherited connection usable", got)
 	}
-	if report.ABI < 1 {
-		t.Errorf("landlock abi = %d, want at least 1", report.ABI)
+	if report.ABI < 3 {
+		t.Errorf("landlock abi = %d, want at least 3 (truncation mediated)", report.ABI)
+	}
+	// The probes left the credential untouched.
+	if info, err := os.Stat(probe); err != nil || info.Mode().Perm() != 0o600 || info.Size() != int64(len("atc_secret")) {
+		t.Errorf("credential after the self-test: err=%v info=%+v, want 0600 and its original size", err, info)
 	}
 	if env := report.Checks["environment"]; env != "0 variables" && env != "1 variables" {
 		t.Errorf("environment = %q, want none inherited", env)

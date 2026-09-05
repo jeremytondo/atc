@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -13,12 +14,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// minABI is the Landlock ABI the receiver requires: 1 (Linux 5.13) gives
-// the filesystem restriction and confines ptrace. Network, signal, and
-// socket confinement come from the seccomp filter on every kernel, and
-// Landlock's own network (ABI 4) and scoping (ABI 6) rules are layered on
-// where available.
-const minABI = 1
+// minABI is the Landlock ABI the receiver requires: 3 (Linux 6.2) gives
+// the filesystem restriction, confines ptrace, and mediates truncation;
+// before it, truncate and ftruncate reach any file the server user can
+// write without opening it, so an older kernel fails closed. Network,
+// signal, and socket confinement come from the seccomp filter on every
+// kernel, and Landlock's own network (ABI 4) and scoping (ABI 6) rules
+// are layered on where available.
+const minABI = 3
 
 // fsAccess is every filesystem access right the given ABI knows, so the
 // ruleset handles (and therefore denies by default) all of them.
@@ -152,6 +155,18 @@ func selfTest(opts Options) (checks map[string]string, failures []string) {
 	if opts.ProbePath != "" {
 		f, err := os.Open(opts.ProbePath)
 		denied("read_credential", err, func() { _ = f.Close() })
+		// Metadata and truncation are separate rights from reading: the
+		// credential's mode and size are re-applied unchanged, so a
+		// sandbox that turns out to allow them has not damaged the file.
+		// Landlock does not restrict stat, so the current values are
+		// readable from inside.
+		if info, err := os.Stat(opts.ProbePath); err != nil {
+			checks["stat_credential"] = "failed: " + err.Error()
+			failures = append(failures, "cannot stat the credential to probe it: "+err.Error())
+		} else {
+			denied("chmod_credential", os.Chmod(opts.ProbePath, info.Mode().Perm()), nil)
+			denied("truncate_credential", os.Truncate(opts.ProbePath, info.Size()), nil)
+		}
 	}
 	_, err := os.ReadDir("/")
 	denied("list_root", err, nil)
@@ -169,6 +184,18 @@ func selfTest(opts Options) (checks map[string]string, failures []string) {
 	}
 	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
 	denied("udp_socket", err, func() { _ = packet.Close() })
+	// io_uring would create sockets without the socket syscall. The
+	// filter refuses the setup call before the kernel reads its
+	// parameters, so an empty io_uring_params suffices.
+	var ringParams [120]byte
+	ring, _, errno := unix.Syscall(unix.SYS_IO_URING_SETUP, 1, uintptr(unsafe.Pointer(&ringParams)), 0)
+	denied("io_uring", errnoError(errno), func() { _ = unix.Close(int(ring)) })
+	if runtime.GOARCH == "amd64" {
+		// The x32 ABI shares the native architecture value; its numbers
+		// must be refused rather than slipping past the native checks.
+		fd, _, errno := unix.Syscall(x32SyscallBit|unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_DGRAM, 0)
+		denied("x32_syscall", errnoError(errno), func() { _ = unix.Close(int(fd)) })
+	}
 	unixConn, err := net.DialTimeout("unix", "/run/atc-webhook-receiver-probe.sock", time.Second)
 	denied("unix_socket", err, func() { _ = unixConn.Close() })
 	// Landlock confines ptrace to the sandbox and seccomp denies it; the
@@ -194,4 +221,12 @@ func selfTest(opts Options) (checks map[string]string, failures []string) {
 	checks["channel"] = strconv.Itoa(usable) + " connections"
 	checks["environment"] = strconv.Itoa(len(os.Environ())) + " variables"
 	return checks, failures
+}
+
+// errnoError is a raw syscall's errno as an error, nil when it succeeded.
+func errnoError(errno syscall.Errno) error {
+	if errno == 0 {
+		return nil
+	}
+	return errno
 }

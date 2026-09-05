@@ -10,14 +10,17 @@ import (
 )
 
 // The seccomp filter closes what Landlock cannot: Landlock's network
-// rules are port-based (allowing a port allows it on every host) and its
-// older ABIs scope neither signals nor abstract sockets. The receiver
-// needs no new sockets — its public listener and channel connections are
-// inherited — no child processes, and no way to touch other processes,
-// so the filter denies those syscall families outright with EPERM and
-// allows everything else. Unlike Landlock it cannot be installed before
-// the exec (it denies execve), so the second stage installs it first thing,
-// synchronized onto every thread the runtime has already started.
+// rules are port-based (allowing a port allows it on every host), its
+// older ABIs scope neither signals nor abstract sockets, and it never
+// mediates file metadata (mode, owner, extended attributes, timestamps).
+// The receiver needs no new sockets — its public listener and channel
+// connections are inherited — no child processes, no way to touch other
+// processes, no io_uring (a second door to socket creation), and no
+// metadata changes, so the filter denies those syscall families outright
+// with EPERM and allows everything else. Unlike Landlock it cannot be
+// installed before the exec (it denies execve), so the second stage
+// installs it first thing, synchronized onto every thread the runtime has
+// already started.
 
 const (
 	bpfLoadWord = unix.BPF_LD | unix.BPF_W | unix.BPF_ABS
@@ -31,22 +34,36 @@ const (
 	offsetArch = 4
 	offsetArg0 = 16
 
+	// x32SyscallBit marks a syscall made through the x32 ABI, which the
+	// kernel reports under the same audit architecture as native x86-64
+	// (seccomp(2), "Caveats"). A number with this bit set matches none of
+	// the native comparisons, so it is refused before they run.
+	x32SyscallBit = 0x40000000
+
 	retAllow = unix.SECCOMP_RET_ALLOW
 	retEPERM = unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)
 	retKill  = unix.SECCOMP_RET_KILL_PROCESS
 )
 
 // deniedSyscalls are refused unconditionally: creating sockets of any
-// family (TCP, UDP, unix path or abstract), creating processes, tracing or
-// reading other processes, and signalling by pid or pidfd.
-// fork and vfork exist only on some architectures and are appended per
-// architecture.
+// family (TCP, UDP, unix path or abstract), io_uring (whose ring
+// operations create sockets without the socket syscall), creating
+// processes, tracing or reading other processes, signalling by pid or
+// pidfd, and changing file mode, ownership, extended attributes, or
+// timestamps, which Landlock does not mediate. Syscalls that exist only on
+// some architectures are appended per architecture.
 var deniedSyscalls = append([]uint32{
 	unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN,
+	unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	unix.SYS_CLONE3, unix.SYS_EXECVE, unix.SYS_EXECVEAT,
 	unix.SYS_PTRACE, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV,
 	unix.SYS_KILL, unix.SYS_TKILL, unix.SYS_RT_SIGQUEUEINFO, unix.SYS_RT_TGSIGQUEUEINFO,
 	unix.SYS_PIDFD_OPEN, unix.SYS_PIDFD_GETFD, unix.SYS_PIDFD_SEND_SIGNAL,
+	unix.SYS_FCHMOD, unix.SYS_FCHMODAT, unix.SYS_FCHMODAT2,
+	unix.SYS_FCHOWN, unix.SYS_FCHOWNAT,
+	unix.SYS_SETXATTR, unix.SYS_LSETXATTR, unix.SYS_FSETXATTR, unix.SYS_SETXATTRAT,
+	unix.SYS_REMOVEXATTR, unix.SYS_LREMOVEXATTR, unix.SYS_FREMOVEXATTR, unix.SYS_REMOVEXATTRAT,
+	unix.SYS_UTIMENSAT,
 }, archDeniedSyscalls...)
 
 func auditArch() (uint32, error) {
@@ -71,13 +88,17 @@ func installSeccomp() error {
 		return unix.SockFilter{Code: code, Jt: jt, Jf: jf, K: k}
 	}
 	var program []unix.SockFilter
-	// A syscall from a foreign ABI (x32 on amd64) is not one this filter
-	// understands, so the process dies rather than guessing.
+	// A syscall from a foreign architecture is not one this filter
+	// understands, so the process dies rather than guessing. x32 shares
+	// the native architecture value and is told apart by its number bit
+	// (harmless on arm64, where no number carries it).
 	program = append(program,
 		instruction(bpfLoadWord, 0, 0, offsetArch),
 		instruction(bpfJumpEq, 1, 0, arch),
 		instruction(bpfReturn, 0, 0, retKill),
 		instruction(bpfLoadWord, 0, 0, offsetNr),
+		instruction(bpfJumpSet, 0, 1, x32SyscallBit),
+		instruction(bpfReturn, 0, 0, retEPERM),
 	)
 	// Each denied syscall jumps to the shared EPERM return at the end;
 	// offsets are relative to the following instruction.

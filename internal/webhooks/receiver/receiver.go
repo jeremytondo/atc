@@ -13,12 +13,13 @@
 // applies it to its own thread, and execs the second stage; the exec
 // carries the restriction into every thread of the new image, which is
 // what makes this robust for a multi-threaded Go runtime. The second stage
-// adds the seccomp filter (no socket creation of any family, no process
-// creation, no tracing, no signalling other processes) to every thread,
-// then proves the restriction from the inside — credential read, root listing, file
-// creation, TCP connect and bind, UDP and unix sockets, tracing and
-// signalling its parent, spawning — each must be refused — before
-// reporting itself ready on stdout and serving. Core establishes exposure
+// adds the seccomp filter (no socket creation of any family, no io_uring,
+// no process creation, no tracing, no signalling other processes, no
+// file metadata changes) to every thread, then proves the restriction
+// from the inside — credential read, chmod, and truncate, root listing,
+// file creation, TCP connect and bind, UDP and unix sockets, io_uring,
+// x32 syscalls, tracing and signalling its parent, spawning — each must
+// be refused — before reporting itself ready on stdout and serving. Core establishes exposure
 // only after that report; a failed proof, an unsupported kernel, or a
 // non-Linux platform fails closed with the reason in the report.
 //
