@@ -238,6 +238,14 @@ func (c *Client) DeleteProject(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/projects/"+id, nil, nil)
 }
 
+// Webhooks reports the state of webhook ingress: readiness, public URL,
+// registered routes, any awaited setup action, and inbox counters.
+func (c *Client) Webhooks(ctx context.Context) (Webhooks, error) {
+	var status Webhooks
+	err := c.do(ctx, http.MethodGet, "/v1/webhooks", nil, &status)
+	return status, err
+}
+
 // Raw performs one authenticated request over the contract and returns the
 // HTTP response for the caller to stream and close — the `atc api` gateway.
 // It rides the same request path as every typed method (auth, version

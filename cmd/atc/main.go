@@ -85,9 +85,11 @@ func newRootCmd() *cobra.Command {
 For ` + "`atc server run`" + `, configuration precedence is:
   flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
 
-Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to expose
-on the tailnet by default. Supervised server commands read config.toml and
-defaults; their lifecycle flags control unit overrides.`,
+Keys: port, bind, tailscale, tailscale_executable, webhooks, webhooks_port. Set
+tailscale = true to expose the API on the tailnet by default; webhooks = true
+to receive webhooks publicly through Tailscale Funnel. Supervised server
+commands read config.toml and defaults; their exposure flags apply to the
+launch they start.`,
 		// Errors surface once, prefixed "atc:" in main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -257,51 +259,62 @@ func lifecycleCmd(use, short, long string, options func(*cobra.Command) (service
 	}
 }
 
-// tailscaleFlagHelp documents the tri-state lifecycle flag on start and
-// restart: persistence in the unit, omission-preserves, and =false as a
-// return to config.toml rather than a force-off.
-const tailscaleFlagHelp = `
+// exposureFlagHelp documents the launch flags start and restart carry
+// (ATC-283, ATC-306): each applies to the launch it starts, a restart
+// keeps the running launch's flags unless replaced, and stop then start
+// begins fresh from config.toml.
+const exposureFlagHelp = `
 
---tailscale settings:
-  omitted             preserves the installed unit setting
-  --tailscale         enables exposure; survives restarts, reboots, and upgrades
-  --tailscale=false   removes the unit override; config.toml decides`
+Exposure flags (--tailscale, --webhooks):
+  omitted          restart keeps the running launch's flags; a fresh start
+                   after stop uses config.toml alone
+  --<flag>         enables the exposure for this launch (survives reboots and
+                   upgrades while the launch is supervised)
+  --<flag>=false   disables it for this launch, even if config.toml enables it
+Flags never modify config.toml. --tailscale exposes the private API on the
+tailnet; --webhooks runs the restricted webhook receiver behind Tailscale
+Funnel, publicly, on webhooks_port (default 443).`
 
-// addTailscaleFlag registers the lifecycle --tailscale flag; the tri-state
-// semantics live in tailscaleLifecycleOptions.
-func addTailscaleFlag(cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().Bool("tailscale", false, "persist tailnet exposure (omitted: preserve; false: use config.toml)")
+// addExposureFlags registers the lifecycle --tailscale and --webhooks
+// flags; their tri-state semantics live in exposureLifecycleOptions.
+func addExposureFlags(cmd *cobra.Command) *cobra.Command {
+	cmd.Flags().Bool("tailscale", false, "expose the private API on the tailnet for this launch (omitted: keep the running launch's setting)")
+	cmd.Flags().Bool("webhooks", false, "run the webhook receiver behind Tailscale Funnel for this launch (omitted: keep the running launch's setting)")
 	return cmd
 }
 
-// tailscaleLifecycleOptions is lifecycleOptions plus the tri-state
-// --tailscale flag start and restart carry (ATC-283): a flag the user
-// never set stays nil so the installed unit's override is preserved.
-func tailscaleLifecycleOptions(cmd *cobra.Command) (service.Options, error) {
+// exposureLifecycleOptions is lifecycleOptions plus the tri-state exposure
+// flags start and restart carry: a flag the user never set stays nil so
+// the running launch's flag is preserved.
+func exposureLifecycleOptions(cmd *cobra.Command) (service.Options, error) {
 	opts, err := lifecycleOptions(cmd)
 	if err != nil {
 		return service.Options{}, err
 	}
-	if flags := cmd.Flags(); flags.Changed("tailscale") {
-		enabled, err := flags.GetBool("tailscale")
+	flags := cmd.Flags()
+	for name, slot := range map[string]**bool{"tailscale": &opts.Flags.Tailscale, "webhooks": &opts.Flags.Webhooks} {
+		if !flags.Changed(name) {
+			continue
+		}
+		enabled, err := flags.GetBool(name)
 		if err != nil {
 			return service.Options{}, err
 		}
-		opts.Tailscale = &enabled
+		*slot = &enabled
 	}
 	return opts, nil
 }
 
 func newServerStartCmd() *cobra.Command {
-	return addTailscaleFlag(lifecycleCmd("start",
+	return addExposureFlags(lifecycleCmd("start",
 		"Register and start the supervised server",
 		`Register and start ATC with launchd on macOS or the systemd user supervisor on
 Linux. Each start refreshes the unit from the current binary; run
 `+"`atc server restart`"+` after an upgrade. A changed unit restarts the server;
 an unchanged healthy server keeps running.
 
-The first start prints what was registered and how to remove it.`+tailscaleFlagHelp,
-		tailscaleLifecycleOptions, service.Start))
+The first start prints what was registered and how to remove it.`+exposureFlagHelp,
+		exposureLifecycleOptions, service.Start))
 }
 
 func newServerStopCmd() *cobra.Command {
@@ -314,11 +327,11 @@ returns at next boot on Linux or next login on macOS. Use
 }
 
 func newServerRestartCmd() *cobra.Command {
-	return addTailscaleFlag(lifecycleCmd("restart",
+	return addExposureFlags(lifecycleCmd("restart",
 		"Restart the supervised server",
 		`Re-render the unit and restart the server process. This is the remedy for
-upgrades, config edits, and client/server version skew.`+tailscaleFlagHelp,
-		tailscaleLifecycleOptions, service.Restart))
+upgrades, config edits, and client/server version skew.`+exposureFlagHelp,
+		exposureLifecycleOptions, service.Restart))
 }
 
 func newServerStatusCmd() *cobra.Command {
@@ -379,6 +392,7 @@ stderr. This is the primitive the supervised unit execs; most users want
 	cmd.Flags().Int("port", 0, "listen port (overrides ATC_PORT and config.toml)")
 	cmd.Flags().String("bind", "", "bind address (overrides ATC_BIND and config.toml)")
 	cmd.Flags().Bool("tailscale", false, "expose on the tailnet (overrides ATC_TAILSCALE and config.toml)")
+	cmd.Flags().Bool("webhooks", false, "run the webhook receiver behind Tailscale Funnel (overrides ATC_WEBHOOKS and config.toml)")
 	return cmd
 }
 
@@ -476,6 +490,11 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	if flags.Changed("webhooks") {
+		if cfg.Webhooks, err = flags.GetBool("webhooks"); err != nil {
+			return err
+		}
+	}
 	// Flags are the final precedence layer, and Load's validation ran
 	// before they applied — revalidate so a flag cannot smuggle in a value
 	// the lower layers would have refused (e.g. --bind= binding every
@@ -485,9 +504,10 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Exposure misconfiguration is a boot error; everything after this
-	// point self-heals instead of blocking the loopback server.
+	// point self-heals instead of blocking the loopback server. Funnel
+	// exposure of the webhook receiver needs the same executable.
 	var tailscaleExecutable string
-	if cfg.Tailscale {
+	if cfg.Tailscale || cfg.Webhooks {
 		var err error
 		if tailscaleExecutable, err = tailscale.ResolveExecutable(cfg.TailscaleExecutable); err != nil {
 			return err

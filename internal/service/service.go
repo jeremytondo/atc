@@ -2,7 +2,7 @@
 // lifecycle family on the ATC-259 server): a user-scope launchd
 // LaunchAgent on macOS, a systemd user unit on Linux. Supervisor-only —
 // there is no pidfile family. The unit execs `atc server run` (plus the
-// persisted --tailscale service override, ATC-283), keeping the daemon
+// launch's exposure flags, ATC-283 and ATC-306), keeping the daemon
 // structurally unable to call back into the supervisor.
 //
 // Registration is folded into start: every start re-renders the unit from
@@ -53,13 +53,13 @@ type Options struct {
 	Config config.Config
 	// Version is the client build identity, for skew reporting.
 	Version string
-	// Tailscale is the tri-state lifecycle flag (ATC-283), consulted only
-	// by Start and Restart: nil (omitted) preserves the installed unit's
-	// override, true installs it, false removes it so config.toml decides
-	// again. The installed unit is the override's only durable store.
-	Tailscale *bool
-	Stdout    io.Writer
-	Stderr    io.Writer
+	// Flags are the exposure flags supplied to this Start or Restart
+	// (ATC-283, ATC-306). A flag left nil is inherited from the running
+	// launch's recorded flags when there is one, and otherwise left to
+	// configuration; a supplied flag replaces the recorded one either way.
+	Flags  LaunchFlags
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // ExitError requests a specific process exit code after the command already

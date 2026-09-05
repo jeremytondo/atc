@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/config"
 )
 
@@ -123,7 +125,7 @@ func TestRenderStatus(t *testing.T) {
 			info: func() statusInfo {
 				s := healthyInfo()
 				s.bind = "0.0.0.0"
-				s.tailscale = true
+				s.tailnet = true
 				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
 				return s
 			},
@@ -152,10 +154,11 @@ func TestRenderStatus(t *testing.T) {
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
-		"service override attributes tailscale and shows the clearing command": {
+		"launch flag attributes tailscale and shows the ways back": {
 			info: func() statusInfo {
 				s := healthyInfo()
-				s.tailscaleOverride = true
+				s.flags.Tailscale = boolPtr(true)
+				s.tailnet = true
 				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
 				return s
 			},
@@ -165,14 +168,15 @@ func TestRenderStatus(t *testing.T) {
 				"  server: v1.2.3\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): https://machine.tail1234.ts.net:7331\n" +
-				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  tailscale: enabled by this launch's flag; `atc server restart --tailscale=false` replaces it, stop then start returns to config.toml\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
-		"service override with tailnet unavailable keeps the diagnostics": {
+		"launch flag with tailnet unavailable keeps the diagnostics": {
 			info: func() statusInfo {
 				s := healthyInfo()
-				s.tailscaleOverride = true
+				s.flags.Tailscale = boolPtr(true)
+				s.tailnet = true
 				s.tailnetProblem = "tailscale is logged out (BackendState NeedsLogin)"
 				return s
 			},
@@ -182,14 +186,15 @@ func TestRenderStatus(t *testing.T) {
 				"  server: v1.2.3\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
-				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  tailscale: enabled by this launch's flag; `atc server restart --tailscale=false` replaces it, stop then start returns to config.toml\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
 		"tailnet route still converging shows expected url without claiming availability": {
 			info: func() statusInfo {
 				s := healthyInfo()
-				s.tailscaleOverride = true
+				s.flags.Tailscale = boolPtr(true)
+				s.tailnet = true
 				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
 				s.tailnetProblem = "tailscale serve has not exposed the route yet"
 				return s
@@ -200,14 +205,14 @@ func TestRenderStatus(t *testing.T) {
 				"  server: v1.2.3\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): pending at https://machine.tail1234.ts.net:7331 (tailscale serve has not exposed the route yet)\n" +
-				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  tailscale: enabled by this launch's flag; `atc server restart --tailscale=false` replaces it, stop then start returns to config.toml\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
-		"unreadable unit reports an unknown override instead of guessing": {
+		"unreadable unit reports unknown launch flags instead of guessing": {
 			info: func() statusInfo {
 				s := healthyInfo()
-				s.overrideProblem = "installed unit has no ExecStart line"
+				s.flagsProblem = "installed unit has no ExecStart line"
 				return s
 			},
 			want: "atc.server: running and healthy\n" +
@@ -215,14 +220,14 @@ func TestRenderStatus(t *testing.T) {
 				"  client: v1.2.3\n" +
 				"  server: v1.2.3\n" +
 				"  api: http://127.0.0.1:7331\n" +
-				"  tailscale: unknown service override (installed unit has no ExecStart line); rerun `atc server start` with an explicit --tailscale or --tailscale=false\n" +
+				"  launch flags: unknown (installed unit has no ExecStart line); `atc server stop`, then `atc server start` with the flags you want\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
 		"tailnet exposure unavailable states why": {
 			info: func() statusInfo {
 				s := healthyInfo()
-				s.tailscale = true
+				s.tailnet = true
 				s.tailnetProblem = "tailscale is logged out (BackendState NeedsLogin)"
 				return s
 			},
@@ -232,6 +237,66 @@ func TestRenderStatus(t *testing.T) {
 				"  server: v1.2.3\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"webhooks ready lists the endpoint and routes": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.webhooks = true
+				s.webhookStatus = api.Webhooks{
+					State: api.WebhooksReady, URL: "https://machine.tail1234.ts.net", Pending: 2,
+					Routes: []api.WebhookRoute{{IntegrationID: "linear", Path: "/linear"}},
+				}
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  webhooks: https://machine.tail1234.ts.net (2 pending)\n" +
+				"  webhook route (linear): https://machine.tail1234.ts.net/linear\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"webhooks awaiting approval shows the action and the disabling flag": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.webhooks = true
+				s.flags.Webhooks = boolPtr(false)
+				s.webhookStatus = api.Webhooks{
+					State: api.WebhooksStarting, URL: "https://machine.tail1234.ts.net:8443",
+					Reason:        "tailscale funnel exited: Funnel not available",
+					Action:        "Funnel not available; \"funnel\" node attribute not set.\n\tSee https://tailscale.com/s/no-funnel.",
+					IntakeBlocked: true,
+				}
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  webhooks: starting at https://machine.tail1234.ts.net:8443 (tailscale funnel exited: Funnel not available)\n" +
+				"  webhooks action: Funnel not available; \"funnel\" node attribute not set. See https://tailscale.com/s/no-funnel.\n" +
+				"  webhooks: disabled by this launch's flag; `atc server restart --webhooks` replaces it, stop then start returns to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"webhooks unavailable states why, unreachable report says so": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.webhooks = true
+				s.webhookStatus = api.Webhooks{State: api.WebhooksUnavailable, Reason: "webhook ingress requires Linux"}
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  webhooks: unavailable (webhook ingress requires Linux)\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},

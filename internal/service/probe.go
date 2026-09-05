@@ -70,6 +70,14 @@ var probeOnce = func(ctx context.Context, opts Options, token string) probeOutco
 	}
 }
 
+// probeWebhooks asks the running server for its webhook ingress report.
+// A seam variable so lifecycle tests script it.
+var probeWebhooks = func(ctx context.Context, opts Options, token string) (api.Webhooks, error) {
+	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
+		&http.Client{Timeout: probeTimeout}, nil)
+	return client.Webhooks(ctx)
+}
+
 // Probe reports whether a server answers on the configured address and the
 // version it claims. Tokenless: the Atc-Server-Version header rides every
 // response, 401s included. This is `atc upgrade`'s post-swap check.
