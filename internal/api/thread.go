@@ -80,7 +80,7 @@ func (s TurnState) Ended() bool {
 }
 
 // Thread is the /v1/threads resource: one exact provider conversation,
-// observed inside an ATC-launched App, mirrored from an external program
+// observed inside an ATC-launched App, mirrored from a provider
 // its Integration observes (ATC-285), or started through ATC in an
 // Integration that can create one (ATC-289). Threads persist as the
 // durable index of conversations until deleted. The provider's own
@@ -97,7 +97,7 @@ type Thread struct {
 	// classification once set.
 	ProjectID        string `json:"projectId,omitempty" doc:"Project the thread belongs to: the most specific project containing its initial directory at first observation, backfilled when projects are created or moved, or set explicitly. Omitted when none. Cleared when the project is deleted."`
 	InitialDirectory string `json:"initialDirectory,omitempty" doc:"Canonical directory the conversation reliably originated in, as the Integration reported it at first observation; omitted when no usable local directory was reported. Immutable — later resumes never change it."`
-	TerminalID       string `json:"terminalId,omitempty" doc:"Terminal currently or most recently observed hosting the conversation; omitted once that terminal is deleted, and always for threads an external program owns. Runtime evidence, not ownership: whether the conversation is open right now is the terminal's activeThreadId."`
+	TerminalID       string `json:"terminalId,omitempty" doc:"Terminal currently or most recently observed hosting the conversation; omitted once that terminal is deleted, and always for threads that live in a provider's own program rather than an ATC terminal. Runtime evidence, not ownership: whether the conversation is open right now is the terminal's activeThreadId."`
 	Title            string `json:"title,omitempty" doc:"Display title: user-editable, with an observed default. Once set through ATC, observation never overwrites it."`
 	Model            string `json:"model,omitempty" doc:"Observed model, best-effort."`
 	Effort           string `json:"effort,omitempty" doc:"Observed reasoning effort, best-effort."`
@@ -109,14 +109,14 @@ type Thread struct {
 	StatusDetail   string       `json:"statusDetail,omitempty" doc:"The provider's own explanation of a faulted session; present only while status is error."`
 	LatestTurn     *ThreadTurn  `json:"latestTurn,omitempty" doc:"The most recent turn ATC observed or created on the thread; omitted until there is one."`
 	LastEvidenceAt *time.Time   `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
-	Links          *ThreadLinks `json:"links,omitempty" doc:"Where the conversation opens in the program that owns it; present only for threads an external program owns."`
-	Archived       bool         `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its program) unarchives it."`
+	Links          *ThreadLinks `json:"links,omitempty" doc:"Where the conversation opens in the provider's own program; present only for threads that live there rather than in an ATC terminal."`
+	Archived       bool         `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its provider) unarchives it."`
 	ArchivedAt     *time.Time   `json:"archivedAt,omitempty" doc:"When the thread was archived; server-managed."`
 	CreatedAt      time.Time    `json:"createdAt"`
 	UpdatedAt      time.Time    `json:"updatedAt"`
 }
 
-// ThreadLinks are the deep links into the external program that owns a
+// ThreadLinks are the deep links into the provider's own program that owns a
 // thread — its handoff Apps — derived from the Integration's live
 // connection at read time.
 type ThreadLinks struct {
@@ -130,7 +130,7 @@ type ThreadLinks struct {
 // archived, with no custom action routes.
 type ThreadUpdateParams struct {
 	Title     Optional[string] `json:"title,omitzero" minLength:"1" nullable:"false" doc:"New display title. Observation never overwrites a title set here."`
-	Archived  Optional[bool]   `json:"archived,omitzero" nullable:"false" doc:"true archives the thread, false unarchives it. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused."`
+	Archived  Optional[bool]   `json:"archived,omitzero" nullable:"false" doc:"true archives the thread, false unarchives it. Archiving an active thread — one a terminal has open, or one its provider still reports — is refused."`
 	ProjectID Optional[string] `json:"projectId,omitzero" minLength:"1" doc:"Project to assign, any project regardless of directory; null clears the association, leaving the thread unassigned until a project is created or moved to contain its initial directory."`
 }
 

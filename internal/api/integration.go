@@ -3,29 +3,29 @@ package api
 import "time"
 
 // The tool-level vocabulary (ATC-294): an Integration is ATC's compiled-in
-// relationship with one external tool (claude, codex, t3code, zmx); an
+// relationship with one external system (claude, codex, t3code, zmx); an
 // App is a user-facing interaction surface the Integration owns
 // (codex/tui); an agent is an Integration-scoped descriptor of what the
 // tool runs conversations under, opaque outside its Integration. There is
 // no global agent catalog: the same agent id under two Integrations
 // implies nothing.
 
-// IntegrationCapability summarizes one typed domain interface an
-// Integration implements — display only; runtime behavior dispatches
+// IntegrationCapability names one typed domain interface an
+// Integration implements, as domain.verb — display only; runtime behavior dispatches
 // through the typed interfaces themselves.
 type IntegrationCapability string
 
 const (
 	// CapabilityTerminalDriver: the Integration drives terminal sessions
 	// (the Terminals domain's Driver seam).
-	CapabilityTerminalDriver IntegrationCapability = "terminal_driver"
+	CapabilityTerminalDriver IntegrationCapability = "terminals.drive"
 	// CapabilityThreadObservation: the Integration feeds thread evidence to
-	// the Threads domain — from an ATC-launched App or from an external
-	// program it observes.
-	CapabilityThreadObservation IntegrationCapability = "thread_observation"
+	// the Threads domain — from an ATC-launched App or from a provider's
+	// own program it observes.
+	CapabilityThreadObservation IntegrationCapability = "threads.observe"
 	// CapabilityThreadCreation: the Integration starts new conversations in
 	// its program with a first prompt (POST /v1/threads, ATC-289).
-	CapabilityThreadCreation IntegrationCapability = "thread_creation"
+	CapabilityThreadCreation IntegrationCapability = "threads.create"
 )
 
 // AppInteraction is one typed interaction an App offers.
@@ -100,7 +100,7 @@ type Integration struct {
 	// executable, whether or not it currently resolves; connection-backed
 	// Integrations explain themselves through connection.
 	InstallHint string                 `json:"installHint,omitempty" doc:"How to install the tool behind the Integration."`
-	Connection  *IntegrationConnection `json:"connection,omitempty" doc:"Live connection of an Integration that observes an external program; omitted otherwise."`
+	Connection  *IntegrationConnection `json:"connection,omitempty" doc:"Live connection of an Integration that observes a provider's own program; omitted otherwise."`
 }
 
 // IntegrationList is the GET /v1/integrations response body, in

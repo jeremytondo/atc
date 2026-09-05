@@ -1,10 +1,10 @@
 // Package integrations is the Integration catalog (ATC-294): a
-// compiled-in, read-only model of the external tools ATC works with, the
+// compiled-in, read-only model of the external systems ATC integrates with, the
 // launch glue that turns an App reference into a terminal create, and the
 // routing of a thread create to the Integration that performs it
 // (ATC-289).
 //
-// An Integration is ATC's stable relationship with one tool — claude,
+// An Integration is ATC's stable relationship with one external system — claude,
 // codex, t3code, zmx. Its id is durable provenance, persisted on every
 // thread it produces, and never renamed. An Integration may expose
 // Integration-scoped agent descriptors (opaque ids: the same string under

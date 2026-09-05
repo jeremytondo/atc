@@ -129,7 +129,7 @@ type Service struct {
 	// empty at boot and is re-established by observation.
 	active map[string]string
 	// held is the set of threads whose producing Integration's connection
-	// holds them: the external program still reports the conversation.
+	// holds them: the provider still reports the conversation.
 	// Like active, it is evidence, re-established by observation after a
 	// boot.
 	held map[string]struct{}
@@ -628,7 +628,7 @@ func (s *Service) TerminalRemoved(ctx context.Context, terminalID string) {
 }
 
 // ObserveExternal applies an Integration's current view of one
-// conversation its external program owns (ATC-285): a known identity is
+// conversation its provider owns (ATC-285): a known identity is
 // brought into line with the program, an unknown one is minted from its
 // reported origin directory — which must be usable on this machine — and
 // classified. The Integration's connection holds the thread from here —

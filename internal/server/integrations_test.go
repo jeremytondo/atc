@@ -45,11 +45,11 @@ func TestIntegrationCatalogListAndGet(t *testing.T) {
 	want := []api.Integration{
 		{ID: "claude", Name: "Claude Code", Capabilities: observes,
 			Agents:    []api.IntegrationAgent{{ID: "claude", Name: "Claude Code"}},
-			Apps:      []api.App{{ID: "claude/tui", Name: "Claude Code", Agents: []string{"claude"}, Interactions: terminal, Available: &available}},
+			Apps:      []api.App{{ID: "claude/tui", Name: "Claude Code CLI", Agents: []string{"claude"}, Interactions: terminal, Available: &available}},
 			Available: true, InstallHint: "npm install -g @anthropic-ai/claude-code"},
 		{ID: "codex", Name: "Codex", Capabilities: observes,
 			Agents:    []api.IntegrationAgent{{ID: "codex", Name: "Codex"}},
-			Apps:      []api.App{{ID: "codex/tui", Name: "Codex", Agents: []string{"codex"}, Interactions: terminal, Available: &unavailable}},
+			Apps:      []api.App{{ID: "codex/tui", Name: "Codex CLI", Agents: []string{"codex"}, Interactions: terminal, Available: &unavailable}},
 			Available: false, InstallHint: "npm install -g @openai/codex"},
 	}
 	if diff := cmp.Diff(want, list.Integrations[:2]); diff != "" {

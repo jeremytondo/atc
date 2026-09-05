@@ -443,7 +443,7 @@ func decodeTerminalList(t *testing.T, rec *httptest.ResponseRecorder) []api.Term
 	return list.Terminals
 }
 
-// A thread an external program owns (ATC-285): integration and links on the
+// A thread a provider owns outside ATC terminals (ATC-285): integration and links on the
 // wire, open refused with a clear error, archive and delete refused
 // while the program still reports it and allowed once it does not, a
 // title change always allowed.

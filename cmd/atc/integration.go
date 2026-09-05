@@ -12,14 +12,14 @@ import (
 )
 
 // The atc integration family (ATC-294): the read-only catalog of the
-// tools ATC works with — each with its Apps, agents, capabilities, and
+// external systems ATC integrates with — each with its Apps, agents, capabilities, and
 // health. Launching an App is `atc terminal create --app`. Commands speak
 // only the shared API client; the server owns resolution and probing.
 
 func newIntegrationCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "integration",
-		Short: "See the tools ATC works with and the apps they offer",
+		Short: "List ATC's integrations and the apps they offer",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			return fmt.Errorf("usage: atc integration <list|get>")

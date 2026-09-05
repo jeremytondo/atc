@@ -1,7 +1,7 @@
 // Package threads is the Threads domain (ATC-255): the resource behind
 // /v1/threads. A thread is one exact provider conversation, observed into
 // existence — inside an ATC-launched terminal App at its first prompt, or
-// mirrored from an external program its Integration observes (ATC-285) —
+// mirrored from a provider its Integration observes (ATC-285) —
 // or recorded ahead of a conversation ATC starts in such a program
 // (ATC-289; the application coordinator sequences that create, this
 // domain only records and discards). Open (ATC-282, ATC-297) is the one decision
@@ -19,7 +19,7 @@
 // the unarchive a reattach implies — active means unarchived), and the
 // activeThreadId projection onto terminals. A thread is held either by a
 // terminal (its App has the conversation open) or by an Integration
-// connection (the external program still reports it); both holds accept
+// connection (the provider still reports it); both holds accept
 // live statuses and both release into the same coercion. Provider
 // observation — the Claude hooks, the Codex app-server observer, the T3
 // Code mirror — lives under internal/integrations and feeds this service
@@ -125,7 +125,7 @@ type StatusObservation struct {
 }
 
 // ExternalObservation reports what an Integration currently knows about a
-// conversation its external program owns (ATC-285): the whole shape at
+// conversation its provider owns (ATC-285): the whole shape at
 // once, since the program is the source of truth and ATC mirrors it. The
 // Integration's connection holds the thread from this observation until
 // the Integration releases it (the program stopped reporting the thread,

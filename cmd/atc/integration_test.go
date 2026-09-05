@@ -36,7 +36,7 @@ func TestIntegrationListAndGetCLI(t *testing.T) {
 		`(?m)^id\s+t3code$`,
 		`(?m)^available\s+no$`,
 		`(?m)^connection\s+unavailable \(`,
-		`(?m)^capabilities\s+thread_observation, thread_creation$`,
+		`(?m)^capabilities\s+threads\.observe, threads\.create$`,
 		`(?m)^agent\s+claudeAgent \(Claude Code\)$`,
 		`(?m)^app\s+t3code/web \(T3 Code \(web\)\): handoff$`,
 	} {
@@ -45,7 +45,7 @@ func TestIntegrationListAndGetCLI(t *testing.T) {
 		}
 	}
 	stdout, _, err = runCLI(t, "integration", "get", "codex")
-	if err != nil || !regexp.MustCompile(`(?m)^app\s+codex/tui \(Codex\): terminal_start, terminal_resume; available no$`).MatchString(stdout) ||
+	if err != nil || !regexp.MustCompile(`(?m)^app\s+codex/tui \(Codex CLI\): terminal_start, terminal_resume; available no$`).MatchString(stdout) ||
 		!regexp.MustCompile(`(?m)^install\s+npm install -g @openai/codex$`).MatchString(stdout) {
 		t.Errorf("get codex = %q, %v", stdout, err)
 	}
