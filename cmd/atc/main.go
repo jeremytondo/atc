@@ -41,6 +41,7 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
+	"github.com/jeremytondo/atc/internal/webhooks"
 )
 
 func main() {
@@ -98,7 +99,7 @@ launch they start.`,
 		},
 	}
 	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
-		newUpgradeCmd(), newServerCmd(), newChildCmd())
+		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd())
 	return root
 }
 
@@ -703,6 +704,31 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Logger:       logger,
 	})
 
+	// Webhook ingress (ATC-306): the durable inbox and its worker always
+	// run, so deliveries accepted by an earlier launch complete even when
+	// intake is off now. Intake itself — the restricted receiver behind
+	// Tailscale Funnel — runs only when enabled, and proves it cannot read
+	// the bearer token or reach the API port before anything is exposed.
+	// Built-in Integrations register their routes here; none does yet.
+	var ingress *webhooks.IngressOptions
+	if cfg.Webhooks {
+		ingress = &webhooks.IngressOptions{
+			Executable:          selfExecutable,
+			TailscaleExecutable: tailscaleExecutable,
+			PublicPort:          cfg.WebhooksPort,
+			DenyPort:            port,
+			ProbePath:           tokenPath,
+		}
+	}
+	webhookService, err := webhooks.New(webhooks.Options{
+		Inbox:   database.Webhooks(),
+		Ingress: ingress,
+		Logger:  logger,
+	})
+	if err != nil {
+		return err
+	}
+
 	handler := server.NewHandler(server.Options{
 		Verify:       tokens.Verify,
 		Version:      versionValue,
@@ -712,6 +738,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Integrations: catalog,
 		Threads:      threadService,
 		Events:       hub,
+		Webhooks:     webhookService,
 		InternalRoutes: map[string]http.Handler{
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 		},
@@ -729,6 +756,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	background.Go(func() { threadService.Run(loopCtx) })
 	background.Go(func() { codexObserver.Run(loopCtx) })
 	background.Go(func() { t3Service.Run(loopCtx) })
+	background.Go(func() { webhookService.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

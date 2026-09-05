@@ -39,8 +39,8 @@ func TestWebhooksAcceptDeduplicatesAndBounds(t *testing.T) {
 	}
 	// A redelivery of an existing delivery is still acknowledged at
 	// capacity: nothing new is stored, so it cannot be refused.
-	if ok, err := inbox.Accept(ctx, delivery("5", "evt-a", 4), 2); err == nil && ok {
-		t.Fatalf("Accept(redelivery at capacity) stored a new row")
+	if ok, err := inbox.Accept(ctx, delivery("5", "evt-a", 4), 2); err != nil || ok {
+		t.Fatalf("Accept(redelivery at capacity) = %v, %v; want false, nil", ok, err)
 	}
 	pending, err := inbox.Pending(ctx)
 	if err != nil || pending != 2 {

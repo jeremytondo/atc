@@ -51,9 +51,10 @@ func (s *Store) Webhooks() *Webhooks {
 // Accept stores a pending delivery and reports true; false means a
 // delivery with the same Integration-scoped identity already exists
 // (pending or as a receipt), so the redelivery is acknowledged without a
-// new row. The capacity check and the insert share one immediate write
-// transaction, so concurrent redeliveries and a full inbox are decided
-// atomically under the single writer; ErrInboxFull is the refusal.
+// new row — at capacity too, since nothing new is stored. The insert and
+// the capacity check share one immediate write transaction, so concurrent
+// redeliveries and a full inbox are decided atomically under the single
+// writer; ErrInboxFull rolls the insert back.
 func (w *Webhooks) Accept(ctx context.Context, record WebhookDelivery, capacity int) (bool, error) {
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -61,13 +62,6 @@ func (w *Webhooks) Accept(ctx context.Context, record WebhookDelivery, capacity 
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := gen.New(tx)
-	pending, err := queries.CountPendingWebhookDeliveries(ctx)
-	if err != nil {
-		return false, err
-	}
-	if pending >= int64(capacity) {
-		return false, ErrInboxFull
-	}
 	n, err := queries.InsertWebhookDelivery(ctx, gen.InsertWebhookDeliveryParams{
 		ID:            record.ID,
 		IntegrationID: record.IntegrationID,
@@ -82,6 +76,13 @@ func (w *Webhooks) Accept(ctx context.Context, record WebhookDelivery, capacity 
 	}
 	if n == 0 {
 		return false, tx.Commit()
+	}
+	pending, err := queries.CountPendingWebhookDeliveries(ctx)
+	if err != nil {
+		return false, err
+	}
+	if pending > int64(capacity) {
+		return false, ErrInboxFull
 	}
 	return true, tx.Commit()
 }

@@ -30,6 +30,39 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 
 Glossary of terms can be found in GLOSSARY.md
 
+## Webhook ingress
+
+ATC can receive webhooks from external systems on an always-on machine
+without a separate receiver or tunnel. Set `webhooks = true` in
+`config.toml` (or pass `--webhooks` to `atc server start`, `restart`, or
+`run`) and the server runs a restricted receiver process behind
+[Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel) on
+the machine's existing Tailscale identity, publicly, on `webhooks_port`
+(443 by default; 8443 and 10000 are the other Funnel ports). This is
+independent of `tailscale = true`, which exposes the private API on the
+tailnet only.
+
+The receiver is a child of the server sandboxed with Linux Landlock (ABI 4,
+kernel 6.7 or newer): it cannot read files, bind ports, or connect anywhere
+but the server's loopback delivery channel, and it proves each of those
+restrictions before anything is exposed. Every request it relays is treated
+as untrusted; the Integration owning the route verifies it inside the
+server, and only an authorized delivery is stored, acknowledged, and
+processed. Exposure lives exactly as long as the server process, including
+when it is killed outright. Unsupported platforms and kernels leave only
+webhook intake unavailable, with the reason in `atc server status` and
+`GET /v1/webhooks`.
+
+Enabling Funnel is a one-time tailnet policy step; when it is needed, the
+server keeps running and status shows the approval link. The public
+hostname becomes part of a public certificate log, as with any Funnel.
+
+`--tailscale` and `--webhooks` follow one contract: a flag applies to the
+launch it starts, `restart` keeps the running launch's flags unless
+replaced, `stop` then `start` returns to `config.toml`, and `=false`
+disables for that launch. Flags never modify `config.toml`. See
+`atc server start --help`.
+
 ## Installing and upgrading
 
 ```sh

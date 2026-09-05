@@ -47,11 +47,6 @@ func (f LaunchFlags) inherit(running LaunchFlags) LaunchFlags {
 	return f
 }
 
-// any reports whether at least one flag was supplied.
-func (f LaunchFlags) any() bool {
-	return f.Tailscale != nil || f.Webhooks != nil
-}
-
 // effective settles one exposure: the launch flag when supplied, the
 // configured value otherwise.
 func effective(flag *bool, configured bool) bool {
