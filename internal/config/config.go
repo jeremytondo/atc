@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"strconv"
 
 	"github.com/pelletier/go-toml/v2"
@@ -34,16 +35,29 @@ type Config struct {
 	// TailscaleExecutable names the tailscale CLI; a custom value is exact
 	// user intent and disables the macOS app-bundle fallback.
 	TailscaleExecutable string `toml:"tailscale_executable"`
+	// Webhooks runs the restricted webhook receiver and exposes it to the
+	// internet through Tailscale Funnel for the server's lifetime
+	// (ATC-306). Independent of Tailscale, which is private Serve
+	// exposure of the API.
+	Webhooks bool `toml:"webhooks"`
+	// WebhooksPort is the public HTTPS port Funnel serves the receiver on.
+	// Funnel supports only 443, 8443, and 10000; the server never
+	// switches ports on its own to work around a conflict.
+	WebhooksPort int `toml:"webhooks_port"`
 }
+
+// FunnelPorts are the public ports Tailscale Funnel can serve.
+var FunnelPorts = []int{443, 8443, 10000}
 
 // Default is the configuration with no file, environment, or flags present.
 // Port 7331 is the stable contract port (ATC-245).
 func Default() Config {
-	return Config{Port: 7331, Bind: "127.0.0.1", TailscaleExecutable: "tailscale"}
+	return Config{Port: 7331, Bind: "127.0.0.1", TailscaleExecutable: "tailscale", WebhooksPort: 443}
 }
 
 // Load resolves the file and environment levels: defaults, overlaid with
-// path's contents when the file exists, overlaid with ATC_PORT / ATC_BIND.
+// path's contents when the file exists, overlaid with the ATC_<KEY>
+// environment.
 // lookupEnv is injected so tests control the environment (os.LookupEnv in
 // production).
 func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
@@ -89,6 +103,20 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	if value, ok := lookupEnv("ATC_TAILSCALE_EXECUTABLE"); ok {
 		cfg.TailscaleExecutable = value
 	}
+	if value, ok := lookupEnv("ATC_WEBHOOKS"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("ATC_WEBHOOKS=%q is not a boolean", value)
+		}
+		cfg.Webhooks = enabled
+	}
+	if value, ok := lookupEnv("ATC_WEBHOOKS_PORT"); ok {
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("ATC_WEBHOOKS_PORT=%q is not a number", value)
+		}
+		cfg.WebhooksPort = port
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -109,6 +137,14 @@ func (c Config) Validate() error {
 	}
 	if c.TailscaleExecutable == "" {
 		return errors.New("tailscale_executable must not be empty")
+	}
+	if !slices.Contains(FunnelPorts, c.WebhooksPort) {
+		return fmt.Errorf("webhooks_port %d is not a port Tailscale Funnel can serve (443, 8443, or 10000)", c.WebhooksPort)
+	}
+	if c.WebhooksPort == c.Port {
+		// Private Serve fronts the API at https://<node>:<port>; the public
+		// Funnel port must be its own listener, never a takeover.
+		return fmt.Errorf("webhooks_port %d must differ from port %d: public webhook exposure never shares the API's port", c.WebhooksPort, c.Port)
 	}
 	return nil
 }
