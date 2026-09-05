@@ -74,3 +74,17 @@ type ThreadIdentity struct {
 	ProviderConversationID string
 	ThreadID               string
 }
+
+type WebhookDelivery struct {
+	ID            string
+	IntegrationID string
+	Route         string
+	DeliveryID    string
+	Payload       []byte
+	State         string
+	Attempts      int64
+	NextAttemptAt string
+	LastError     sql.NullString
+	AcceptedAt    string
+	CompletedAt   sql.NullString
+}

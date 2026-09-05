@@ -99,3 +99,43 @@ ON CONFLICT (integration_id, provider_conversation_id) DO NOTHING;
 
 -- name: ListThreadIdentities :many
 SELECT * FROM thread_identities;
+
+-- Webhook inbox (ATC-306). Acceptance is the deduplication: the
+-- Integration-scoped unique constraint makes a redelivery insert zero rows,
+-- with no check-then-insert window under the single writer.
+-- name: InsertWebhookDelivery :execrows
+INSERT INTO webhook_deliveries (id, integration_id, route, delivery_id, payload, state, attempts, next_attempt_at, accepted_at)
+VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+ON CONFLICT (integration_id, delivery_id) DO NOTHING;
+
+-- name: CountPendingWebhookDeliveries :one
+SELECT COUNT(*) FROM webhook_deliveries WHERE state = 'pending';
+
+-- name: ListDueWebhookDeliveries :many
+SELECT * FROM webhook_deliveries
+WHERE state = 'pending' AND next_attempt_at <= ?
+ORDER BY next_attempt_at, accepted_at, id
+LIMIT ?;
+
+-- Completion keeps the receipt and drops the payload.
+-- name: CompleteWebhookDelivery :execrows
+UPDATE webhook_deliveries
+SET state = 'done', payload = NULL, last_error = NULL, completed_at = ?
+WHERE id = ? AND state = 'pending';
+
+-- name: FailWebhookDelivery :execrows
+UPDATE webhook_deliveries
+SET attempts = ?, next_attempt_at = ?, last_error = ?
+WHERE id = ? AND state = 'pending';
+
+-- Receipts are bounded two ways: by age, and by count (oldest first).
+-- Pending rows are never pruned.
+-- name: PruneAgedWebhookReceipts :execrows
+DELETE FROM webhook_deliveries WHERE state = 'done' AND completed_at < ?;
+
+-- name: PruneExcessWebhookReceipts :execrows
+DELETE FROM webhook_deliveries
+WHERE state = 'done' AND id IN (
+    SELECT id FROM webhook_deliveries WHERE state = 'done'
+    ORDER BY completed_at DESC, id DESC LIMIT -1 OFFSET ?
+);
