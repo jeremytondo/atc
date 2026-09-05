@@ -133,6 +133,11 @@ func (g *ingress) unavailable(reason string) {
 // when it exits. permanent reports a failure no retry can fix (platform or
 // kernel support).
 func (g *ingress) runReceiver(ctx context.Context, target *net.TCPListener) (permanent bool, err error) {
+	// The parent-death signal is tied to the thread that forks the child,
+	// so that thread stays alive — locked to this goroutine — until the
+	// receiver has exited.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	logger := g.service.logger
 	listenerFile, err := target.File()
 	if err != nil {

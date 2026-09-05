@@ -116,7 +116,10 @@ exec sleep 300
 	if err != nil {
 		t.Fatal(err)
 	}
-	funnelPID, _ := strconv.Atoi(strings.TrimSpace(string(funnelData)))
+	funnelPID, err := strconv.Atoi(strings.TrimSpace(string(funnelData)))
+	if err != nil {
+		t.Fatalf("funnel pid file %q: %v", funnelData, err)
+	}
 	if !alive(receiverPID) || !alive(funnelPID) {
 		t.Fatalf("receiver alive=%v funnel alive=%v before termination", alive(receiverPID), alive(funnelPID))
 	}

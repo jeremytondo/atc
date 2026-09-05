@@ -39,13 +39,15 @@ const (
 // deniedSyscalls are refused unconditionally: creating sockets of any
 // family (TCP, UDP, unix path or abstract), creating processes, tracing or
 // reading other processes, and signalling by pid or pidfd.
-var deniedSyscalls = []uint32{
+// fork and vfork exist only on some architectures and are appended per
+// architecture.
+var deniedSyscalls = append([]uint32{
 	unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN,
-	unix.SYS_FORK, unix.SYS_VFORK, unix.SYS_CLONE3, unix.SYS_EXECVE, unix.SYS_EXECVEAT,
+	unix.SYS_CLONE3, unix.SYS_EXECVE, unix.SYS_EXECVEAT,
 	unix.SYS_PTRACE, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV,
 	unix.SYS_KILL, unix.SYS_TKILL, unix.SYS_RT_SIGQUEUEINFO, unix.SYS_RT_TGSIGQUEUEINFO,
 	unix.SYS_PIDFD_OPEN, unix.SYS_PIDFD_GETFD, unix.SYS_PIDFD_SEND_SIGNAL,
-}
+}, archDeniedSyscalls...)
 
 func auditArch() (uint32, error) {
 	switch runtime.GOARCH {

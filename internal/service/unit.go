@@ -437,11 +437,30 @@ func writeUnit(unitFile, content string) error {
 	if err := os.MkdirAll(filepath.Dir(unitFile), 0o755); err != nil {
 		return err
 	}
-	// Written beside and renamed into place, so the installed unit is
-	// always a whole one.
-	temp := unitFile + ".tmp"
-	if err := os.WriteFile(temp, []byte(content), 0o644); err != nil {
+	// Written to a private sibling and renamed into place, so the installed
+	// unit is always a whole one, whichever of two concurrent commands
+	// finishes last.
+	temp, err := os.CreateTemp(filepath.Dir(unitFile), filepath.Base(unitFile)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(temp, unitFile)
+	if _, err := temp.WriteString(content); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := temp.Chmod(0o644); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := os.Rename(temp.Name(), unitFile); err != nil {
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	return nil
 }

@@ -344,6 +344,11 @@ func ServeURL(ctx context.Context, executable, dnsName string, port int) (string
 // that banner, *action receives any operator instruction it printed (an
 // approval or enable link with its explanation).
 func (s *Supervisor) serve(ctx context.Context, dnsName string, action *string) error {
+	// The parent-death signal is tied to the thread that forks the child,
+	// so that thread stays alive — locked to this goroutine — until the
+	// child has exited.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	// Attempt-scoped context: cancelling it drives the same
 	// interrupt → WaitDelay → kill teardown as parent cancellation. The
 	// readiness-timeout path depends on that — see below.

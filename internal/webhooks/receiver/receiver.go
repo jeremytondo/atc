@@ -31,6 +31,7 @@
 package receiver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -311,7 +312,7 @@ func (f *forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	forward, err := http.NewRequestWithContext(ctx, r.Method, target, strings.NewReader(string(body)))
+	forward, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "request could not be forwarded", http.StatusBadRequest)
 		return

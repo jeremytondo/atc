@@ -138,11 +138,13 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	}
 	// The unit records the running launch's flags, so a failure to start
 	// the new launch puts the previous unit back: the process still running
-	// (or absent) must stay described by what actually started it.
+	// (or absent) must stay described by what actually started it. A
+	// previous unit that could not be read has nothing to put back.
 	restoreUnit := func(cause error) error {
-		if firstRun {
+		switch {
+		case firstRun:
 			_ = os.Remove(unitFile)
-		} else {
+		case readErr == nil:
 			_ = writeUnit(unitFile, string(existing))
 		}
 		return rollbackLingering(ctx, lingerChanged, cause)
