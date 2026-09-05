@@ -30,6 +30,37 @@ func (q *Queries) AssignThreadProject(ctx context.Context, arg AssignThreadProje
 	return result.RowsAffected()
 }
 
+const completeWebhookDelivery = `-- name: CompleteWebhookDelivery :execrows
+UPDATE webhook_deliveries
+SET state = 'done', payload = NULL, completed_at = ?
+WHERE id = ? AND state = 'pending'
+`
+
+type CompleteWebhookDeliveryParams struct {
+	CompletedAt sql.NullString
+	ID          string
+}
+
+// Completion keeps the receipt and drops the payload.
+func (q *Queries) CompleteWebhookDelivery(ctx context.Context, arg CompleteWebhookDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeWebhookDelivery, arg.CompletedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const countPendingWebhookDeliveries = `-- name: CountPendingWebhookDeliveries :one
+SELECT COUNT(*) FROM webhook_deliveries WHERE state = 'pending'
+`
+
+func (q *Queries) CountPendingWebhookDeliveries(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingWebhookDeliveries)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteProject = `-- name: DeleteProject :execrows
 DELETE FROM projects WHERE id = ?
 `
@@ -72,6 +103,26 @@ DELETE FROM threads WHERE id = ?
 
 func (q *Queries) DeleteThread(ctx context.Context, id string) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteThread, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failWebhookDelivery = `-- name: FailWebhookDelivery :execrows
+UPDATE webhook_deliveries
+SET attempts = ?, next_attempt_at = ?
+WHERE id = ? AND state = 'pending'
+`
+
+type FailWebhookDeliveryParams struct {
+	Attempts      int64
+	NextAttemptAt string
+	ID            string
+}
+
+func (q *Queries) FailWebhookDelivery(ctx context.Context, arg FailWebhookDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failWebhookDelivery, arg.Attempts, arg.NextAttemptAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -289,6 +340,87 @@ func (q *Queries) InsertThreadIdentity(ctx context.Context, arg InsertThreadIden
 	return result.RowsAffected()
 }
 
+const insertWebhookDelivery = `-- name: InsertWebhookDelivery :execrows
+INSERT INTO webhook_deliveries (id, integration_id, route, delivery_id, payload, state, attempts, next_attempt_at, accepted_at)
+VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+ON CONFLICT (integration_id, delivery_id) DO NOTHING
+`
+
+type InsertWebhookDeliveryParams struct {
+	ID            string
+	IntegrationID string
+	Route         string
+	DeliveryID    string
+	Payload       []byte
+	NextAttemptAt string
+	AcceptedAt    string
+}
+
+// Webhook inbox (ATC-306). Acceptance is the deduplication: the
+// Integration-scoped unique constraint makes a redelivery insert zero rows,
+// with no check-then-insert window under the single writer.
+func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertWebhookDelivery,
+		arg.ID,
+		arg.IntegrationID,
+		arg.Route,
+		arg.DeliveryID,
+		arg.Payload,
+		arg.NextAttemptAt,
+		arg.AcceptedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const listDueWebhookDeliveries = `-- name: ListDueWebhookDeliveries :many
+SELECT id, integration_id, route, delivery_id, payload, state, attempts, next_attempt_at, accepted_at, completed_at FROM webhook_deliveries
+WHERE state = 'pending' AND next_attempt_at <= ?
+ORDER BY next_attempt_at, accepted_at, id
+LIMIT ?
+`
+
+type ListDueWebhookDeliveriesParams struct {
+	NextAttemptAt string
+	Limit         int64
+}
+
+func (q *Queries) ListDueWebhookDeliveries(ctx context.Context, arg ListDueWebhookDeliveriesParams) ([]WebhookDelivery, error) {
+	rows, err := q.db.QueryContext(ctx, listDueWebhookDeliveries, arg.NextAttemptAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebhookDelivery
+	for rows.Next() {
+		var i WebhookDelivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.IntegrationID,
+			&i.Route,
+			&i.DeliveryID,
+			&i.Payload,
+			&i.State,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.AcceptedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjects = `-- name: ListProjects :many
 SELECT id, name, directory, created_at, updated_at FROM projects ORDER BY created_at, id
 `
@@ -475,6 +607,36 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const pruneAgedWebhookReceipts = `-- name: PruneAgedWebhookReceipts :execrows
+DELETE FROM webhook_deliveries WHERE state = 'done' AND completed_at < ?
+`
+
+// Receipts are bounded two ways: by age, and by count (oldest first).
+// Pending rows are never pruned.
+func (q *Queries) PruneAgedWebhookReceipts(ctx context.Context, completedAt sql.NullString) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneAgedWebhookReceipts, completedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const pruneExcessWebhookReceipts = `-- name: PruneExcessWebhookReceipts :execrows
+DELETE FROM webhook_deliveries
+WHERE state = 'done' AND id IN (
+    SELECT id FROM webhook_deliveries WHERE state = 'done'
+    ORDER BY completed_at DESC, id DESC LIMIT -1 OFFSET ?
+)
+`
+
+func (q *Queries) PruneExcessWebhookReceipts(ctx context.Context, offset int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneExcessWebhookReceipts, offset)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const recordTerminalExit = `-- name: RecordTerminalExit :execrows

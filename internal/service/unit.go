@@ -5,10 +5,11 @@ package service
 // run` via the absolute binary path from os.Executable(); the installing
 // shell's PATH is the only environment stamped in — supervisors start
 // services with a minimal environment, and without PATH the daemon could
-// not resolve the tools it shells out to. The unit also persists exactly
-// one imperative setting: the --tailscale service override (ATC-283),
-// rendered into and read back from the exec arguments, with the unit as
-// its only durable store. Declarative configuration belongs in config.toml.
+// not resolve the tools it shells out to. The unit also records the
+// launch's exposure flags (--tailscale, --webhooks; ATC-283, ATC-306) in
+// its exec arguments so supervised recovery relaunches the same way; they
+// are read back only for the launch that is running. Declarative
+// configuration belongs in config.toml.
 
 import (
 	"encoding/xml"
@@ -18,28 +19,74 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/jeremytondo/atc/internal/paths"
 )
 
+// LaunchFlags are the exposure overrides one launch was started with
+// (ATC-283, ATC-306). nil means the flag was not supplied and
+// configuration decides; a non-nil value is an explicit override either
+// way — false is an ordinary override, never a return to configuration.
+type LaunchFlags struct {
+	Tailscale *bool
+	Webhooks  *bool
+}
+
+// inherit fills the flags the caller left unset from a running launch's
+// recorded flags: a restart keeps what the current process was started
+// with unless a replacement is supplied.
+func (f LaunchFlags) inherit(running LaunchFlags) LaunchFlags {
+	if f.Tailscale == nil {
+		f.Tailscale = running.Tailscale
+	}
+	if f.Webhooks == nil {
+		f.Webhooks = running.Webhooks
+	}
+	return f
+}
+
+// effective settles one exposure: the launch flag when supplied, the
+// configured value otherwise.
+func effective(flag *bool, configured bool) bool {
+	if flag != nil {
+		return *flag
+	}
+	return configured
+}
+
 // unitArgs is the exec line the supervisor runs. os.Executable(), no dev
 // special case: registering a `go run` binary is unsupported and undetected.
-// The tailscale service override rides here and nowhere else.
-func unitArgs(executable string, tailscale bool) []string {
+// The launch flags ride here and nowhere else: the unit records how the
+// running launch was started so supervised recovery relaunches it the
+// same way, and lifecycle reads them back only while that launch runs.
+func unitArgs(executable string, flags LaunchFlags) []string {
 	args := []string{executable, "server", "run"}
-	if tailscale {
-		args = append(args, "--tailscale")
-	}
+	args = appendFlag(args, "tailscale", flags.Tailscale)
+	args = appendFlag(args, "webhooks", flags.Webhooks)
 	return args
 }
 
-// unitTailscale reads the --tailscale override back out of installed unit
-// content — the read half of the contract that the unit is the override's
-// only durable store. An error means the exec arguments cannot be
-// confidently read (hand-edited or foreign content); callers fail loudly
-// on it rather than guessing.
-func unitTailscale(goos, content string) (bool, error) {
+// appendFlag renders one launch flag: bare for true (the shape units have
+// carried since ATC-283), an explicit =false for false, nothing when the
+// flag was not supplied.
+func appendFlag(args []string, name string, value *bool) []string {
+	switch {
+	case value == nil:
+		return args
+	case *value:
+		return append(args, "--"+name)
+	default:
+		return append(args, "--"+name+"=false")
+	}
+}
+
+// unitLaunchFlags reads the launch flags back out of installed unit
+// content. An error means the exec arguments cannot be confidently read
+// (hand-edited or foreign content); callers fail loudly on it rather than
+// guessing.
+func unitLaunchFlags(goos, content string) (LaunchFlags, error) {
 	var args []string
 	var err error
 	if goos == "darwin" {
@@ -48,24 +95,48 @@ func unitTailscale(goos, content string) (bool, error) {
 		args, err = systemdExecStart(content)
 	}
 	if err != nil {
-		return false, err
+		return LaunchFlags{}, err
 	}
-	return overrideFromArgs(args)
+	return flagsFromArgs(args)
 }
 
-// overrideFromArgs recognizes exactly the argument shapes renderUnit has
-// ever produced: `<binary> server run` (a valid pre-feature unit, no
-// override) and `<binary> server run --tailscale`.
-func overrideFromArgs(args []string) (bool, error) {
-	if len(args) >= 3 && args[1] == "server" && args[2] == "run" {
-		switch {
-		case len(args) == 3:
-			return false, nil
-		case len(args) == 4 && args[3] == "--tailscale":
-			return true, nil
-		}
+// flagsFromArgs recognizes exactly the argument shapes renderUnit has ever
+// produced: `<binary> server run` followed by each exposure flag at most
+// once, bare or with an explicit boolean.
+func flagsFromArgs(args []string) (LaunchFlags, error) {
+	unrecognized := fmt.Errorf("installed unit has unrecognized exec arguments %q", args)
+	if len(args) < 3 || args[1] != "server" || args[2] != "run" {
+		return LaunchFlags{}, unrecognized
 	}
-	return false, fmt.Errorf("installed unit has unrecognized exec arguments %q", args)
+	var flags LaunchFlags
+	for _, arg := range args[3:] {
+		flag, ok := strings.CutPrefix(arg, "--")
+		if !ok {
+			return LaunchFlags{}, unrecognized
+		}
+		name, text, explicit := strings.Cut(flag, "=")
+		value := true
+		if explicit {
+			var err error
+			if value, err = strconv.ParseBool(text); err != nil {
+				return LaunchFlags{}, unrecognized
+			}
+		}
+		var slot **bool
+		switch name {
+		case "tailscale":
+			slot = &flags.Tailscale
+		case "webhooks":
+			slot = &flags.Webhooks
+		default:
+			return LaunchFlags{}, unrecognized
+		}
+		if *slot != nil {
+			return LaunchFlags{}, unrecognized
+		}
+		*slot = &value
+	}
+	return flags, nil
 }
 
 // plistProgramArguments extracts the ProgramArguments strings from a
@@ -333,10 +404,10 @@ func unitPath(goos, xdgConfigHome, home string) string {
 }
 
 // renderUnit produces the unit content for this platform from the current
-// binary, environment, and tailscale override. Start compares it against
-// the installed file to decide whether the running daemon must be bounced
+// binary, environment, and launch flags. Start compares it against the
+// installed file to decide whether the running daemon must be bounced
 // onto it.
-func renderUnit(tailscale bool) (string, error) {
+func renderUnit(flags LaunchFlags) (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -346,9 +417,9 @@ func renderUnit(tailscale bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return launchAgentPlist(unitArgs(executable, tailscale), logFile, unitEnv()), nil
+		return launchAgentPlist(unitArgs(executable, flags), logFile, unitEnv()), nil
 	}
-	return systemdUnit(unitArgs(executable, tailscale), unitEnv()), nil
+	return systemdUnit(unitArgs(executable, flags), unitEnv()), nil
 }
 
 // writeUnit installs rendered unit content, creating the directories the
@@ -366,5 +437,30 @@ func writeUnit(unitFile, content string) error {
 	if err := os.MkdirAll(filepath.Dir(unitFile), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(unitFile, []byte(content), 0o644)
+	// Written to a private sibling and renamed into place, so the installed
+	// unit is always a whole one, whichever of two concurrent commands
+	// finishes last.
+	temp, err := os.CreateTemp(filepath.Dir(unitFile), filepath.Base(unitFile)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := temp.WriteString(content); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := temp.Chmod(0o644); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := os.Rename(temp.Name(), unitFile); err != nil {
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	return nil
 }

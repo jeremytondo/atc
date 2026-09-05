@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/jeremytondo/atc/internal/service"
 )
 
@@ -242,16 +244,17 @@ func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
 	}
 }
 
-// Help must document persistence, omission-preserves, and =false as a
-// return to config.toml — never an unconditional disable.
-func TestServerStartRestartTailscaleHelp(t *testing.T) {
+// Help must document both exposure flags with one contract: restart keeps
+// the running launch's flags, a fresh start after stop uses config.toml,
+// and =false disables for this launch.
+func TestServerStartRestartExposureHelp(t *testing.T) {
 	for _, sub := range []string{"start", "restart"} {
 		var stdout, stderr strings.Builder
 		if err := run(context.Background(), []string{"server", sub, "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 			t.Fatalf("server %s --help = %v", sub, err)
 		}
 		help := stdout.String()
-		for _, want := range []string{"--tailscale", "survives restarts, reboots, and upgrades", "preserves", "config.toml decides"} {
+		for _, want := range []string{"--tailscale", "--webhooks", "restart keeps the running launch's flags", "after stop uses config.toml alone", "disables it for this launch", "never modify config.toml"} {
 			if !strings.Contains(help, want) {
 				t.Errorf("server %s help missing %q:\n%s", sub, want, help)
 			}
@@ -272,30 +275,35 @@ func TestServerStopHelpUsesPlatformSpecificReturnPoints(t *testing.T) {
 	}
 }
 
-func TestTailscaleLifecycleOptionsTriState(t *testing.T) {
+func TestExposureLifecycleOptionsTriState(t *testing.T) {
 	isolateXDG(t)
-	options := func(t *testing.T, set string) *bool {
+	options := func(t *testing.T, set map[string]string) service.LaunchFlags {
 		t.Helper()
 		cmd := newServerStartCmd()
-		if set != "" {
-			if err := cmd.Flags().Set("tailscale", set); err != nil {
+		for name, value := range set {
+			if err := cmd.Flags().Set(name, value); err != nil {
 				t.Fatal(err)
 			}
 		}
-		opts, err := tailscaleLifecycleOptions(cmd)
+		opts, err := exposureLifecycleOptions(cmd)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return opts.Tailscale
+		return opts.Flags
 	}
-	if got := options(t, ""); got != nil {
-		t.Errorf("omitted flag: Tailscale = %v, want nil", *got)
-	}
-	if got := options(t, "true"); got == nil || !*got {
-		t.Errorf("explicit true: Tailscale = %v, want true", got)
-	}
-	if got := options(t, "false"); got == nil || *got {
-		t.Errorf("explicit false: Tailscale = %v, want false", got)
+	boolPtr := func(v bool) *bool { return &v }
+	for name, tc := range map[string]struct {
+		set  map[string]string
+		want service.LaunchFlags
+	}{
+		"omitted":        {nil, service.LaunchFlags{}},
+		"tailscale true": {map[string]string{"tailscale": "true"}, service.LaunchFlags{Tailscale: boolPtr(true)}},
+		"webhooks false": {map[string]string{"webhooks": "false"}, service.LaunchFlags{Webhooks: boolPtr(false)}},
+		"both":           {map[string]string{"tailscale": "false", "webhooks": "true"}, service.LaunchFlags{Tailscale: boolPtr(false), Webhooks: boolPtr(true)}},
+	} {
+		if diff := cmp.Diff(tc.want, options(t, tc.set)); diff != "" {
+			t.Errorf("%s: flags mismatch (-want +got):\n%s", name, diff)
+		}
 	}
 }
 

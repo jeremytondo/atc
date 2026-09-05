@@ -52,6 +52,9 @@ type Options struct {
 	Integrations *integrations.Service
 	Threads      *threads.Service
 	Events       *events.Hub
+	// Webhooks reports webhook ingress (ATC-306); nil leaves the resource
+	// unmounted.
+	Webhooks WebhookReporter
 	// InternalRoutes are handlers mounted outside the public /v1 contract
 	// and outside bearer auth (ATC-255): each authenticates itself — the
 	// Claude hook route validates its per-launch secret, and the bearer
@@ -127,6 +130,9 @@ func NewHandler(opts Options) http.Handler {
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)
+	}
+	if opts.Webhooks != nil {
+		registerWebhooks(humaAPI, opts.Webhooks)
 	}
 
 	handler := withAuth(opts.Verify, withWriteDeadlines(problemMux(mux)))

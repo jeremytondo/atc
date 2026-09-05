@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
 )
 
@@ -51,25 +50,32 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	}
 	existing, readErr := os.ReadFile(unitFile)
 	firstRun := errors.Is(readErr, fs.ErrNotExist)
-	if readErr != nil && !firstRun && opts.Tailscale == nil {
-		return fmt.Errorf("cannot read the installed unit %s: %w; replace it with `atc server restart --tailscale` or `atc server restart --tailscale=false`", unitFile, readErr)
+	supervised := supervisorRunning(ctx)
+	// Launch flags carry over only from the running launch (ATC-306): a
+	// restart, or a start against a running server, keeps what that
+	// process was started with unless a replacement is supplied. A stopped
+	// launch's flags are history — start begins fresh from configuration
+	// plus the flags supplied now, whatever the installed unit records (an
+	// unreadable unit included: the write below replaces it or fails).
+	flags := opts.Flags
+	if supervised {
+		running, err := unitLaunchFlags(runtime.GOOS, string(existing))
+		if readErr != nil {
+			err = fmt.Errorf("cannot read the installed unit %s: %w", unitFile, readErr)
+		}
+		if err != nil {
+			return fmt.Errorf("%w; the running launch's flags cannot be preserved — `atc server stop`, then `atc server start` with the flags you want", err)
+		}
+		flags = flags.inherit(running)
 	}
-	// The unit is the tailscale override's only durable store (ATC-283):
-	// an explicit flag wins, an omitted flag preserves what the installed
-	// unit carries, and a unit that cannot be confidently read fails loudly
-	// rather than being guessed at.
-	override, err := resolveUnitTailscale(opts.Tailscale, runtime.GOOS, string(existing), readErr == nil)
-	if err != nil {
-		return err
-	}
-	tailnet := tailscaleEnabled(override, opts.Config.Tailscale)
-	content, err := renderUnit(override)
+	tailnet := effective(flags.Tailscale, opts.Config.Tailscale)
+	webhooks := effective(flags.Webhooks, opts.Config.Webhooks)
+	content, err := renderUnit(flags)
 	if err != nil {
 		return err
 	}
 	unchanged := readErr == nil && string(existing) == content
 
-	supervised := supervisorRunning(ctx)
 	if !supervised && portAnswering(opts.Config) {
 		// An ATC responder that is not the supervised unit is a stray
 		// foreground `atc server run`.
@@ -88,7 +94,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 				return rollbackLingering(ctx, lingerChanged, err)
 			}
 		}
-		report, err := lifecycleSuccess(ctx, UnitName+" is already running and healthy", opts.Config, tailnet, "")
+		report, err := lifecycleSuccess(ctx, UnitName+" is already running and healthy", opts, token, exposure{tailnet: tailnet})
 		if err != nil {
 			return err
 		}
@@ -101,14 +107,18 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if supervised && !unchanged {
 		bounce = true
 	}
-	// Preflight before any mutation: a unit that will boot with Tailscale
-	// enabled — by the override or by config.toml — needs the executable
-	// resolvable, or the daemon would crash-loop; fail here, before the
-	// unit changes or a healthy process is interrupted. Runtime tailnet
-	// state (logged out, tailscaled down) is deliberately not checked: the
-	// exposure supervisor self-heals those after the loopback server is up.
+	// Preflight before any mutation: a unit that will boot with tailnet or
+	// webhook exposure enabled — by a launch flag or by config.toml — needs
+	// the tailscale executable resolvable, or the daemon would crash-loop;
+	// fail here, before the unit changes or a healthy process is
+	// interrupted. Runtime tailnet state (logged out, tailscaled down,
+	// Funnel awaiting approval) is deliberately not checked: the exposure
+	// supervisors self-heal those after the loopback server is up.
+	if err := opts.Config.ValidateExposure(tailnet, webhooks); err != nil {
+		return err
+	}
 	var tailscaleExecutable string
-	if tailnet {
+	if tailnet || webhooks {
 		if tailscaleExecutable, err = resolveTailscaleExecutable(opts.Config.TailscaleExecutable); err != nil {
 			return err
 		}
@@ -126,19 +136,32 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if err := writeUnit(unitFile, content); err != nil {
 		return rollbackLingering(ctx, lingerChanged, err)
 	}
+	// The unit records the running launch's flags, so a failure to start
+	// the new launch puts the previous unit back: the process still running
+	// (or absent) must stay described by what actually started it. A
+	// previous unit that could not be read has nothing to put back.
+	restoreUnit := func(cause error) error {
+		switch {
+		case firstRun:
+			_ = os.Remove(unitFile)
+		case readErr == nil:
+			_ = writeUnit(unitFile, string(existing))
+		}
+		return rollbackLingering(ctx, lingerChanged, cause)
+	}
 	if runtime.GOOS == "linux" {
 		if err := runSupervisor(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
-			return rollbackLingering(ctx, lingerChanged, err)
+			return restoreUnit(err)
 		}
 		if err := runSupervisor(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
-			return rollbackLingering(ctx, lingerChanged, err)
+			return restoreUnit(err)
 		}
 		verb := "start"
 		if bounce {
 			verb = "restart"
 		}
 		if err := runSupervisor(ctx, "systemctl", "--user", verb, UnitName); err != nil {
-			return rollbackLingering(ctx, lingerChanged, err)
+			return restoreUnit(err)
 		}
 	} else {
 		// Bootstrap is the only launchd operation that (re)reads the plist,
@@ -148,12 +171,12 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// the healthy-and-current case already returned above.)
 		if launchdLoadedDomain(ctx) != "" {
 			if err := launchdUnload(ctx); err != nil {
-				return err
+				return restoreUnit(err)
 			}
 		}
 		// Loading starts it (RunAtLoad).
 		if err := launchdBootstrap(ctx, unitFile); err != nil {
-			return err
+			return restoreUnit(err)
 		}
 	}
 	if firstRun {
@@ -172,7 +195,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if bounce {
 		verb = "restarted"
 	}
-	report, err := lifecycleSuccess(ctx, verb+" "+UnitName, opts.Config, tailnet, tailscaleExecutable)
+	report, err := lifecycleSuccess(ctx, verb+" "+UnitName, opts, token, exposure{tailnet: tailnet, executable: tailscaleExecutable})
 	if err != nil {
 		return err
 	}
@@ -267,25 +290,38 @@ func loopbackURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
-func tailscaleEnabled(override, configured bool) bool {
-	return override || configured
+// exposure is the tailnet intent of the just-checked service, and the
+// tailscale executable already resolved by the preflight ("" lets
+// inspection resolve it again).
+type exposure struct {
+	tailnet    bool
+	executable string
 }
 
-// lifecycleSuccess reports every endpoint the just-checked service intends
-// to expose. Tailnet inspection distinguishes a live Serve route from an
-// expected URL that is still converging; tailnet trouble never turns a
-// healthy loopback server into a failed start.
-func lifecycleSuccess(ctx context.Context, headline string, cfg config.Config, tailnet bool, executable string) (string, error) {
+// lifecycleSuccess reports every endpoint the just-checked service
+// exposes. Tailnet inspection distinguishes a live Serve route from an
+// expected URL that is still converging; webhook state comes from the
+// server itself, which alone knows whether its receiver is isolated and
+// its Funnel established (and it is silent when intake is off with nothing
+// pending). Exposure trouble never turns a healthy loopback server into a
+// failed start.
+func lifecycleSuccess(ctx context.Context, headline string, opts Options, token string, exp exposure) (string, error) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n  api: %s\n", headline, loopbackURL(cfg.Port))
-	if !tailnet {
-		return b.String(), nil
+	fmt.Fprintf(&b, "%s\n  api: %s\n", headline, loopbackURL(opts.Config.Port))
+	if exp.tailnet {
+		url, problem, err := inspectTailnetWithTimeout(ctx, opts.Config, exp.executable)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
 	}
-	url, problem, err := inspectTailnetWithTimeout(ctx, cfg, executable)
-	if err != nil {
-		return "", err
+	status, err := probeWebhooks(ctx, opts, token)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
 	}
-	fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
+	for _, line := range renderWebhooks(status, err) {
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
 	return b.String(), nil
 }
 
@@ -297,26 +333,6 @@ func rollbackLingering(ctx context.Context, changed bool, cause error) error {
 		return errors.Join(cause, err)
 	}
 	return cause
-}
-
-// resolveUnitTailscale settles the unit's --tailscale override for one
-// start/restart. Tri-state: an explicit flag is the requested state
-// outright (it never consults the installed unit), an omitted flag
-// preserves what a readable installed unit already carries, and no unit
-// means no override — config.toml governs. An installed unit whose exec
-// arguments cannot be confidently read is an error, never a guess.
-func resolveUnitTailscale(flag *bool, goos, existing string, installed bool) (bool, error) {
-	if flag != nil {
-		return *flag, nil
-	}
-	if !installed {
-		return false, nil
-	}
-	override, err := unitTailscale(goos, existing)
-	if err != nil {
-		return false, fmt.Errorf("%w; replace the unit with `atc server restart --tailscale` or `atc server restart --tailscale=false`", err)
-	}
-	return override, nil
 }
 
 // firstRunNotice replaces the ATC-246 consent prompt (2026-08-25 grill):
