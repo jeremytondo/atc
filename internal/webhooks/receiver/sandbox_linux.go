@@ -6,25 +6,19 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-// minABI is the Landlock ABI the receiver requires: 4 (Linux 6.7) adds
-// TCP bind/connect restriction, without which a compromised receiver
-// could reach every loopback service on the machine. Older kernels fail
-// closed with that explanation.
-const minABI = 4
-
-const landlockRuleNetPort = 2
-
-// netPortAttr mirrors struct landlock_net_port_attr.
-type netPortAttr struct {
-	allowedAccess uint64
-	port          uint64
-}
+// minABI is the Landlock ABI the receiver requires: 1 (Linux 5.13) gives
+// the filesystem restriction and confines ptrace. Network, signal, and
+// socket confinement come from the seccomp filter on every kernel, and
+// Landlock's own network (ABI 4) and scoping (ABI 6) rules are layered on
+// where available.
+const minABI = 1
 
 // fsAccess is every filesystem access right the given ABI knows, so the
 // ruleset handles (and therefore denies by default) all of them.
@@ -50,28 +44,29 @@ func fsAccess(abi int) uint64 {
 
 // enforce restricts the calling thread with Landlock: the filesystem
 // closed except for reading and executing this binary and the system
-// loader directories (a cgo-linked build needs its libc), TCP bind closed,
-// TCP connect closed except to channelPort, and — from ABI 6 — abstract
-// unix sockets and signals scoped to the sandbox. no_new_privs first, as
-// Landlock requires. permanent marks kernels that cannot support this.
-func enforce(executable string, channelPort int) (abi int, permanent bool, err error) {
+// loader directories (a cgo-linked build needs its libc), every TCP bind
+// and connect denied where the kernel supports that, abstract sockets and
+// signals scoped where it supports that. no_new_privs first, as Landlock
+// (and the second stage's seccomp filter) require. permanent marks
+// kernels that cannot support this.
+func enforce(executable string) (abi int, permanent bool, err error) {
 	abi, err = landlockABI()
 	if err != nil {
 		return 0, true, err
 	}
 	if abi < minABI {
-		return 0, true, fmt.Errorf("landlock ABI %d lacks TCP restrictions; webhook ingress requires ABI %d (Linux 6.7 or newer)", abi, minABI)
+		return 0, true, fmt.Errorf("landlock ABI %d is below the required %d", abi, minABI)
 	}
-	attr := unix.LandlockRulesetAttr{
-		Access_fs:  fsAccess(abi),
-		Access_net: unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP,
+	attr := unix.LandlockRulesetAttr{Access_fs: fsAccess(abi)}
+	// Older kernels know shorter structs and refuse a longer one.
+	size := unsafe.Offsetof(attr.Access_net)
+	if abi >= 4 {
+		attr.Access_net = unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP
+		size = unsafe.Offsetof(attr.Scoped)
 	}
-	size := unsafe.Sizeof(attr)
 	if abi >= 6 {
 		attr.Scoped = unix.LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | unix.LANDLOCK_SCOPE_SIGNAL
-	} else {
-		// Older kernels know a shorter struct and refuse a longer one.
-		size = unsafe.Offsetof(attr.Scoped)
+		size = unsafe.Sizeof(attr)
 	}
 	ruleset, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, uintptr(unsafe.Pointer(&attr)), size, 0)
 	if errno != 0 {
@@ -102,10 +97,6 @@ func enforce(executable string, channelPort int) (abi int, permanent bool, err e
 			return 0, false, err
 		}
 	}
-	channel := netPortAttr{allowedAccess: unix.LANDLOCK_ACCESS_NET_CONNECT_TCP, port: uint64(channelPort)}
-	if _, _, errno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE, ruleset, landlockRuleNetPort, uintptr(unsafe.Pointer(&channel)), 0, 0, 0); errno != 0 {
-		return 0, false, fmt.Errorf("landlock_add_rule(channel port): %w", errno)
-	}
 
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return 0, false, fmt.Errorf("prctl(PR_SET_NO_NEW_PRIVS): %w", err)
@@ -114,6 +105,13 @@ func enforce(executable string, channelPort int) (abi int, permanent bool, err e
 		return 0, false, fmt.Errorf("landlock_restrict_self: %w", errno)
 	}
 	return abi, false, nil
+}
+
+// confine is the second stage's own restriction: the seccomp filter that
+// denies socket creation, process creation, tracing, and signalling,
+// applied to every thread.
+func confine() error {
+	return installSeccomp()
 }
 
 // landlockABI asks the kernel which Landlock ABI it supports.
@@ -132,7 +130,7 @@ func landlockABI() (int, error) {
 
 // selfTest proves the restriction from inside the second stage: every
 // access the receiver must not have is attempted and must be refused by
-// policy (EACCES/EPERM), and the one connection it needs must work. Any
+// policy (EACCES/EPERM), and the inherited channel must be usable. Any
 // other outcome is a failure — an unrestricted receiver never serves.
 func selfTest(opts Options) (checks map[string]string, failures []string) {
 	checks = map[string]string{}
@@ -162,27 +160,38 @@ func selfTest(opts Options) (checks map[string]string, failures []string) {
 	denied("create_file", err, func() { _ = f.Close(); _ = os.Remove(probe) })
 	if opts.DenyPort > 0 {
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.DenyPort)), 2*time.Second)
-		denied("connect_api", err, func() { _ = conn.Close() })
+		denied("connect_tcp", err, func() { _ = conn.Close() })
 		// Landlock lets any sandbox bind an ephemeral port (0); the
 		// restriction is on explicit ports, so the probe names one. An
 		// unrestricted receiver would see the port in use, not a refusal.
 		listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.DenyPort)))
 		denied("bind_tcp", err, func() { _ = listener.Close() })
 	}
-	// Landlock confines ptrace to the sandbox; the parent (Core) is
-	// outside it. A successful attach stops the tracee, so detach at once.
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	denied("udp_socket", err, func() { _ = packet.Close() })
+	unixConn, err := net.DialTimeout("unix", "/run/atc-webhook-receiver-probe.sock", time.Second)
+	denied("unix_socket", err, func() { _ = unixConn.Close() })
+	// Landlock confines ptrace to the sandbox and seccomp denies it; the
+	// parent (Core) is outside. A successful attach stops the tracee, so
+	// detach at once.
 	parent := os.Getppid()
 	err = unix.PtraceAttach(parent)
 	denied("trace_parent", err, func() { _ = unix.PtraceDetach(parent) })
+	// Signal 0 delivers nothing but exercises the permission check.
+	denied("signal_parent", syscall.Kill(parent, 0), nil)
+	_, err = syscall.ForkExec("/proc/self/exe", []string{"atc", "version"}, &syscall.ProcAttr{})
+	denied("spawn_process", err, nil)
 
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.ChannelPort)), 2*time.Second)
-	if err != nil {
-		checks["connect_channel"] = "failed: " + err.Error()
-		failures = append(failures, "channel unreachable: "+err.Error())
-	} else {
-		_ = conn.Close()
-		checks["connect_channel"] = "allowed"
+	usable := 0
+	for i := range opts.ChannelConns {
+		if _, err := unix.Getsockname(channelFD(i)); err == nil {
+			usable++
+		}
 	}
+	if usable != opts.ChannelConns {
+		failures = append(failures, fmt.Sprintf("channel: %d of %d inherited connections usable", usable, opts.ChannelConns))
+	}
+	checks["channel"] = strconv.Itoa(usable) + " connections"
 	checks["environment"] = strconv.Itoa(len(os.Environ())) + " variables"
 	return checks, failures
 }

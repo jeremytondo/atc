@@ -94,7 +94,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 				return rollbackLingering(ctx, lingerChanged, err)
 			}
 		}
-		report, err := lifecycleSuccess(ctx, UnitName+" is already running and healthy", opts, token, exposure{tailnet: tailnet, webhooks: webhooks})
+		report, err := lifecycleSuccess(ctx, UnitName+" is already running and healthy", opts, token, exposure{tailnet: tailnet})
 		if err != nil {
 			return err
 		}
@@ -114,6 +114,9 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	// interrupted. Runtime tailnet state (logged out, tailscaled down,
 	// Funnel awaiting approval) is deliberately not checked: the exposure
 	// supervisors self-heal those after the loopback server is up.
+	if err := opts.Config.ValidateExposure(tailnet, webhooks); err != nil {
+		return err
+	}
 	var tailscaleExecutable string
 	if tailnet || webhooks {
 		if tailscaleExecutable, err = resolveTailscaleExecutable(opts.Config.TailscaleExecutable); err != nil {
@@ -133,19 +136,30 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if err := writeUnit(unitFile, content); err != nil {
 		return rollbackLingering(ctx, lingerChanged, err)
 	}
+	// The unit records the running launch's flags, so a failure to start
+	// the new launch puts the previous unit back: the process still running
+	// (or absent) must stay described by what actually started it.
+	restoreUnit := func(cause error) error {
+		if firstRun {
+			_ = os.Remove(unitFile)
+		} else {
+			_ = writeUnit(unitFile, string(existing))
+		}
+		return rollbackLingering(ctx, lingerChanged, cause)
+	}
 	if runtime.GOOS == "linux" {
 		if err := runSupervisor(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
-			return rollbackLingering(ctx, lingerChanged, err)
+			return restoreUnit(err)
 		}
 		if err := runSupervisor(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
-			return rollbackLingering(ctx, lingerChanged, err)
+			return restoreUnit(err)
 		}
 		verb := "start"
 		if bounce {
 			verb = "restart"
 		}
 		if err := runSupervisor(ctx, "systemctl", "--user", verb, UnitName); err != nil {
-			return rollbackLingering(ctx, lingerChanged, err)
+			return restoreUnit(err)
 		}
 	} else {
 		// Bootstrap is the only launchd operation that (re)reads the plist,
@@ -155,12 +169,12 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// the healthy-and-current case already returned above.)
 		if launchdLoadedDomain(ctx) != "" {
 			if err := launchdUnload(ctx); err != nil {
-				return err
+				return restoreUnit(err)
 			}
 		}
 		// Loading starts it (RunAtLoad).
 		if err := launchdBootstrap(ctx, unitFile); err != nil {
-			return err
+			return restoreUnit(err)
 		}
 	}
 	if firstRun {
@@ -179,7 +193,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if bounce {
 		verb = "restarted"
 	}
-	report, err := lifecycleSuccess(ctx, verb+" "+UnitName, opts, token, exposure{tailnet: tailnet, webhooks: webhooks, executable: tailscaleExecutable})
+	report, err := lifecycleSuccess(ctx, verb+" "+UnitName, opts, token, exposure{tailnet: tailnet, executable: tailscaleExecutable})
 	if err != nil {
 		return err
 	}
@@ -274,22 +288,21 @@ func loopbackURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
-// exposure is what the just-checked service intends to expose: private
-// tailnet Serve of the API, public Funnel of the webhook receiver, and
-// the tailscale executable already resolved by the preflight ("" lets
+// exposure is the tailnet intent of the just-checked service, and the
+// tailscale executable already resolved by the preflight ("" lets
 // inspection resolve it again).
 type exposure struct {
 	tailnet    bool
-	webhooks   bool
 	executable string
 }
 
-// lifecycleSuccess reports every endpoint the just-checked service intends
-// to expose. Tailnet inspection distinguishes a live Serve route from an
+// lifecycleSuccess reports every endpoint the just-checked service
+// exposes. Tailnet inspection distinguishes a live Serve route from an
 // expected URL that is still converging; webhook state comes from the
 // server itself, which alone knows whether its receiver is isolated and
-// its Funnel established. Exposure trouble never turns a healthy loopback
-// server into a failed start.
+// its Funnel established (and it is silent when intake is off with nothing
+// pending). Exposure trouble never turns a healthy loopback server into a
+// failed start.
 func lifecycleSuccess(ctx context.Context, headline string, opts Options, token string, exp exposure) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n  api: %s\n", headline, loopbackURL(opts.Config.Port))
@@ -300,14 +313,12 @@ func lifecycleSuccess(ctx context.Context, headline string, opts Options, token 
 		}
 		fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
 	}
-	if exp.webhooks {
-		status, err := probeWebhooks(ctx, opts, token)
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		for _, line := range renderWebhooks(status, err) {
-			fmt.Fprintf(&b, "  %s\n", line)
-		}
+	status, err := probeWebhooks(ctx, opts, token)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	for _, line := range renderWebhooks(status, err) {
+		fmt.Fprintf(&b, "  %s\n", line)
 	}
 	return b.String(), nil
 }

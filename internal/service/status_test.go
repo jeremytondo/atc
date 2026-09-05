@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -240,66 +241,6 @@ func TestRenderStatus(t *testing.T) {
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
-		"webhooks ready lists the endpoint and routes": {
-			info: func() statusInfo {
-				s := healthyInfo()
-				s.webhooks = true
-				s.webhookStatus = api.Webhooks{
-					State: api.WebhooksReady, URL: "https://machine.tail1234.ts.net", Pending: 2,
-					Routes: []api.WebhookRoute{{IntegrationID: "linear", Path: "/linear"}},
-				}
-				return s
-			},
-			want: "atc.server: running and healthy\n" +
-				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
-				"  api: http://127.0.0.1:7331\n" +
-				"  webhooks: https://machine.tail1234.ts.net (2 pending)\n" +
-				"  webhook route (linear): https://machine.tail1234.ts.net/linear\n" +
-				"  token: `atc server token` prints the bearer token remote clients use\n",
-			wantCode: 0,
-		},
-		"webhooks awaiting approval shows the action and the disabling flag": {
-			info: func() statusInfo {
-				s := healthyInfo()
-				s.webhooks = true
-				s.flags.Webhooks = boolPtr(false)
-				s.webhookStatus = api.Webhooks{
-					State: api.WebhooksStarting, URL: "https://machine.tail1234.ts.net:8443",
-					Reason:        "tailscale funnel exited: Funnel not available",
-					Action:        "Funnel not available; \"funnel\" node attribute not set.\n\tSee https://tailscale.com/s/no-funnel.",
-					IntakeBlocked: true,
-				}
-				return s
-			},
-			want: "atc.server: running and healthy\n" +
-				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
-				"  api: http://127.0.0.1:7331\n" +
-				"  webhooks: starting at https://machine.tail1234.ts.net:8443 (tailscale funnel exited: Funnel not available)\n" +
-				"  webhooks action: Funnel not available; \"funnel\" node attribute not set. See https://tailscale.com/s/no-funnel.\n" +
-				"  webhooks: disabled by this launch's flag; `atc server restart --webhooks` replaces it, stop then start returns to config.toml\n" +
-				"  token: `atc server token` prints the bearer token remote clients use\n",
-			wantCode: 0,
-		},
-		"webhooks unavailable states why, unreachable report says so": {
-			info: func() statusInfo {
-				s := healthyInfo()
-				s.webhooks = true
-				s.webhookStatus = api.Webhooks{State: api.WebhooksUnavailable, Reason: "webhook ingress requires Linux"}
-				return s
-			},
-			want: "atc.server: running and healthy\n" +
-				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
-				"  api: http://127.0.0.1:7331\n" +
-				"  webhooks: unavailable (webhook ingress requires Linux)\n" +
-				"  token: `atc server token` prints the bearer token remote clients use\n",
-			wantCode: 0,
-		},
 	} {
 		got, code := renderStatus(tc.info())
 		if diff := cmp.Diff(tc.want, got); diff != "" {
@@ -308,6 +249,85 @@ func TestRenderStatus(t *testing.T) {
 		if code != tc.wantCode {
 			t.Errorf("%s: exit code = %d, want %d", name, code, tc.wantCode)
 		}
+	}
+}
+
+func TestRenderWebhooks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status api.Webhooks
+		err    error
+		want   []string
+	}{
+		"disabled and idle is silent": {status: api.Webhooks{State: api.WebhooksDisabled}},
+		"disabled with backlog": {
+			status: api.Webhooks{State: api.WebhooksDisabled, Pending: 2},
+			want:   []string{"webhooks: disabled (2 pending from earlier intake)"},
+		},
+		"ready with routes and summaries": {
+			status: api.Webhooks{
+				State: api.WebhooksReady, URL: "https://machine.tail1234.ts.net", Pending: 1,
+				Routes:   []api.WebhookRoute{{IntegrationID: "linear", Path: "/linear"}},
+				Rejected: 3, LastRejection: "/linear: 401 bad signature",
+			},
+			want: []string{
+				"webhooks: https://machine.tail1234.ts.net (1 pending)",
+				"webhook route (linear): https://machine.tail1234.ts.net/linear",
+				"webhooks rejected: 3 since start (last: /linear: 401 bad signature)",
+			},
+		},
+		"ready but blocked": {
+			status: api.Webhooks{State: api.WebhooksReady, URL: "https://machine.tail1234.ts.net", Pending: 1000, IntakeBlocked: true},
+			want:   []string{"webhooks: https://machine.tail1234.ts.net (1000 pending); intake blocked"},
+		},
+		"awaiting approval shows the action on one line": {
+			status: api.Webhooks{
+				State: api.WebhooksStarting, URL: "https://machine.tail1234.ts.net:8443",
+				Reason: "tailscale funnel exited: Funnel not available",
+				Action: "Funnel not available; \"funnel\" node attribute not set.\n\tSee https://tailscale.com/s/no-funnel.",
+			},
+			want: []string{
+				"webhooks: starting at https://machine.tail1234.ts.net:8443 (tailscale funnel exited: Funnel not available)",
+				"webhooks action: Funnel not available; \"funnel\" node attribute not set. See https://tailscale.com/s/no-funnel.",
+			},
+		},
+		"unavailable": {
+			status: api.Webhooks{State: api.WebhooksUnavailable, Reason: "webhook ingress requires Linux"},
+			want:   []string{"webhooks: unavailable (webhook ingress requires Linux)"},
+		},
+		"processing failures": {
+			status: api.Webhooks{State: api.WebhooksDisabled, ProcessingFailures: 4, LastProcessingFailure: "/linear: provider unreachable"},
+			want: []string{
+				"webhooks: disabled (0 pending from earlier intake)",
+				"webhook processing failures: 4 since start (last: /linear: provider unreachable)",
+			},
+		},
+		"unreachable report": {
+			err:  errors.New("connection refused"),
+			want: []string{"webhooks: unknown (connection refused)"},
+		},
+	} {
+		if diff := cmp.Diff(tc.want, renderWebhooks(tc.status, tc.err)); diff != "" {
+			t.Errorf("%s: renderWebhooks mismatch (-want +got):\n%s", name, diff)
+		}
+	}
+}
+
+// A healthy server's webhook report rides along in the status output.
+func TestRenderStatusIncludesWebhookReport(t *testing.T) {
+	s := healthyInfo()
+	s.flags.Webhooks = boolPtr(true)
+	s.webhookStatus = api.Webhooks{State: api.WebhooksReady, URL: "https://machine.tail1234.ts.net"}
+	got, _ := renderStatus(s)
+	want := "atc.server: running and healthy\n" +
+		"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+		"  client: v1.2.3\n" +
+		"  server: v1.2.3\n" +
+		"  api: http://127.0.0.1:7331\n" +
+		"  webhooks: https://machine.tail1234.ts.net (0 pending)\n" +
+		"  webhooks: enabled by this launch's flag; `atc server restart --webhooks=false` replaces it, stop then start returns to config.toml\n" +
+		"  token: `atc server token` prints the bearer token remote clients use\n"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("renderStatus mismatch (-want +got):\n%s", diff)
 	}
 }
 

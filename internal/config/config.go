@@ -46,8 +46,8 @@ type Config struct {
 	WebhooksPort int `toml:"webhooks_port"`
 }
 
-// FunnelPorts are the public ports Tailscale Funnel can serve.
-var FunnelPorts = []int{443, 8443, 10000}
+// funnelPorts are the public ports Tailscale Funnel can serve.
+var funnelPorts = []int{443, 8443, 10000}
 
 // Default is the configuration with no file, environment, or flags present.
 // Port 7331 is the stable contract port (ATC-245).
@@ -138,13 +138,21 @@ func (c Config) Validate() error {
 	if c.TailscaleExecutable == "" {
 		return errors.New("tailscale_executable must not be empty")
 	}
-	if !slices.Contains(FunnelPorts, c.WebhooksPort) {
+	if !slices.Contains(funnelPorts, c.WebhooksPort) {
 		return fmt.Errorf("webhooks_port %d is not a port Tailscale Funnel can serve (443, 8443, or 10000)", c.WebhooksPort)
 	}
-	if c.WebhooksPort == c.Port {
-		// Private Serve fronts the API at https://<node>:<port>; the public
-		// Funnel port must be its own listener, never a takeover.
-		return fmt.Errorf("webhooks_port %d must differ from port %d: public webhook exposure never shares the API's port", c.WebhooksPort, c.Port)
+	return nil
+}
+
+// ValidateExposure checks the exposures a launch will actually run,
+// once flags have settled them: private Serve fronts the API at
+// https://<node>:<port> and Funnel serves the receiver at
+// https://<node>:<webhooks_port>, so both on one port would be one
+// Tailscale endpoint with two owners. The server never switches ports to
+// work around it.
+func (c Config) ValidateExposure(tailnet, webhooks bool) error {
+	if tailnet && webhooks && c.WebhooksPort == c.Port {
+		return fmt.Errorf("webhooks_port and port are both %d: the public webhook endpoint and the private tailnet API cannot share a Tailscale port", c.Port)
 	}
 	return nil
 }

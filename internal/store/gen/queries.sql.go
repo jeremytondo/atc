@@ -32,7 +32,7 @@ func (q *Queries) AssignThreadProject(ctx context.Context, arg AssignThreadProje
 
 const completeWebhookDelivery = `-- name: CompleteWebhookDelivery :execrows
 UPDATE webhook_deliveries
-SET state = 'done', payload = NULL, last_error = NULL, completed_at = ?
+SET state = 'done', payload = NULL, completed_at = ?
 WHERE id = ? AND state = 'pending'
 `
 
@@ -111,24 +111,18 @@ func (q *Queries) DeleteThread(ctx context.Context, id string) (int64, error) {
 
 const failWebhookDelivery = `-- name: FailWebhookDelivery :execrows
 UPDATE webhook_deliveries
-SET attempts = ?, next_attempt_at = ?, last_error = ?
+SET attempts = ?, next_attempt_at = ?
 WHERE id = ? AND state = 'pending'
 `
 
 type FailWebhookDeliveryParams struct {
 	Attempts      int64
 	NextAttemptAt string
-	LastError     sql.NullString
 	ID            string
 }
 
 func (q *Queries) FailWebhookDelivery(ctx context.Context, arg FailWebhookDeliveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, failWebhookDelivery,
-		arg.Attempts,
-		arg.NextAttemptAt,
-		arg.LastError,
-		arg.ID,
-	)
+	result, err := q.db.ExecContext(ctx, failWebhookDelivery, arg.Attempts, arg.NextAttemptAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -382,7 +376,7 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 }
 
 const listDueWebhookDeliveries = `-- name: ListDueWebhookDeliveries :many
-SELECT id, integration_id, route, delivery_id, payload, state, attempts, next_attempt_at, last_error, accepted_at, completed_at FROM webhook_deliveries
+SELECT id, integration_id, route, delivery_id, payload, state, attempts, next_attempt_at, accepted_at, completed_at FROM webhook_deliveries
 WHERE state = 'pending' AND next_attempt_at <= ?
 ORDER BY next_attempt_at, accepted_at, id
 LIMIT ?
@@ -411,7 +405,6 @@ func (q *Queries) ListDueWebhookDeliveries(ctx context.Context, arg ListDueWebho
 			&i.State,
 			&i.Attempts,
 			&i.NextAttemptAt,
-			&i.LastError,
 			&i.AcceptedAt,
 			&i.CompletedAt,
 		); err != nil {

@@ -116,9 +116,9 @@ func (w *Webhooks) Complete(ctx context.Context, id string, at time.Time) (bool,
 
 // Fail records a failed processing attempt and when to try again; false
 // means no pending delivery with that id.
-func (w *Webhooks) Fail(ctx context.Context, id string, attempts int, next time.Time, reason string) (bool, error) {
+func (w *Webhooks) Fail(ctx context.Context, id string, attempts int, next time.Time) (bool, error) {
 	n, err := w.writes.FailWebhookDelivery(ctx, gen.FailWebhookDeliveryParams{
-		Attempts: int64(attempts), NextAttemptAt: formatTime(next), LastError: nullString(reason), ID: id,
+		Attempts: int64(attempts), NextAttemptAt: formatTime(next), ID: id,
 	})
 	return n > 0, err
 }

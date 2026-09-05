@@ -120,12 +120,12 @@ LIMIT ?;
 -- Completion keeps the receipt and drops the payload.
 -- name: CompleteWebhookDelivery :execrows
 UPDATE webhook_deliveries
-SET state = 'done', payload = NULL, last_error = NULL, completed_at = ?
+SET state = 'done', payload = NULL, completed_at = ?
 WHERE id = ? AND state = 'pending';
 
 -- name: FailWebhookDelivery :execrows
 UPDATE webhook_deliveries
-SET attempts = ?, next_attempt_at = ?, last_error = ?
+SET attempts = ?, next_attempt_at = ?
 WHERE id = ? AND state = 'pending';
 
 -- Receipts are bounded two ways: by age, and by count (oldest first).

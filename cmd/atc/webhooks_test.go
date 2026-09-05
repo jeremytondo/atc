@@ -65,8 +65,17 @@ exec sleep 300
 	if err := os.WriteFile(tailscale, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The port goes in config.toml so `server status` probes the same
+	// server; only --webhooks is a flag, which config knows nothing about.
 	port := closedPort(t)
-	server := exec.Command(binary, "server", "run", "--port", strconv.Itoa(port), "--webhooks")
+	configDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "atc")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(fmt.Sprintf("port = %d\n", port)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := exec.Command(binary, "server", "run", "--webhooks")
 	server.Env = append(os.Environ(), "ATC_TAILSCALE_EXECUTABLE="+tailscale)
 	var stderr syncBuffer
 	server.Stderr = &stderr
@@ -112,17 +121,15 @@ exec sleep 300
 		t.Fatalf("receiver alive=%v funnel alive=%v before termination", alive(receiverPID), alive(funnelPID))
 	}
 
-	// `server status` agrees with the API over the same token.
+	// `server status` reports what the running server reports, whatever
+	// config predicts — this launch was enabled by a flag config knows
+	// nothing about.
 	var stdout strings.Builder
 	statusCmd := exec.Command(binary, "server", "status")
 	statusCmd.Stdout = &stdout
-	_ = statusCmd.Run() // exit 0 healthy-not-installed is fine; the report is what matters
+	_ = statusCmd.Run() // healthy but not installed exits 0; the report is what matters
 	if !strings.Contains(stdout.String(), "webhooks: https://host.tailnet.ts.net (0 pending)") {
-		// A foreground run with config off: status reads config (webhooks
-		// off) so it shows nothing — assert only that it does not lie.
-		if strings.Contains(stdout.String(), "webhooks:") {
-			t.Errorf("status output = %q", stdout.String())
-		}
+		t.Errorf("status output lacks the server's webhook report:\n%s", stdout.String())
 	}
 
 	// Forced termination: SIGKILL runs no handlers in the server.

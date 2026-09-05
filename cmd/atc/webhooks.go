@@ -21,7 +21,7 @@ func newWebhookReceiverCmd() *cobra.Command {
 			flags := cmd.Flags()
 			var opts receiver.Options
 			var err error
-			if opts.ChannelPort, err = flags.GetInt("channel-port"); err != nil {
+			if opts.ChannelConns, err = flags.GetInt("channel-conns"); err != nil {
 				return err
 			}
 			if opts.DenyPort, err = flags.GetInt("deny-port"); err != nil {
@@ -42,11 +42,11 @@ func newWebhookReceiverCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().Int("channel-port", 0, "loopback port of the server's delivery channel")
-	cmd.Flags().Int("deny-port", 0, "loopback port the receiver must be unable to reach")
+	cmd.Flags().Int("channel-conns", 0, "number of inherited channel connections to the server")
+	cmd.Flags().Int("deny-port", 0, "loopback port the receiver must be unable to reach or bind")
 	cmd.Flags().String("probe", "", "credential file the receiver must be unable to read")
 	cmd.Flags().Bool("restricted", false, "second stage: already restricted")
 	cmd.Flags().Int("abi", 0, "Landlock ABI the first stage enforced")
-	_ = cmd.MarkFlagRequired("channel-port")
+	_ = cmd.MarkFlagRequired("channel-conns")
 	return cmd
 }

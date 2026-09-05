@@ -38,30 +38,23 @@ without a separate receiver or tunnel. Set `webhooks = true` in
 `run`) and the server runs a restricted receiver process behind
 [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel) on
 the machine's existing Tailscale identity, publicly, on `webhooks_port`
-(443 by default; 8443 and 10000 are the other Funnel ports). This is
-independent of `tailscale = true`, which exposes the private API on the
-tailnet only.
+(443 by default). This is independent of `tailscale = true`, which exposes
+the private API on the tailnet only.
 
-The receiver is a child of the server sandboxed with Linux Landlock (ABI 4,
-kernel 6.7 or newer): it cannot read files, bind ports, or connect anywhere
-but the server's loopback delivery channel, and it proves each of those
-restrictions before anything is exposed. Every request it relays is treated
-as untrusted; the Integration owning the route verifies it inside the
-server, and only an authorized delivery is stored, acknowledged, and
-processed. Exposure lives exactly as long as the server process, including
-when it is killed outright. Unsupported platforms and kernels leave only
-webhook intake unavailable, with the reason in `atc server status` and
-`GET /v1/webhooks`.
+The receiver is a child of the server confined with Linux Landlock and
+seccomp; it proves it can reach nothing but the server's delivery channel
+before anything is exposed, and exposure ends with the server process
+however it ends. Every delivery is verified inside the server by the
+Integration that owns its route; only authorized deliveries are stored,
+acknowledged, and processed. Enabling Funnel is a one-time tailnet policy
+step: the server keeps running and `atc server status` (or
+`GET /v1/webhooks`) shows the approval link, the endpoint's readiness, and
+the inbox. The public hostname becomes part of a public certificate log,
+as with any Funnel. Unsupported platforms and kernels leave only webhook
+intake unavailable, with the reason in status.
 
-Enabling Funnel is a one-time tailnet policy step; when it is needed, the
-server keeps running and status shows the approval link. The public
-hostname becomes part of a public certificate log, as with any Funnel.
-
-`--tailscale` and `--webhooks` follow one contract: a flag applies to the
-launch it starts, `restart` keeps the running launch's flags unless
-replaced, `stop` then `start` returns to `config.toml`, and `=false`
-disables for that launch. Flags never modify `config.toml`. See
-`atc server start --help`.
+`atc server start --help` documents how `--tailscale` and `--webhooks`
+behave across start, restart, and stop.
 
 ## Installing and upgrading
 

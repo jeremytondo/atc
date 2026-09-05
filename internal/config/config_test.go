@@ -122,6 +122,22 @@ func TestWebhookKeys(t *testing.T) {
 	}
 }
 
+// Sharing a Tailscale port is a conflict only when both exposures run.
+func TestValidateExposure(t *testing.T) {
+	cfg := Config{Port: 443, WebhooksPort: 443}
+	if err := cfg.ValidateExposure(true, true); err == nil {
+		t.Error("both exposures on one port passed")
+	}
+	for _, tc := range [][2]bool{{true, false}, {false, true}, {false, false}} {
+		if err := cfg.ValidateExposure(tc[0], tc[1]); err != nil {
+			t.Errorf("tailnet=%v webhooks=%v: %v, want nil", tc[0], tc[1], err)
+		}
+	}
+	if err := (Config{Port: 7331, WebhooksPort: 443}).ValidateExposure(true, true); err != nil {
+		t.Errorf("distinct ports: %v, want nil", err)
+	}
+}
+
 func TestMalformedValues(t *testing.T) {
 	for name, tc := range map[string]struct {
 		content string
@@ -136,7 +152,6 @@ func TestMalformedValues(t *testing.T) {
 		"non-funnel port":               {"webhooks_port = 9443\n", nil},
 		"non-numeric env webhooks port": {"", map[string]string{"ATC_WEBHOOKS_PORT": "https"}},
 		"non-boolean env webhooks":      {"", map[string]string{"ATC_WEBHOOKS": "yep"}},
-		"webhooks port shared with api": {"port = 443\n", nil},
 	} {
 		if _, err := Load(write(t, tc.content), env(tc.env)); err == nil {
 			t.Errorf("%s: Load succeeded, want error", name)

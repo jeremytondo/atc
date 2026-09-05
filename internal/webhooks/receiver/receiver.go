@@ -1,31 +1,33 @@
 // Package receiver is the restricted webhook receiver (ATC-306): the
 // process that terminates public traffic Tailscale Funnel forwards and
-// relays it, bounded, to trusted Core over a loopback channel. It is a
-// child of the server (`atc __webhook-receiver`), started with an empty
-// environment, the filesystem root as its directory, one inherited
-// descriptor (the public-facing listener), and a stdin whose EOF is
-// Core's death.
+// relays it, bounded, to trusted Core. It is a child of the server
+// (`atc __webhook-receiver`) started with an empty environment, the
+// filesystem root as its directory, its inherited descriptors — the
+// public-facing listener and a fixed set of preconnected channel
+// connections to Core — and a stdin whose EOF is Core's death.
 //
 // It runs in two stages of the same binary. The first, unrestricted,
-// builds a Landlock ruleset — no filesystem access beyond reading and
-// executing this binary and the system loader directories, no TCP bind, no
-// TCP connect except to the channel port, and where the kernel supports it
-// no abstract unix sockets or signals to processes outside the sandbox —
-// restricts its own thread, and execs the second stage; the exec carries
-// the restriction into every thread of the new image, which is what makes
-// this robust for a multi-threaded Go runtime. The second stage proves the
-// restriction from the inside (credential read, root listing, file
-// creation, connecting to Core's API port, tracing its parent — each must
-// be refused) before reporting itself ready on stdout and serving. Core
-// establishes exposure only after that report; a failed proof, an
-// unsupported kernel, or a non-Linux platform fails closed with the reason
-// in the report.
+// builds a Landlock ruleset (no filesystem access beyond reading and
+// executing this binary and the system loader directories, no TCP bind or
+// connect, no abstract sockets or signals where the kernel scopes them)
+// applies it to its own thread, and execs the second stage; the exec
+// carries the restriction into every thread of the new image, which is
+// what makes this robust for a multi-threaded Go runtime. The second stage
+// adds the seccomp filter (no socket creation of any family, no process
+// creation, no tracing, no signalling other processes) to every thread,
+// then proves the restriction from the inside — credential read, root listing, file
+// creation, TCP connect and bind, UDP and unix sockets, tracing and
+// signalling its parent, spawning — each must be refused — before
+// reporting itself ready on stdout and serving. Core establishes exposure
+// only after that report; a failed proof, an unsupported kernel, or a
+// non-Linux platform fails closed with the reason in the report.
 //
-// The forwarder enforces the same bounds Core enforces at the channel
-// (body and header size, timeouts, concurrency), so a bug in one hop is
-// caught by the other, and copies the original method, path, query,
-// headers, and body untouched — verification is Core's, on the original
-// bytes.
+// The channel is the only way out: the receiver never opens a connection
+// of its own, so a compromised receiver has Core's channel handler as its
+// entire reach. The forwarder enforces the same bounds Core enforces at
+// that handler, so a bug in one hop is caught by the other, and copies the
+// original method, path, query, headers, and body untouched —
+// verification is Core's, on the original bytes.
 package receiver
 
 import (
@@ -40,6 +42,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -47,21 +50,40 @@ import (
 // Command is the hidden subcommand the server runs the receiver as.
 const Command = "__webhook-receiver"
 
+// The wire bounds, enforced at both hops.
 const (
-	maxBodyBytes    = 1 << 20
-	maxHeaderBytes  = 32 << 10
+	// MaxBodyBytes bounds one delivery's body.
+	MaxBodyBytes = 1 << 20
+	// MaxHeaderBytes bounds one delivery's headers.
+	MaxHeaderBytes = 32 << 10
+	// Concurrency bounds deliveries in flight, and is the number of channel
+	// connections Core hands the receiver.
+	Concurrency = 32
+	// MaxConnections bounds open public connections at the receiver.
+	MaxConnections = 256
+	// ReadHeaderTimeout, RequestTimeout, and WriteTimeout bound one
+	// exchange at each hop.
+	ReadHeaderTimeout = 10 * time.Second
+	RequestTimeout    = 30 * time.Second
+	WriteTimeout      = 60 * time.Second
+
 	maxResponseBody = 64 << 10
-	concurrency     = 64
-	forwardTimeout  = 30 * time.Second
+	// listenerFD and channelFD0 are where Core places the inherited
+	// descriptors.
+	listenerFD = 3
+	channelFD0 = 4
 )
+
+// channelFD is the descriptor of the i-th inherited channel connection.
+func channelFD(i int) int { return channelFD0 + i }
 
 // Options is the receiver's command line.
 type Options struct {
-	// ChannelPort is Core's loopback channel, the one TCP destination the
-	// receiver may connect to.
-	ChannelPort int
-	// DenyPort is Core's API port; the restricted stage proves it cannot
-	// connect there.
+	// ChannelConns is how many preconnected channel connections Core
+	// inherited on descriptors channelFD0 onward.
+	ChannelConns int
+	// DenyPort is Core's API port; the restricted stage proves it can
+	// neither connect to nor bind it.
 	DenyPort int
 	// ProbePath is a credential file the restricted stage proves it
 	// cannot read.
@@ -108,17 +130,17 @@ func restrictAndExec(opts Options, stdout io.Writer) int {
 		report(stdout, Report{Reason: "cannot resolve the receiver executable: " + err.Error()})
 		return 1
 	}
-	// Landlock and no_new_privs apply to the calling thread, and execve
-	// preserves exactly that thread — so both happen on one locked thread
-	// that then execs.
+	// Landlock, seccomp, and no_new_privs apply to the calling thread, and
+	// execve preserves exactly that thread — so all of it happens on one
+	// locked thread that then execs.
 	runtime.LockOSThread()
-	abi, permanent, err := enforce(executable, opts.ChannelPort)
+	abi, permanent, err := enforce(executable)
 	if err != nil {
 		report(stdout, Report{Reason: err.Error(), Permanent: permanent})
 		return 1
 	}
 	argv := []string{executable, Command,
-		"--channel-port", strconv.Itoa(opts.ChannelPort),
+		"--channel-conns", strconv.Itoa(opts.ChannelConns),
 		"--deny-port", strconv.Itoa(opts.DenyPort),
 		"--probe", opts.ProbePath,
 		"--restricted", "--abi", strconv.Itoa(abi)}
@@ -127,8 +149,13 @@ func restrictAndExec(opts Options, stdout io.Writer) int {
 	return 1
 }
 
-// serve is the second stage: prove the restriction, report, forward.
+// serve is the second stage: finish the restriction, prove it, report,
+// forward.
 func serve(opts Options, stdin io.Reader, stdout, stderr io.Writer) int {
+	if err := confine(); err != nil {
+		report(stdout, Report{Reason: err.Error(), Permanent: true, ABI: opts.ABI})
+		return 1
+	}
 	checks, failures := selfTest(opts)
 	if len(failures) > 0 {
 		report(stdout, Report{
@@ -139,15 +166,14 @@ func serve(opts Options, stdin io.Reader, stdout, stderr io.Writer) int {
 		})
 		return 1
 	}
-	listenerFile := os.NewFile(3, "public-listener")
-	if listenerFile == nil {
-		report(stdout, Report{Reason: "no listener was inherited on descriptor 3"})
+	listener, err := inheritedListener()
+	if err != nil {
+		report(stdout, Report{Reason: err.Error()})
 		return 1
 	}
-	listener, err := net.FileListener(listenerFile)
-	_ = listenerFile.Close()
+	channel, err := inheritedChannel(opts.ChannelConns)
 	if err != nil {
-		report(stdout, Report{Reason: "descriptor 3 is not a listener: " + err.Error()})
+		report(stdout, Report{Reason: err.Error()})
 		return 1
 	}
 	report(stdout, Report{OK: true, ABI: opts.ABI, Checks: checks})
@@ -159,40 +185,95 @@ func serve(opts Options, stdin io.Reader, stdout, stderr io.Writer) int {
 		os.Exit(0)
 	}()
 
-	forwarder := newForwarder(opts.ChannelPort)
 	server := &http.Server{
-		Handler:           forwarder,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		Handler:           newForwarder(channel),
+		ReadHeaderTimeout: ReadHeaderTimeout,
+		ReadTimeout:       RequestTimeout,
+		WriteTimeout:      WriteTimeout,
 		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    maxHeaderBytes,
+		MaxHeaderBytes:    MaxHeaderBytes,
 	}
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.Serve(limitListener(listener, MaxConnections)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		_, _ = fmt.Fprintln(stderr, "receiver stopped serving:", err)
 		return 1
 	}
 	return 0
 }
 
-// forwarder relays one public request to the channel and the channel's
-// answer back, within the bounds.
+func inheritedListener() (net.Listener, error) {
+	file := os.NewFile(uintptr(listenerFD), "public-listener")
+	defer func() { _ = file.Close() }()
+	listener, err := net.FileListener(file)
+	if err != nil {
+		return nil, fmt.Errorf("descriptor %d is not a listener: %w", listenerFD, err)
+	}
+	return listener, nil
+}
+
+// inheritedChannel collects the preconnected channel connections.
+func inheritedChannel(count int) ([]net.Conn, error) {
+	if count <= 0 {
+		return nil, errors.New("no channel connections were inherited")
+	}
+	conns := make([]net.Conn, 0, count)
+	for i := range count {
+		file := os.NewFile(uintptr(channelFD(i)), "channel")
+		conn, err := net.FileConn(file)
+		_ = file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("descriptor %d is not a channel connection: %w", channelFD(i), err)
+		}
+		conns = append(conns, conn)
+	}
+	return conns, nil
+}
+
+// channelPool hands the inherited connections to the HTTP transport in
+// place of dialling. The pool is the whole budget: the transport keeps
+// each connection alive and reuses it, and if the pool ever runs dry the
+// receiver exits so Core respawns it with a fresh set rather than serving
+// degraded.
+type channelPool struct {
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (p *channelPool) dial(context.Context, string, string) (net.Conn, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.conns) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, "receiver channel connections exhausted; exiting for a fresh set")
+		os.Exit(2)
+	}
+	conn := p.conns[0]
+	p.conns = p.conns[1:]
+	return conn, nil
+}
+
+// forwarder relays one public request to Core over the channel and
+// Core's answer back, within the bounds.
 type forwarder struct {
-	channel  string
 	client   *http.Client
 	inflight chan struct{}
 }
 
-func newForwarder(channelPort int) *forwarder {
+func newForwarder(channel []net.Conn) *forwarder {
+	pool := &channelPool{conns: channel}
 	return &forwarder{
-		channel: "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(channelPort)),
 		client: &http.Client{
-			Timeout: forwardTimeout,
-			// Redirects would turn the channel's answer into a request the
+			Timeout: RequestTimeout,
+			Transport: &http.Transport{
+				DialContext:           pool.dial,
+				MaxConnsPerHost:       len(channel),
+				MaxIdleConnsPerHost:   len(channel),
+				ResponseHeaderTimeout: RequestTimeout,
+				DisableCompression:    true,
+			},
+			// Redirects would turn Core's answer into a request the
 			// receiver makes on its own initiative; it never does that.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		inflight: make(chan struct{}, concurrency),
+		inflight: make(chan struct{}, Concurrency),
 	}
 }
 
@@ -212,7 +293,7 @@ func (f *forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many requests in flight", http.StatusServiceUnavailable)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -222,9 +303,11 @@ func (f *forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request body could not be read", http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), forwardTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), RequestTimeout)
 	defer cancel()
-	target := f.channel + r.URL.EscapedPath()
+	// The host is a placeholder: the transport dials the pool, not an
+	// address.
+	target := "http://core" + r.URL.EscapedPath()
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -255,4 +338,37 @@ func (f *forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(response.Body, maxResponseBody))
+}
+
+// limitListener caps open connections: Accept waits while the cap is
+// reached and a slot returns when its connection closes.
+func limitListener(l net.Listener, limit int) net.Listener {
+	return &limited{Listener: l, slots: make(chan struct{}, limit)}
+}
+
+type limited struct {
+	net.Listener
+	slots chan struct{}
+}
+
+func (l *limited) Accept() (net.Conn, error) {
+	l.slots <- struct{}{}
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.slots
+		return nil, err
+	}
+	return &limitedConn{Conn: conn, release: func() { <-l.slots }}, nil
+}
+
+type limitedConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *limitedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
 }

@@ -437,5 +437,11 @@ func writeUnit(unitFile, content string) error {
 	if err := os.MkdirAll(filepath.Dir(unitFile), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(unitFile, []byte(content), 0o644)
+	// Written beside and renamed into place, so the installed unit is
+	// always a whole one.
+	temp := unitFile + ".tmp"
+	if err := os.WriteFile(temp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(temp, unitFile)
 }

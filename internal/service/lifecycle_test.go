@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -314,6 +315,48 @@ func TestStartRollsBackNewLingeringWhenUnitWriteFails(t *testing.T) {
 	}
 }
 
+// A supervisor failure after the unit was rewritten puts the previous
+// unit back, so the unit keeps describing the launch that is actually
+// running (or, on a first start, is removed again).
+func TestSupervisorFailureRestoresPreviousUnit(t *testing.T) {
+	s := &seamStub{active: true, healthy: true, lingering: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	installed := writeInstalledUnit(t, unitFile, LaunchFlags{Tailscale: boolPtr(true)})
+	failure := errors.New("restart refused")
+	runSupervisor = func(_ context.Context, name string, args ...string) error {
+		s.commands = append(s.commands, append([]string{name}, args...))
+		if slices.Contains(args, "restart") {
+			return failure
+		}
+		return nil
+	}
+	opts.Flags.Webhooks = boolPtr(true)
+
+	if err := Restart(context.Background(), opts); !errors.Is(err, failure) {
+		t.Fatalf("Restart = %v, want the supervisor failure", err)
+	}
+	if content, _ := os.ReadFile(unitFile); string(content) != installed {
+		t.Error("failed restart left the new unit installed")
+	}
+
+	first := &seamStub{healthy: true}
+	installSeams(t, first)
+	opts, unitFile = seamEnv(t)
+	runSupervisor = func(_ context.Context, name string, args ...string) error {
+		if slices.Contains(args, "start") {
+			return failure
+		}
+		return nil
+	}
+	if err := Start(context.Background(), opts); !errors.Is(err, failure) {
+		t.Fatalf("Start = %v, want the supervisor failure", err)
+	}
+	if _, statErr := os.Stat(unitFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("failed first start left a unit installed")
+	}
+}
+
 func TestLifecycleSuccessPropagatesCancellation(t *testing.T) {
 	s := &seamStub{tailnetProblem: "context canceled"}
 	installSeams(t, s)
@@ -442,8 +485,8 @@ func TestStartAfterStopIgnoresStoppedLaunchFlags(t *testing.T) {
 			if s.resolves != tc.wantResolves {
 				t.Errorf("resolve calls = %d, want %d", s.resolves, tc.wantResolves)
 			}
-			if s.webhookProbes != 0 {
-				t.Errorf("webhook probes = %d, want 0 (webhooks off by configuration)", s.webhookProbes)
+			if got := opts.Stdout.(*strings.Builder).String(); strings.Contains(got, "webhooks") {
+				t.Errorf("start output %q mentions webhooks, which the server reports disabled", got)
 			}
 		})
 	}

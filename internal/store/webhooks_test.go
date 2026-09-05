@@ -70,7 +70,7 @@ func TestWebhooksProcessingLifecycle(t *testing.T) {
 		}
 	}
 
-	if ok, err := inbox.Fail(ctx, "1", 1, at(60), "provider unreachable"); err != nil || !ok {
+	if ok, err := inbox.Fail(ctx, "1", 1, at(60)); err != nil || !ok {
 		t.Fatalf("Fail = %v, %v; want true", ok, err)
 	}
 	due, err := inbox.Due(ctx, at(30), 10)

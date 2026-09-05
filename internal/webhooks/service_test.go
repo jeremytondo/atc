@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/webhooks/receiver"
 )
 
 // probeHandler is the test-only Integration: a shared-secret header is
@@ -94,7 +96,7 @@ func openInbox(t *testing.T) (*store.Store, string) {
 type fixture struct {
 	service *Service
 	handler *probeHandler
-	inbox   Inbox
+	inbox   Repository
 	stop    func()
 }
 
@@ -111,15 +113,15 @@ func fastClock() func() time.Time {
 	}
 }
 
-func newFixture(t *testing.T, inbox Inbox, capacity int, now func() time.Time) *fixture {
+func newFixture(t *testing.T, inbox Repository, capacity int, now func() time.Time) *fixture {
 	t.Helper()
 	handler := &probeHandler{failUntil: map[string]int{}}
 	service, err := New(Options{
-		Inbox:    inbox,
-		Routes:   []Route{{IntegrationID: "probe", Path: "/probe", Handler: handler}},
-		Capacity: capacity,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:      now,
+		Repository: inbox,
+		Routes:     []Route{{IntegrationID: "probe", Path: "/probe", Handler: handler}},
+		Capacity:   capacity,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:        now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +152,7 @@ func (f *fixture) deliver(method, path, secret, deliveryID, body string) *httpte
 		req.Header.Set("X-Probe-Delivery", deliveryID)
 	}
 	rec := httptest.NewRecorder()
-	f.service.ChannelHandler().ServeHTTP(rec, req)
+	f.service.serveDelivery(rec, req)
 	return rec
 }
 
@@ -182,7 +184,7 @@ func TestAcceptedDeliveryIsStoredThenProcessedAndDeduplicated(t *testing.T) {
 	}
 	waitFor(t, "processing", func() bool { return f.handler.count() == 1 })
 	got := f.handler.processed[0]
-	if got.ID != ack.ID || got.DeliveryID != "evt-1" || string(got.Payload) != `{"n":1}` || got.IntegrationID != "probe" {
+	if got.ID != ack.ID || got.DeliveryID != "evt-1" || string(got.Payload) != `{"n":1}` {
 		t.Errorf("processed = %+v, want the acknowledged delivery", got)
 	}
 	waitFor(t, "completion", func() bool {
@@ -211,7 +213,7 @@ func TestAcceptedDeliveryIsStoredThenProcessedAndDeduplicated(t *testing.T) {
 func TestRejectedDeliveriesAreNeverStored(t *testing.T) {
 	db, _ := openInbox(t)
 	f := newFixture(t, db.Webhooks(), 10, nil)
-	oversized := strings.Repeat("x", MaxBodyBytes+1)
+	oversized := strings.Repeat("x", receiver.MaxBodyBytes+1)
 	for name, tc := range map[string]struct {
 		method, path, secret, id, body string
 		want                           int
@@ -283,7 +285,7 @@ func TestConcurrentRedeliveriesAcceptOnce(t *testing.T) {
 // backlog drains. Storage failures behave the same way.
 func TestCapacityAndStorageFailuresBlockIntakeWithoutLoss(t *testing.T) {
 	db, _ := openInbox(t)
-	failing := &flakyInbox{Inbox: db.Webhooks()}
+	failing := &flakyInbox{Repository: db.Webhooks()}
 	f := newFixture(t, failing, 2, nil)
 	release := make(chan struct{})
 	f.handler.mu.Lock()
@@ -396,29 +398,21 @@ func TestNewValidatesRoutes(t *testing.T) {
 		"no handler":     {{IntegrationID: "a", Path: "/a"}},
 		"duplicate":      {{IntegrationID: "a", Path: "/a", Handler: handler}, {IntegrationID: "b", Path: "/a", Handler: handler}},
 	} {
-		if _, err := New(Options{Inbox: db.Webhooks(), Routes: routes}); err == nil {
+		if _, err := New(Options{Repository: db.Webhooks(), Routes: routes}); err == nil {
 			t.Errorf("%s: New accepted invalid routes", name)
 		}
 	}
 }
 
-// flakyInbox fails every write while fail is set.
+// flakyInbox fails every acceptance while fail is set.
 type flakyInbox struct {
-	Inbox
-	fail boolAtomic
+	Repository
+	fail atomic.Bool
 }
 
 func (f *flakyInbox) Accept(ctx context.Context, record store.WebhookDelivery, capacity int) (bool, error) {
 	if f.fail.Load() {
 		return false, errors.New("disk full")
 	}
-	return f.Inbox.Accept(ctx, record, capacity)
+	return f.Repository.Accept(ctx, record, capacity)
 }
-
-type boolAtomic struct {
-	mu sync.Mutex
-	v  bool
-}
-
-func (b *boolAtomic) Store(v bool) { b.mu.Lock(); b.v = v; b.mu.Unlock() }
-func (b *boolAtomic) Load() bool   { b.mu.Lock(); defer b.mu.Unlock(); return b.v }

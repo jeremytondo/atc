@@ -110,20 +110,28 @@ func funnelPID(t *testing.T, dir string) int {
 }
 
 // runReceiverDirect spawns the receiver command the way ingress does —
-// listener on fd 3, empty environment, stdin held — and returns its
-// report, the process, and the stdin to release it with.
-func runReceiverDirect(t *testing.T, executable string, public *net.TCPListener, channelPort, denyPort int, probe string) (receiver.Report, *exec.Cmd, io.WriteCloser) {
+// listener on fd 3, channel connections after it, empty environment,
+// stdin held — with Core's channel ends served by handler. It returns the
+// receiver's report, the process, and the stdin to release it with.
+func runReceiverDirect(t *testing.T, executable string, public *net.TCPListener, handler http.Handler, denyPort int, probe string) (receiver.Report, *exec.Cmd, io.WriteCloser) {
 	t.Helper()
 	file, err := public.File()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Close() }()
+	channel, err := newChannel(receiver.Concurrency)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: handler}
+	go func() { _ = server.Serve(channel) }()
+	t.Cleanup(func() { _ = server.Close(); channel.close() })
 	cmd := exec.Command(executable, receiver.Command,
-		"--channel-port", strconv.Itoa(channelPort), "--deny-port", strconv.Itoa(denyPort), "--probe", probe)
+		"--channel-conns", strconv.Itoa(len(channel.receiverEnds)), "--deny-port", strconv.Itoa(denyPort), "--probe", probe)
 	cmd.Env = []string{}
 	cmd.Dir = "/"
-	cmd.ExtraFiles = []*os.File{file}
+	cmd.ExtraFiles = append([]*os.File{file}, channel.receiverEnds...)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -136,6 +144,7 @@ func runReceiverDirect(t *testing.T, executable string, public *net.TCPListener,
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	channel.closeReceiverEnds()
 	t.Cleanup(func() {
 		_ = stdin.Close()
 		_ = cmd.Process.Kill()
@@ -165,10 +174,11 @@ func runReceiverDirect(t *testing.T, executable string, public *net.TCPListener,
 }
 
 // The actual restricted process attempts what it must not be able to do —
-// read a credential, list the filesystem, create a file, reach the API
-// port, bind a port, trace its parent — and every attempt is refused by
-// policy; the channel stays reachable and the forwarding path works.
-// Closing stdin (Core gone) ends it.
+// read a credential, list the filesystem, create a file, connect to or
+// bind the API port, open UDP or unix sockets, trace or signal its parent,
+// spawn a process — and every attempt is refused by policy; its inherited
+// channel works and the forwarding path carries requests intact. Closing
+// stdin (Core gone) ends it.
 func TestReceiverProvesIsolationBeforeServing(t *testing.T) {
 	executable := requireBinary(t)
 	probe := filepath.Join(t.TempDir(), "auth-token")
@@ -177,33 +187,30 @@ func TestReceiverProvesIsolationBeforeServing(t *testing.T) {
 	}
 	public := listen(t)
 	deny := listen(t)
-	channel := listen(t)
-	echo := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	echo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = fmt.Fprintf(w, "%s %s?%s host=%s probe=%s body=%s", r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Probe-Secret"), body)
-	})}
-	go func() { _ = echo.Serve(channel) }()
-	t.Cleanup(func() { _ = echo.Close() })
+	})
 
-	report, cmd, stdin := runReceiverDirect(t, executable, public, port(channel), port(deny), probe)
+	report, cmd, stdin := runReceiverDirect(t, executable, public, echo, port(deny), probe)
 	if !report.OK {
 		if report.Permanent && strings.Contains(strings.ToLower(report.Reason), "landlock") {
 			t.Skipf("this kernel cannot run the receiver: %s", report.Reason)
 		}
 		t.Fatalf("receiver refused to serve: %+v", report)
 	}
-	for _, check := range []string{"read_credential", "list_root", "create_file", "connect_api", "bind_tcp", "trace_parent"} {
+	for _, check := range []string{"read_credential", "list_root", "create_file", "connect_tcp", "bind_tcp", "udp_socket", "unix_socket", "trace_parent", "signal_parent", "spawn_process"} {
 		if report.Checks[check] != "denied" {
 			t.Errorf("check %s = %q, want denied", check, report.Checks[check])
 		}
 	}
-	if report.Checks["connect_channel"] != "allowed" {
-		t.Errorf("connect_channel = %q, want allowed", report.Checks["connect_channel"])
+	if got := report.Checks["channel"]; got != strconv.Itoa(receiver.Concurrency)+" connections" {
+		t.Errorf("channel = %q, want every inherited connection usable", got)
 	}
-	if report.ABI < 4 {
-		t.Errorf("landlock abi = %d, want at least 4", report.ABI)
+	if report.ABI < 1 {
+		t.Errorf("landlock abi = %d, want at least 1", report.ABI)
 	}
 	if env := report.Checks["environment"]; env != "0 variables" && env != "1 variables" {
 		t.Errorf("environment = %q, want none inherited", env)
@@ -224,7 +231,7 @@ func TestReceiverProvesIsolationBeforeServing(t *testing.T) {
 	if resp.StatusCode != http.StatusTeapot || string(body) != "PUT /probe/x?k=v host=host.tailnet.ts.net probe=sig body=hello" {
 		t.Errorf("forwarded = %d %q", resp.StatusCode, body)
 	}
-	big, _ := http.NewRequest(http.MethodPost, "http://"+public.Addr().String()+"/probe", strings.NewReader(strings.Repeat("x", MaxBodyBytes+1)))
+	big, _ := http.NewRequest(http.MethodPost, "http://"+public.Addr().String()+"/probe", strings.NewReader(strings.Repeat("x", receiver.MaxBodyBytes+1)))
 	resp, err = http.DefaultClient.Do(big)
 	if err != nil {
 		t.Fatal(err)
@@ -262,9 +269,9 @@ func newIngressFixture(t *testing.T, executable, tailscaleExecutable, dir string
 	}
 	handler := &probeHandler{failUntil: map[string]int{}}
 	service, err := New(Options{
-		Inbox:  db.Webhooks(),
-		Routes: []Route{{IntegrationID: "probe", Path: "/probe", Handler: handler}},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Repository: db.Webhooks(),
+		Routes:     []Route{{IntegrationID: "probe", Path: "/probe", Handler: handler}},
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Ingress: &IngressOptions{
 			Executable:          executable,
 			TailscaleExecutable: tailscaleExecutable,

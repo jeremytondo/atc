@@ -22,13 +22,12 @@
 // Integration owns duplicate-action prevention. Completion drops the
 // payload and keeps a receipt for deduplication.
 //
-// Concrete bounds (each also enforced by the receiver, so a compromised
-// receiver cannot widen them): request bodies MaxBodyBytes, headers
-// MaxHeaderBytes, channelConcurrency deliveries in flight, verifyTimeout
-// per verification, processTimeout per processing attempt, DefaultCapacity
+// Bounds: the wire limits are the receiver package's, enforced again here
+// so a compromised receiver cannot widen them; verifyTimeout bounds a
+// verification and processTimeout a processing attempt; defaultCapacity
 // pending deliveries (a full inbox refuses with a retryable 503 and never
-// evicts accepted work), receipts kept receiptRetention or receiptKeep
-// newest whichever bounds first, retries at retryBase doubling to
+// evicts accepted work); receipts are kept receiptRetention or receiptKeep
+// newest, whichever bounds first; retries start at retryBase and double to
 // retryMax. Rejections and processing failures are summarized by route,
 // status, and the Integration's reason — never headers, signatures, or
 // payloads.
@@ -49,28 +48,23 @@ import (
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/ids"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/webhooks/receiver"
 )
 
 const (
-	// MaxBodyBytes bounds one delivery's body, at the receiver and again
-	// at the channel.
-	MaxBodyBytes = 1 << 20
-	// MaxHeaderBytes bounds one delivery's headers, at both hops.
-	MaxHeaderBytes = 32 << 10
-	// DefaultCapacity is the pending-delivery bound when Options.Capacity
+	// defaultCapacity is the pending-delivery bound when Options.Capacity
 	// is zero.
-	DefaultCapacity = 1000
+	defaultCapacity = 1000
 
-	channelConcurrency = 32
-	verifyTimeout      = 10 * time.Second
-	processTimeout     = 5 * time.Minute
-	processBatch       = 16
-	pollInterval       = 5 * time.Second
-	pruneInterval      = time.Hour
-	receiptRetention   = 30 * 24 * time.Hour
-	receiptKeep        = 10000
-	retryBase          = 5 * time.Second
-	retryMax           = time.Hour
+	verifyTimeout    = 10 * time.Second
+	processTimeout   = 5 * time.Minute
+	processBatch     = 16
+	pollInterval     = 5 * time.Second
+	pruneInterval    = time.Hour
+	receiptRetention = 30 * 24 * time.Hour
+	receiptKeep      = 10000
+	retryBase        = 5 * time.Second
+	retryMax         = time.Hour
 	// summaryLimit bounds the failure text kept for status.
 	summaryLimit = 200
 )
@@ -119,9 +113,7 @@ func Reject(status int, reason string) error {
 // Accepted is a durably stored delivery handed to Process.
 type Accepted struct {
 	// ID is the stable ATC identity.
-	ID            string
-	IntegrationID string
-	Route         string
+	ID string
 	// DeliveryID is the Integration's own identity for it.
 	DeliveryID string
 	Payload    []byte
@@ -141,7 +133,8 @@ type Handler interface {
 	// than once for the same delivery (a crash between processing and
 	// completion, a timeout); preventing duplicate actions is the
 	// Integration's and its domains' responsibility. An error schedules a
-	// retry with backoff.
+	// retry with backoff; its text is kept for status, so it must carry no
+	// secrets or payload.
 	Process(ctx context.Context, delivery Accepted) error
 }
 
@@ -154,24 +147,24 @@ type Route struct {
 	Handler Handler
 }
 
-// Inbox is the durable store the Service needs; *store.Webhooks
-// implements it.
-type Inbox interface {
+// Repository is the durable inbox the Service needs; *store.Webhooks is
+// the implementation, behind an interface so storage failure is testable.
+type Repository interface {
 	Accept(ctx context.Context, record store.WebhookDelivery, capacity int) (bool, error)
 	Due(ctx context.Context, now time.Time, limit int) ([]store.WebhookDelivery, error)
 	Complete(ctx context.Context, id string, at time.Time) (bool, error)
-	Fail(ctx context.Context, id string, attempts int, next time.Time, reason string) (bool, error)
+	Fail(ctx context.Context, id string, attempts int, next time.Time) (bool, error)
 	Pending(ctx context.Context) (int, error)
 	Prune(ctx context.Context, cutoff time.Time, keep int) error
 }
 
 // Options wires a Service.
 type Options struct {
-	Inbox Inbox
+	Repository Repository
 	// Routes are the built-in Integrations' registrations. Paths must be
 	// unique and absolute.
 	Routes []Route
-	// Capacity bounds pending deliveries; zero means DefaultCapacity.
+	// Capacity bounds pending deliveries; zero means defaultCapacity.
 	Capacity int
 	// Ingress enables intake: the restricted receiver and its Funnel
 	// exposure. Nil leaves intake disabled while accepted deliveries keep
@@ -185,7 +178,7 @@ type Options struct {
 // and — when intake is enabled — the ingress lifecycle. Construct with
 // New; Run drives it.
 type Service struct {
-	inbox    Inbox
+	inbox    Repository
 	routes   map[string]Route
 	ordered  []Route
 	capacity int
@@ -211,8 +204,8 @@ type Service struct {
 
 // New validates the registrations and wires the Service.
 func New(opts Options) (*Service, error) {
-	if opts.Inbox == nil {
-		panic("webhooks.New: Inbox must not be nil")
+	if opts.Repository == nil {
+		panic("webhooks.New: Repository must not be nil")
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -221,15 +214,15 @@ func New(opts Options) (*Service, error) {
 		opts.Now = time.Now
 	}
 	if opts.Capacity == 0 {
-		opts.Capacity = DefaultCapacity
+		opts.Capacity = defaultCapacity
 	}
 	s := &Service{
-		inbox:    opts.Inbox,
+		inbox:    opts.Repository,
 		routes:   make(map[string]Route, len(opts.Routes)),
 		capacity: opts.Capacity,
 		logger:   opts.Logger,
 		now:      opts.Now,
-		inflight: make(chan struct{}, channelConcurrency),
+		inflight: make(chan struct{}, receiver.Concurrency),
 		kick:     make(chan struct{}, 1),
 		poll:     pollInterval,
 	}
@@ -250,6 +243,7 @@ func New(opts Options) (*Service, error) {
 	}
 	if opts.Ingress != nil {
 		s.ingress = newIngress(*opts.Ingress, s)
+		s.exposure = exposureState{state: api.WebhooksStarting, reason: "starting"}
 	} else {
 		s.exposure = exposureState{state: api.WebhooksDisabled}
 	}
@@ -267,20 +261,21 @@ func (s *Service) Run(ctx context.Context) {
 	wg.Wait()
 }
 
-// ChannelHandler is the handler the receiver's channel targets: the
-// registered routes and nothing else — no API, no docs, no hook routes.
-// Exposed for tests; production reaches it only through the ingress
-// channel listener.
-func (s *Service) ChannelHandler() http.Handler {
-	return http.HandlerFunc(s.serveDelivery)
-}
-
-// serveDelivery runs one untrusted delivery through the acceptance path:
-// route lookup, admission, the Integration's verification, durable
-// acceptance, acknowledgement.
+// serveDelivery is the channel handler — what the receiver's connections
+// reach, and the receiver's entire reach: registered routes and nothing
+// else. It runs one untrusted delivery through the acceptance path: route
+// lookup, admission, the Integration's verification, durable acceptance,
+// acknowledgement.
 func (s *Service) serveDelivery(w http.ResponseWriter, r *http.Request) {
+	// The channel connections are long-lived and a fixed budget, so the
+	// body read is bounded per request here rather than by a server-wide
+	// read timeout, and a body this handler will not use is drained rather
+	// than left for the server to close the connection over.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(receiver.RequestTimeout))
+	drain := func() { _, _ = io.Copy(io.Discard, io.LimitReader(r.Body, receiver.MaxBodyBytes)) }
 	route, ok := s.routes[r.URL.Path]
 	if !ok {
+		drain()
 		writeProblem(w, http.StatusNotFound, "webhook_route_not_found", "no such webhook route")
 		return
 	}
@@ -288,16 +283,17 @@ func (s *Service) serveDelivery(w http.ResponseWriter, r *http.Request) {
 	case s.inflight <- struct{}{}:
 		defer func() { <-s.inflight }()
 	default:
+		drain()
 		w.Header().Set("Retry-After", "5")
 		writeProblem(w, http.StatusServiceUnavailable, "webhook_busy", "too many deliveries in flight; retry")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, receiver.MaxBodyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			s.recordRejection(route, http.StatusRequestEntityTooLarge, "body exceeds limit")
-			writeProblem(w, http.StatusRequestEntityTooLarge, "webhook_body_too_large", fmt.Sprintf("body exceeds %d bytes", MaxBodyBytes))
+			writeProblem(w, http.StatusRequestEntityTooLarge, "webhook_body_too_large", fmt.Sprintf("body exceeds %d bytes", receiver.MaxBodyBytes))
 			return
 		}
 		writeProblem(w, http.StatusBadRequest, "webhook_body_unreadable", "request body could not be read")
@@ -309,6 +305,10 @@ func (s *Service) serveDelivery(w http.ResponseWriter, r *http.Request) {
 	delivery, err := route.Handler.Verify(verifyCtx, Request{
 		Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery, Header: r.Header, Body: body,
 	})
+	if err == nil && verifyCtx.Err() != nil {
+		// A verdict reached after the deadline is not one the bound allows.
+		err = verifyCtx.Err()
+	}
 	if err != nil {
 		var rejection *Rejection
 		if errors.As(err, &rejection) {
@@ -452,14 +452,21 @@ func (s *Service) processDue(ctx context.Context) bool {
 func (s *Service) process(ctx context.Context, record store.WebhookDelivery) {
 	route, ok := s.routes[record.Route]
 	var err error
-	if !ok {
+	switch {
+	case !ok:
 		err = fmt.Errorf("no handler registered for route %s", record.Route)
-	} else {
+	case route.IntegrationID != record.IntegrationID:
+		// A route re-registered under another Integration must not receive
+		// deliveries the previous owner authenticated.
+		err = fmt.Errorf("route %s now belongs to %s, not %s", record.Route, route.IntegrationID, record.IntegrationID)
+	default:
 		processCtx, cancel := context.WithTimeout(ctx, processTimeout)
 		err = route.Handler.Process(processCtx, Accepted{
-			ID: record.ID, IntegrationID: record.IntegrationID, Route: record.Route,
-			DeliveryID: record.DeliveryID, Payload: record.Payload, Attempts: record.Attempts,
+			ID: record.ID, DeliveryID: record.DeliveryID, Payload: record.Payload, Attempts: record.Attempts,
 		})
+		if err == nil && processCtx.Err() != nil {
+			err = processCtx.Err()
+		}
 		cancel()
 	}
 	if ctx.Err() != nil {
@@ -471,7 +478,7 @@ func (s *Service) process(ctx context.Context, record store.WebhookDelivery) {
 		attempts := record.Attempts + 1
 		s.recordFailure(record.Route, err)
 		s.logger.Warn("webhook processing failed", "id", record.ID, "route", record.Route, "attempt", attempts, "error", err)
-		if _, failErr := s.inbox.Fail(ctx, record.ID, attempts, now.Add(backoff(attempts)), truncate(err.Error())); failErr != nil {
+		if _, failErr := s.inbox.Fail(ctx, record.ID, attempts, now.Add(backoff(attempts))); failErr != nil {
 			s.setStorageFailing(true)
 			s.logger.Error("webhook failure could not be recorded", "id", record.ID, "error", failErr)
 		}
@@ -507,9 +514,14 @@ type exposureState struct {
 	reason string
 }
 
+// setExposure records the ingress state, logging transitions (a retry
+// loop reports the same failure repeatedly; the log carries each once).
 func (s *Service) setExposure(state exposureState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.exposure == state {
+		return
+	}
 	s.exposure = state
 	if state.state == api.WebhooksReady {
 		s.logger.Info("webhook ingress ready", "url", state.url)

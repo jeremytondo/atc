@@ -67,7 +67,6 @@ func Status(ctx context.Context, opts Options) error {
 		info.flagsProblem = unitErr.Error()
 	}
 	info.tailnet = effective(info.flags.Tailscale, opts.Config.Tailscale)
-	info.webhooks = effective(info.flags.Webhooks, opts.Config.Webhooks)
 	if hostname, hostErr := os.Hostname(); hostErr == nil {
 		info.hostname = hostname
 	}
@@ -77,9 +76,11 @@ func Status(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	if info.webhooks && info.healthy {
-		// Only the server knows whether its receiver is isolated and its
-		// Funnel established; nothing here second-guesses it.
+	if info.healthy {
+		// The running server alone knows its webhook state — whether its
+		// receiver is isolated, its Funnel established, what its inbox
+		// holds — so it is asked whenever it answers, whatever config and
+		// unit predict about it.
 		info.webhookStatus, info.webhookErr = probeWebhooks(ctx, opts, token)
 		if err := ctx.Err(); err != nil {
 			return err
@@ -173,14 +174,13 @@ type statusInfo struct {
 	// flagsProblem is why the installed unit's launch flags are unknown
 	// (unreadable or unrecognized content); "" when readable.
 	flagsProblem string
-	// tailnet and webhooks are the effective exposures: launch flag when
-	// supplied, configuration otherwise.
+	// tailnet is the effective tailnet exposure: launch flag when supplied,
+	// configuration otherwise.
 	tailnet        bool
-	webhooks       bool
 	tailnetURL     string
 	tailnetProblem string
-	// webhookStatus is the server's own report when webhooks are effective
-	// and the server is healthy; webhookErr is why it could not be fetched.
+	// webhookStatus is the server's own report when it is healthy;
+	// webhookErr is why it could not be fetched.
 	webhookStatus api.Webhooks
 	webhookErr    error
 }
@@ -225,7 +225,7 @@ func renderStatus(s statusInfo) (string, int) {
 	for _, url := range apiURLs(s) {
 		fmt.Fprintf(&b, "  %s\n", url)
 	}
-	if s.webhooks && s.healthy {
+	if s.healthy {
 		for _, line := range renderWebhooks(s.webhookStatus, s.webhookErr) {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
@@ -261,14 +261,18 @@ func renderLaunchFlags(flags LaunchFlags) []string {
 }
 
 // renderWebhooks formats the server's webhook report for the CLI: the
-// readiness line first, then the awaited action, then the registered
-// routes. err is the failure to fetch the report at all.
+// readiness line, the awaited action, the registered routes, and the
+// failure summaries. Disabled intake with nothing left to process prints
+// nothing — the common case is silent. err is the failure to fetch the
+// report at all.
 func renderWebhooks(status api.Webhooks, err error) []string {
 	if err != nil {
 		return []string{fmt.Sprintf("webhooks: unknown (%s)", err)}
 	}
 	var lines []string
 	switch status.State {
+	case "":
+		return nil
 	case api.WebhooksReady:
 		line := fmt.Sprintf("webhooks: %s (%d pending)", status.URL, status.Pending)
 		if status.IntakeBlocked {
@@ -286,6 +290,11 @@ func renderWebhooks(status api.Webhooks, err error) []string {
 		lines = append(lines, line)
 	case api.WebhooksUnavailable:
 		lines = append(lines, "webhooks: unavailable ("+status.Reason+")")
+	case api.WebhooksDisabled:
+		if status.Pending == 0 && status.ProcessingFailures == 0 {
+			return nil
+		}
+		lines = append(lines, fmt.Sprintf("webhooks: disabled (%d pending from earlier intake)", status.Pending))
 	default:
 		lines = append(lines, "webhooks: "+string(status.State))
 	}
@@ -298,6 +307,12 @@ func renderWebhooks(status api.Webhooks, err error) []string {
 			target = strings.TrimSuffix(status.URL, "/") + route.Path
 		}
 		lines = append(lines, fmt.Sprintf("webhook route (%s): %s", route.IntegrationID, target))
+	}
+	if status.Rejected > 0 {
+		lines = append(lines, fmt.Sprintf("webhooks rejected: %d since start (last: %s)", status.Rejected, status.LastRejection))
+	}
+	if status.ProcessingFailures > 0 {
+		lines = append(lines, fmt.Sprintf("webhook processing failures: %d since start (last: %s)", status.ProcessingFailures, status.LastProcessingFailure))
 	}
 	return lines
 }

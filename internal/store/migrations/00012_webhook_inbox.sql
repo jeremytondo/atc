@@ -22,8 +22,6 @@ CREATE TABLE webhook_deliveries (
     state TEXT NOT NULL CHECK (state IN ('pending', 'done')),
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT NOT NULL,
-    -- The most recent processing failure, for status; never request data.
-    last_error TEXT,
     accepted_at TEXT NOT NULL,
     completed_at TEXT,
     UNIQUE (integration_id, delivery_id)

@@ -6,8 +6,12 @@ import "errors"
 
 // enforce has no sandbox to offer off Linux; ingress never gets this far,
 // but the receiver stays honest if run by hand.
-func enforce(string, int) (abi int, permanent bool, err error) {
-	return 0, true, errors.New("webhook ingress requires Linux: the receiver is isolated with Landlock")
+func enforce(string) (abi int, permanent bool, err error) {
+	return 0, true, errors.New("webhook ingress requires Linux: the receiver is isolated with Landlock and seccomp")
+}
+
+func confine() error {
+	return errors.New("no seccomp on this platform")
 }
 
 func selfTest(Options) (map[string]string, []string) {

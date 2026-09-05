@@ -503,6 +503,9 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.ValidateExposure(cfg.Tailscale, cfg.Webhooks); err != nil {
+		return err
+	}
 
 	// Exposure misconfiguration is a boot error; everything after this
 	// point self-heals instead of blocking the loopback server. Funnel
@@ -721,9 +724,9 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	webhookService, err := webhooks.New(webhooks.Options{
-		Inbox:   database.Webhooks(),
-		Ingress: ingress,
-		Logger:  logger,
+		Repository: database.Webhooks(),
+		Ingress:    ingress,
+		Logger:     logger,
 	})
 	if err != nil {
 		return err

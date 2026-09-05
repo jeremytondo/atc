@@ -84,7 +84,6 @@ type WebhookDelivery struct {
 	State         string
 	Attempts      int64
 	NextAttemptAt string
-	LastError     sql.NullString
 	AcceptedAt    string
 	CompletedAt   sql.NullString
 }
