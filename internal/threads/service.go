@@ -130,6 +130,12 @@ type Service struct {
 	// Like active, it is evidence, re-established by observation after a
 	// boot.
 	held map[string]struct{}
+	// permissions holds each thread's permission requests as its
+	// Integration reports them (permissions.go): evidence, like active.
+	permissions map[string][]*permissionEntry
+	// priorStatus remembers, per thread with a pending submission, the
+	// status the submission provisionally replaced (turns.go).
+	priorStatus map[string]priorStatus
 }
 
 type identityKey struct {
@@ -151,19 +157,21 @@ func NewService(opts Options) *Service {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 	return &Service{
-		repository: opts.Repository,
-		terminals:  opts.Terminals,
-		projects:   opts.Projects,
-		hub:        opts.Hub,
-		logger:     opts.Logger,
-		now:        opts.Now,
-		linkers:    make(map[string]Linker),
-		opening:    make(map[string]chan struct{}),
-		view:       make(map[string]*store.ThreadRecord),
-		identities: make(map[identityKey]string),
-		keys:       make(map[string]identityKey),
-		active:     make(map[string]string),
-		held:       make(map[string]struct{}),
+		repository:  opts.Repository,
+		terminals:   opts.Terminals,
+		projects:    opts.Projects,
+		hub:         opts.Hub,
+		logger:      opts.Logger,
+		now:         opts.Now,
+		linkers:     make(map[string]Linker),
+		opening:     make(map[string]chan struct{}),
+		view:        make(map[string]*store.ThreadRecord),
+		identities:  make(map[identityKey]string),
+		keys:        make(map[string]identityKey),
+		active:      make(map[string]string),
+		held:        make(map[string]struct{}),
+		permissions: make(map[string][]*permissionEntry),
+		priorStatus: make(map[string]priorStatus),
 	}
 }
 
@@ -828,6 +836,11 @@ func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, prov
 		*entry = record
 	}
 	delete(s.held, threadID)
+	// Nothing is pending on a conversation the program dropped.
+	if len(s.pendingPermissions(threadID)) > 0 {
+		delete(s.permissions, threadID)
+		changed = true
+	}
 	s.mu.Unlock()
 	if changed {
 		s.hub.Publish(api.EventThreadUpdated, resource, threadID)
@@ -1184,6 +1197,8 @@ func (s *Service) remove(ctx context.Context, id string) error {
 	s.mu.Lock()
 	delete(s.view, id)
 	s.forgetIdentity(id)
+	delete(s.permissions, id)
+	delete(s.priorStatus, id)
 	s.mu.Unlock()
 	s.hub.Publish(api.EventThreadDeleted, resource, id)
 	return nil
@@ -1429,10 +1444,11 @@ func applyMetadata(record *store.ThreadRecord, metadata Metadata) bool {
 // linker is the Integration's, and it takes locks of its own.
 func (s *Service) thread(record store.ThreadRecord) api.Thread {
 	thread := threadFrom(record)
+	s.mu.Lock()
+	key := s.keys[record.ID]
+	thread.Permissions = s.pendingPermissions(record.ID)
+	s.mu.Unlock()
 	if linker, ok := s.linkers[record.IntegrationID]; ok {
-		s.mu.Lock()
-		key := s.keys[record.ID]
-		s.mu.Unlock()
 		thread.Links = linker(key.providerID)
 	}
 	return thread
@@ -1474,6 +1490,9 @@ func threadFrom(record store.ThreadRecord) api.Thread {
 			at := *turn.CompletedAt
 			thread.LatestTurn.CompletedAt = &at
 		}
+	}
+	if pending := record.Pending; pending != nil {
+		thread.PendingTurn = &api.PendingTurn{ID: pending.ID, SubmittedAt: pending.SubmittedAt}
 	}
 	return thread
 }

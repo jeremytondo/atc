@@ -26,6 +26,14 @@ const (
 	// CapabilityThreadCreation: the Integration starts new conversations in
 	// its program with a first prompt (POST /v1/threads, ATC-289).
 	CapabilityThreadCreation IntegrationCapability = "threads.create"
+	// CapabilityThreadSend: the Integration sends messages into existing
+	// conversations in its program (POST /v1/threads/{id}/messages,
+	// ATC-307).
+	CapabilityThreadSend IntegrationCapability = "threads.send"
+	// CapabilityThreadDecide: the Integration decides pending permission
+	// requests in its program (POST
+	// /v1/threads/{id}/permissions/{permissionId}/decision, ATC-307).
+	CapabilityThreadDecide IntegrationCapability = "threads.decide"
 )
 
 // AppInteraction is one typed interaction an App offers.

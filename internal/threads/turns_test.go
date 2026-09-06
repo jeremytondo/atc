@@ -219,11 +219,13 @@ func TestTurnCoercion(t *testing.T) {
 	}
 }
 
-// The submission seam: acceptance mints a running turn and returns its
-// id; a second submission while it is unbound is refused; the provider
-// re-reporting the turn that preceded the submission changes nothing;
-// the first turn the provider starts binds to the submitted id and its
-// timestamps take over; after binding a submission is accepted again.
+// A submission (ATC-289, ATC-302, ATC-307) is a pending turn beside the
+// latest one: minted with the thread provisionally working, bound to the
+// first provider turn reported that is not the turn the thread held at
+// submission — which, re-reported, updates the latest turn as it always
+// did and touches the submission not at all — and refused while one is
+// pending. A fault fails it; a loss of observation leaves it pending,
+// and a new server process over the same store still binds it.
 func TestSubmitTurnBinding(t *testing.T) {
 	f := newFixture(t)
 	f.plant(t, "proj-aaaaa")
@@ -251,37 +253,36 @@ func TestSubmitTurnBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread, _ := f.service.Get(id)
-	if !turnIDPattern.MatchString(submitted) || thread.Status != api.ThreadWorking || thread.LatestTurn == nil ||
-		thread.LatestTurn.ID != submitted || thread.LatestTurn.State != api.TurnRunning || thread.LatestTurn.ID == before.ID {
-		t.Fatalf("after submit: id %q, thread status %s turn %+v", submitted, thread.Status, thread.LatestTurn)
+	if !turnIDPattern.MatchString(submitted) || thread.Status != api.ThreadWorking || thread.PendingTurn == nil || thread.PendingTurn.ID != submitted ||
+		thread.PendingTurn.SubmittedAt.IsZero() || thread.LatestTurn == nil || thread.LatestTurn.ID != before.ID {
+		t.Fatalf("after submit: id %q, thread status %s pending %+v latest %+v", submitted, thread.Status, thread.PendingTurn, thread.LatestTurn)
 	}
 	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {
 		t.Errorf("events on submit = %v", got)
 	}
 	if _, err := f.service.SubmitTurn(ctx, id); !errors.Is(err, ErrTurnPending) {
-		t.Errorf("second submission while unbound = %v; want ErrTurnPending", err)
-	}
-	if got := f.turn(t, id); got.ID != submitted || got.State != api.TurnRunning {
-		t.Errorf("refused submission touched the turn: %+v", got)
+		t.Errorf("second submission while pending = %v; want ErrTurnPending", err)
 	}
 
 	// T3 re-reports the shape it had — the old turn, the session idle —
-	// which describes the thread before the submission: not the submitted
-	// turn starting, and not the submitted turn ending.
+	// which describes the thread before the submission: the latest turn
+	// stands, the status follows the provider, the submission pends.
 	observe(&TurnObservation{ProviderID: "pt-1", State: api.TurnCompleted, StartedAt: prior, CompletedAt: prior.Add(time.Minute)}, api.ThreadIdle)
-	if got := f.turn(t, id); got.ID != submitted || got.State != api.TurnRunning {
-		t.Errorf("re-report of the prior turn touched the submitted turn: %+v", got)
+	thread, _ = f.service.Get(id)
+	if thread.LatestTurn.ID != before.ID || thread.LatestTurn.State != api.TurnCompleted || thread.PendingTurn == nil || thread.PendingTurn.ID != submitted || thread.Status != api.ThreadIdle {
+		t.Errorf("re-report of the prior turn: latest %+v pending %+v status %s", thread.LatestTurn, thread.PendingTurn, thread.Status)
 	}
 	if _, err := f.service.SubmitTurn(ctx, id); !errors.Is(err, ErrTurnPending) {
-		t.Errorf("still unbound = %v; want ErrTurnPending", err)
+		t.Errorf("still pending = %v; want ErrTurnPending", err)
 	}
 
 	// The provider starts a turn: bound, provider timestamps in.
 	started := prior.Add(2 * time.Minute)
 	observe(&TurnObservation{ProviderID: "pt-2", State: api.TurnRunning, StartedAt: started}, api.ThreadWorking)
+	thread, _ = f.service.Get(id)
 	bound := f.turn(t, id)
-	if bound.ID != submitted || bound.State != api.TurnRunning || !bound.StartedAt.Equal(started) || bound.CompletedAt != nil {
-		t.Errorf("bound turn = %+v; want %s running from %v", bound, submitted, started)
+	if bound.ID != submitted || bound.State != api.TurnRunning || !bound.StartedAt.Equal(started) || bound.CompletedAt != nil || thread.PendingTurn != nil {
+		t.Errorf("bound turn = %+v pending %+v; want %s running from %v, nothing pending", bound, thread.PendingTurn, submitted, started)
 	}
 	observe(&TurnObservation{ProviderID: "pt-2", State: api.TurnCompleted, StartedAt: started, CompletedAt: started.Add(time.Minute)}, api.ThreadIdle)
 	if got := f.turn(t, id); got.ID != submitted || got.State != api.TurnCompleted || got.CompletedAt == nil || !got.CompletedAt.Equal(started.Add(time.Minute)) {
@@ -295,36 +296,38 @@ func TestSubmitTurnBinding(t *testing.T) {
 	// Binding needs a provider turn id: a turn reported without one is
 	// the provider's own, a fresh id, and the submission stays pending.
 	observe(&TurnObservation{State: api.TurnRunning}, api.ThreadWorking)
-	if got := f.turn(t, id); got.ID == next || got.State != api.TurnRunning {
-		t.Errorf("turn without provider id while pending = %+v; want a fresh id", got)
+	thread, _ = f.service.Get(id)
+	if thread.LatestTurn.ID == next || thread.LatestTurn.State != api.TurnRunning || thread.PendingTurn == nil || thread.PendingTurn.ID != next {
+		t.Errorf("turn without provider id while pending: latest %+v pending %+v", thread.LatestTurn, thread.PendingTurn)
 	}
-	if _, err := f.service.SubmitTurn(ctx, id); err != nil {
-		t.Errorf("submission after the pending turn was replaced = %v", err)
-	}
-	// A fault ends a pending turn like any running one.
+	// A fault fails the pending submission — the provider cannot start
+	// it — as the latest turn, with the fault text.
 	observe(nil, api.ThreadError)
-	if got := f.turn(t, id); got.State != api.TurnFailed {
-		t.Errorf("pending turn on a fault = %+v; want failed", got)
+	thread, _ = f.service.Get(id)
+	if thread.PendingTurn != nil || thread.LatestTurn.ID != next || thread.LatestTurn.State != api.TurnFailed {
+		t.Errorf("pending turn on a fault: latest %+v pending %+v; want %s failed", thread.LatestTurn, thread.PendingTurn, next)
 	}
 	observe(&TurnObservation{ProviderID: "pt-3", State: api.TurnRunning}, api.ThreadWorking)
 	if got := f.turn(t, id); got.ID == next || got.State != api.TurnRunning {
 		t.Errorf("provider-started turn = %+v; want a fresh id", got)
 	}
 
-	// A submitted turn left unbound coerces with the hold but stays a
-	// submission: the provider reconnecting — or a new server process over
-	// the same store — still binds its first new turn to the submitted id
-	// (ATC-302), and the prior turn re-reported still binds nothing.
+	// A submission pending through a loss of observation stays pending
+	// beside the coerced latest turn: the provider reconnecting — or a
+	// new server process over the same store — still binds its first new
+	// turn to the submitted id (ATC-302), and the prior turn re-reported
+	// still binds nothing.
 	pending, err := f.service.SubmitTurn(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.ReleaseIntegration(ctx, "t3code")
-	if got := f.turn(t, id); got.ID != pending || got.State != api.TurnUnknown {
-		t.Errorf("unbound turn after release = %+v; want %s unknown", got, pending)
+	thread, _ = f.service.Get(id)
+	if thread.PendingTurn == nil || thread.PendingTurn.ID != pending || thread.LatestTurn.State != api.TurnUnknown || thread.Status != api.ThreadUnknown {
+		t.Errorf("after release: pending %+v latest %+v status %s", thread.PendingTurn, thread.LatestTurn, thread.Status)
 	}
 	if _, err := f.service.SubmitTurn(ctx, id); !errors.Is(err, ErrTurnPending) {
-		t.Errorf("submission after the pending turn coerced = %v; want ErrTurnPending", err)
+		t.Errorf("submission after the release = %v; want ErrTurnPending", err)
 	}
 	restarted := NewService(Options{Repository: f.store.Threads(), Terminals: f.terminals, Projects: f.store.Projects(), Hub: f.hub, Now: f.clock.Now})
 	if err := restarted.Load(ctx); err != nil {
@@ -336,8 +339,8 @@ func TestSubmitTurnBinding(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := restarted.Get(id); got.LatestTurn == nil || got.LatestTurn.ID != pending || got.LatestTurn.State != api.TurnUnknown {
-		t.Errorf("prior turn re-reported after restart = %+v; want %s still unknown", got.LatestTurn, pending)
+	if got, _ := restarted.Get(id); got.PendingTurn == nil || got.PendingTurn.ID != pending || got.LatestTurn == nil || got.LatestTurn.State != api.TurnCompleted {
+		t.Errorf("prior turn re-reported after restart = latest %+v pending %+v; want %s still pending, the prior completed", got.LatestTurn, got.PendingTurn, pending)
 	}
 	if _, err := restarted.ObserveExternal(ctx, ExternalObservation{
 		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"), Status: api.ThreadIdle, Title: "T",
@@ -345,11 +348,57 @@ func TestSubmitTurnBinding(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := restarted.Get(id); got.LatestTurn == nil || got.LatestTurn.ID != pending || got.LatestTurn.State != api.TurnCompleted || got.LatestTurn.Response != "bound after restart" {
+	if got, _ := restarted.Get(id); got.PendingTurn != nil || got.LatestTurn == nil || got.LatestTurn.ID != pending || got.LatestTurn.State != api.TurnCompleted || got.LatestTurn.Response != "bound after restart" {
 		t.Errorf("first new turn after restart = %+v; want it bound to %s", got.LatestTurn, pending)
 	}
 	if _, err := restarted.SubmitTurn(ctx, id); err != nil {
 		t.Errorf("submission after binding = %v", err)
+	}
+}
+
+// A submission while the provider runs a turn (ATC-307): the running
+// turn keeps its place and its end is recorded — a follow-up the
+// provider queues binds to the next turn it starts — and a fault fails
+// the running turn and the pending submission alike.
+func TestSubmitTurnBesideRunningTurn(t *testing.T) {
+	f := newFixture(t)
+	f.plant(t, "proj-aaaaa")
+	ctx := context.Background()
+	observe := func(turn *TurnObservation, status api.ThreadStatus) string {
+		t.Helper()
+		id, err := f.service.ObserveExternal(ctx, ExternalObservation{
+			IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"), Status: status, Title: "T", Turn: turn,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	id := observe(&TurnObservation{ProviderID: "pt-1", State: api.TurnRunning}, api.ThreadWorking)
+	running := f.turn(t, id)
+	queued, err := f.service.SubmitTurn(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The running turn ends with its reply while the submission pends.
+	observe(&TurnObservation{ProviderID: "pt-1", State: api.TurnCompleted, Response: "first reply"}, api.ThreadIdle)
+	thread, _ := f.service.Get(id)
+	if thread.LatestTurn.ID != running.ID || thread.LatestTurn.State != api.TurnCompleted || thread.LatestTurn.Response != "first reply" || thread.PendingTurn == nil || thread.PendingTurn.ID != queued {
+		t.Errorf("running turn's end under a pending submission: latest %+v pending %+v", thread.LatestTurn, thread.PendingTurn)
+	}
+	observe(&TurnObservation{ProviderID: "pt-2", State: api.TurnRunning}, api.ThreadWorking)
+	if got := f.turn(t, id); got.ID != queued || got.State != api.TurnRunning {
+		t.Errorf("next turn = %+v; want it bound to %s", got, queued)
+	}
+
+	second, err := f.service.SubmitTurn(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observe(nil, api.ThreadError)
+	thread, _ = f.service.Get(id)
+	if thread.PendingTurn != nil || thread.LatestTurn.ID != second || thread.LatestTurn.State != api.TurnFailed {
+		t.Errorf("fault under a running turn and a pending submission: latest %+v pending %+v", thread.LatestTurn, thread.PendingTurn)
 	}
 }
 

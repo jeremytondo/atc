@@ -198,6 +198,53 @@ func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
 	return i, err
 }
 
+const getThreadMessage = `-- name: GetThreadMessage :one
+SELECT id, thread_id, "key", text, turn_id, delivery, detail, created_at, updated_at FROM thread_messages WHERE id = ?
+`
+
+func (q *Queries) GetThreadMessage(ctx context.Context, id string) (ThreadMessage, error) {
+	row := q.db.QueryRowContext(ctx, getThreadMessage, id)
+	var i ThreadMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ThreadID,
+		&i.Key,
+		&i.Text,
+		&i.TurnID,
+		&i.Delivery,
+		&i.Detail,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getThreadMessageByKey = `-- name: GetThreadMessageByKey :one
+SELECT id, thread_id, "key", text, turn_id, delivery, detail, created_at, updated_at FROM thread_messages WHERE thread_id = ? AND key = ?
+`
+
+type GetThreadMessageByKeyParams struct {
+	ThreadID string
+	Key      sql.NullString
+}
+
+func (q *Queries) GetThreadMessageByKey(ctx context.Context, arg GetThreadMessageByKeyParams) (ThreadMessage, error) {
+	row := q.db.QueryRowContext(ctx, getThreadMessageByKey, arg.ThreadID, arg.Key)
+	var i ThreadMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ThreadID,
+		&i.Key,
+		&i.Text,
+		&i.TurnID,
+		&i.Delivery,
+		&i.Detail,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertLinearOutbox = `-- name: InsertLinearOutbox :execrows
 INSERT INTO linear_outbox (id, session_id, kind, body, attempts, next_attempt_at, created_at)
 VALUES (?, ?, ?, ?, 0, ?, ?)
@@ -372,40 +419,42 @@ const insertThread = `-- name: InsertThread :execrows
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
     title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
     archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
-    turn_completed_at, turn_error, turn_response, turn_submitted_prior)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    turn_completed_at, turn_error, turn_response, pending_turn_id, pending_turn_prior, pending_turn_submitted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertThreadParams struct {
-	ID                 string
-	IntegrationID      string
-	AppID              sql.NullString
-	AgentID            sql.NullString
-	InitialDirectory   sql.NullString
-	ProjectID          sql.NullString
-	TerminalID         sql.NullString
-	Title              sql.NullString
-	TitleUserSet       int64
-	Model              sql.NullString
-	Effort             sql.NullString
-	Cwd                sql.NullString
-	PermissionMode     sql.NullString
-	Status             string
-	StatusDetail       sql.NullString
-	LastEvidenceAt     sql.NullString
-	Archived           int64
-	ArchivedAt         sql.NullString
-	CreatedAt          string
-	UpdatedAt          string
-	TurnID             sql.NullString
-	TurnProviderID     sql.NullString
-	TurnState          sql.NullString
-	TurnStartedAt      sql.NullString
-	TurnCompletedAt    sql.NullString
-	TurnError          sql.NullString
-	TurnResponse       sql.NullString
-	TurnSubmittedPrior sql.NullString
+	ID                     string
+	IntegrationID          string
+	AppID                  sql.NullString
+	AgentID                sql.NullString
+	InitialDirectory       sql.NullString
+	ProjectID              sql.NullString
+	TerminalID             sql.NullString
+	Title                  sql.NullString
+	TitleUserSet           int64
+	Model                  sql.NullString
+	Effort                 sql.NullString
+	Cwd                    sql.NullString
+	PermissionMode         sql.NullString
+	Status                 string
+	StatusDetail           sql.NullString
+	LastEvidenceAt         sql.NullString
+	Archived               int64
+	ArchivedAt             sql.NullString
+	CreatedAt              string
+	UpdatedAt              string
+	TurnID                 sql.NullString
+	TurnProviderID         sql.NullString
+	TurnState              sql.NullString
+	TurnStartedAt          sql.NullString
+	TurnCompletedAt        sql.NullString
+	TurnError              sql.NullString
+	TurnResponse           sql.NullString
+	PendingTurnID          sql.NullString
+	PendingTurnPrior       sql.NullString
+	PendingTurnSubmittedAt sql.NullString
 }
 
 func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int64, error) {
@@ -437,7 +486,9 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 		arg.TurnCompletedAt,
 		arg.TurnError,
 		arg.TurnResponse,
-		arg.TurnSubmittedPrior,
+		arg.PendingTurnID,
+		arg.PendingTurnPrior,
+		arg.PendingTurnSubmittedAt,
 	)
 	if err != nil {
 		return 0, err
@@ -459,6 +510,43 @@ type InsertThreadIdentityParams struct {
 
 func (q *Queries) InsertThreadIdentity(ctx context.Context, arg InsertThreadIdentityParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertThreadIdentity, arg.IntegrationID, arg.ProviderConversationID, arg.ThreadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const insertThreadMessage = `-- name: InsertThreadMessage :execrows
+INSERT INTO thread_messages (id, thread_id, key, text, turn_id, delivery, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertThreadMessageParams struct {
+	ID        string
+	ThreadID  string
+	Key       sql.NullString
+	Text      string
+	TurnID    string
+	Delivery  string
+	Detail    sql.NullString
+	CreatedAt string
+	UpdatedAt string
+}
+
+// Thread messages (ATC-307): the durable identity of each submission.
+func (q *Queries) InsertThreadMessage(ctx context.Context, arg InsertThreadMessageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertThreadMessage,
+		arg.ID,
+		arg.ThreadID,
+		arg.Key,
+		arg.Text,
+		arg.TurnID,
+		arg.Delivery,
+		arg.Detail,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -763,7 +851,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 }
 
 const listThreads = `-- name: ListThreads :many
-SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error, turn_response, turn_submitted_prior FROM threads ORDER BY created_at, id
+SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error, turn_response, pending_turn_id, pending_turn_prior, pending_turn_submitted_at FROM threads ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
@@ -803,7 +891,9 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 			&i.TurnCompletedAt,
 			&i.TurnError,
 			&i.TurnResponse,
-			&i.TurnSubmittedPrior,
+			&i.PendingTurnID,
+			&i.PendingTurnPrior,
+			&i.PendingTurnSubmittedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -898,6 +988,24 @@ func (q *Queries) PruneLinearOutbox(ctx context.Context, cutoff sql.NullString) 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const pruneThreadMessages = `-- name: PruneThreadMessages :exec
+DELETE FROM thread_messages WHERE id IN (
+    SELECT older.id FROM thread_messages AS older WHERE older.thread_id = ?
+    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
+)
+`
+
+type PruneThreadMessagesParams struct {
+	ThreadID string
+	Offset   int64
+}
+
+// Keeps a thread's newest messages only; the domain names the bound.
+func (q *Queries) PruneThreadMessages(ctx context.Context, arg PruneThreadMessagesParams) error {
+	_, err := q.db.ExecContext(ctx, pruneThreadMessages, arg.ThreadID, arg.Offset)
+	return err
 }
 
 const recordTerminalExit = `-- name: RecordTerminalExit :execrows
@@ -1090,35 +1198,38 @@ const updateThread = `-- name: UpdateThread :execrows
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
-    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?, turn_submitted_prior = ?
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?, pending_turn_id = ?,
+    pending_turn_prior = ?, pending_turn_submitted_at = ?
 WHERE id = ?
 `
 
 type UpdateThreadParams struct {
-	AgentID            sql.NullString
-	ProjectID          sql.NullString
-	TerminalID         sql.NullString
-	Title              sql.NullString
-	TitleUserSet       int64
-	Model              sql.NullString
-	Effort             sql.NullString
-	Cwd                sql.NullString
-	PermissionMode     sql.NullString
-	Status             string
-	StatusDetail       sql.NullString
-	LastEvidenceAt     sql.NullString
-	Archived           int64
-	ArchivedAt         sql.NullString
-	UpdatedAt          string
-	TurnID             sql.NullString
-	TurnProviderID     sql.NullString
-	TurnState          sql.NullString
-	TurnStartedAt      sql.NullString
-	TurnCompletedAt    sql.NullString
-	TurnError          sql.NullString
-	TurnResponse       sql.NullString
-	TurnSubmittedPrior sql.NullString
-	ID                 string
+	AgentID                sql.NullString
+	ProjectID              sql.NullString
+	TerminalID             sql.NullString
+	Title                  sql.NullString
+	TitleUserSet           int64
+	Model                  sql.NullString
+	Effort                 sql.NullString
+	Cwd                    sql.NullString
+	PermissionMode         sql.NullString
+	Status                 string
+	StatusDetail           sql.NullString
+	LastEvidenceAt         sql.NullString
+	Archived               int64
+	ArchivedAt             sql.NullString
+	UpdatedAt              string
+	TurnID                 sql.NullString
+	TurnProviderID         sql.NullString
+	TurnState              sql.NullString
+	TurnStartedAt          sql.NullString
+	TurnCompletedAt        sql.NullString
+	TurnError              sql.NullString
+	TurnResponse           sql.NullString
+	PendingTurnID          sql.NullString
+	PendingTurnPrior       sql.NullString
+	PendingTurnSubmittedAt sql.NullString
+	ID                     string
 }
 
 // One broad update: the domain service owns the view and serializes
@@ -1148,7 +1259,33 @@ func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int
 		arg.TurnCompletedAt,
 		arg.TurnError,
 		arg.TurnResponse,
-		arg.TurnSubmittedPrior,
+		arg.PendingTurnID,
+		arg.PendingTurnPrior,
+		arg.PendingTurnSubmittedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateThreadMessageDelivery = `-- name: UpdateThreadMessageDelivery :execrows
+UPDATE thread_messages SET delivery = ?, detail = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdateThreadMessageDeliveryParams struct {
+	Delivery  string
+	Detail    sql.NullString
+	UpdatedAt string
+	ID        string
+}
+
+func (q *Queries) UpdateThreadMessageDelivery(ctx context.Context, arg UpdateThreadMessageDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateThreadMessageDelivery,
+		arg.Delivery,
+		arg.Detail,
+		arg.UpdatedAt,
 		arg.ID,
 	)
 	if err != nil {

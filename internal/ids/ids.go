@@ -61,6 +61,38 @@ func mint(prefix string, length int) string {
 	return prefix + string(suffix)
 }
 
+// Derive mints an ID with a 10-character suffix from a key, the same for
+// the same key: for identifiers that mirror something a provider owns
+// (a pending permission request) so the same request has the same ATC
+// id across reconnects and restarts without a stored mapping. The key
+// never appears in the id.
+func Derive(prefix, key string) string {
+	sum := sha256.Sum256([]byte(key))
+	suffix := make([]byte, longSuffixLength)
+	// Rejection sampling over the digest's bytes keeps the distribution
+	// uniform; a 32-byte digest always yields ten usable bytes with
+	// overwhelming probability, and the fallback re-hashes rather than
+	// bias the alphabet.
+	limit := byte(256 - 256%len(alphabet))
+	i := 0
+	for round := 0; i < len(suffix); round++ {
+		if round > 0 {
+			sum = sha256.Sum256(sum[:])
+		}
+		for _, b := range sum {
+			if i == len(suffix) {
+				break
+			}
+			if b >= limit {
+				continue
+			}
+			suffix[i] = alphabet[int(b)%len(alphabet)]
+			i++
+		}
+	}
+	return prefix + string(suffix)
+}
+
 // UUID mints a random (version 4) UUID, for identifiers a provider
 // expects in that form (T3 Code's thread and command ids).
 func UUID() string {

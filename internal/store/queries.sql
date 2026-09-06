@@ -67,8 +67,8 @@ DELETE FROM projects WHERE id = ?;
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
     title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
     archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
-    turn_completed_at, turn_error, turn_response, turn_submitted_prior)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    turn_completed_at, turn_error, turn_response, pending_turn_id, pending_turn_prior, pending_turn_submitted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreads :many
@@ -81,7 +81,8 @@ SELECT * FROM threads ORDER BY created_at, id;
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
-    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?, turn_submitted_prior = ?
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?, pending_turn_id = ?,
+    pending_turn_prior = ?, pending_turn_submitted_at = ?
 WHERE id = ?;
 
 -- Backfill assigns only threads still unassigned, so a project change
@@ -99,6 +100,28 @@ ON CONFLICT (integration_id, provider_conversation_id) DO NOTHING;
 
 -- name: ListThreadIdentities :many
 SELECT * FROM thread_identities;
+
+-- Thread messages (ATC-307): the durable identity of each submission.
+-- name: InsertThreadMessage :execrows
+INSERT INTO thread_messages (id, thread_id, key, text, turn_id, delivery, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: GetThreadMessageByKey :one
+SELECT * FROM thread_messages WHERE thread_id = ? AND key = ?;
+
+-- name: GetThreadMessage :one
+SELECT * FROM thread_messages WHERE id = ?;
+
+-- name: UpdateThreadMessageDelivery :execrows
+UPDATE thread_messages SET delivery = ?, detail = ?, updated_at = ? WHERE id = ?;
+
+-- Keeps a thread's newest messages only; the domain names the bound.
+-- name: PruneThreadMessages :exec
+DELETE FROM thread_messages WHERE id IN (
+    SELECT older.id FROM thread_messages AS older WHERE older.thread_id = ?
+    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
+);
 
 -- Webhook inbox (ATC-306). Acceptance is the deduplication: the
 -- Integration-scoped unique constraint makes a redelivery insert zero rows,
