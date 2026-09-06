@@ -119,21 +119,30 @@ func TestUnitPath(t *testing.T) {
 	}
 }
 
+func boolPtr(v bool) *bool { return &v }
+
 func TestUnitArgs(t *testing.T) {
-	want := []string{"/opt/atc", "server", "run"}
-	if diff := cmp.Diff(want, unitArgs("/opt/atc", false)); diff != "" {
-		t.Errorf("unitArgs mismatch (-want +got):\n%s", diff)
-	}
-	want = []string{"/opt/atc", "server", "run", "--tailscale"}
-	if diff := cmp.Diff(want, unitArgs("/opt/atc", true)); diff != "" {
-		t.Errorf("unitArgs with override mismatch (-want +got):\n%s", diff)
+	for name, tc := range map[string]struct {
+		flags LaunchFlags
+		want  []string
+	}{
+		"no flags":             {LaunchFlags{}, []string{"/opt/atc", "server", "run"}},
+		"tailscale on":         {LaunchFlags{Tailscale: boolPtr(true)}, []string{"/opt/atc", "server", "run", "--tailscale"}},
+		"tailscale off":        {LaunchFlags{Tailscale: boolPtr(false)}, []string{"/opt/atc", "server", "run", "--tailscale=false"}},
+		"webhooks on":          {LaunchFlags{Webhooks: boolPtr(true)}, []string{"/opt/atc", "server", "run", "--webhooks"}},
+		"both, mixed":          {LaunchFlags{Tailscale: boolPtr(false), Webhooks: boolPtr(true)}, []string{"/opt/atc", "server", "run", "--tailscale=false", "--webhooks"}},
+		"both on, fixed order": {LaunchFlags{Tailscale: boolPtr(true), Webhooks: boolPtr(true)}, []string{"/opt/atc", "server", "run", "--tailscale", "--webhooks"}},
+	} {
+		if diff := cmp.Diff(tc.want, unitArgs("/opt/atc", tc.flags)); diff != "" {
+			t.Errorf("%s: unitArgs mismatch (-want +got):\n%s", name, diff)
+		}
 	}
 }
 
-// The unit is the tailscale override's only durable store, so inspection
-// must recover exactly what rendering wrote — for both platforms, both
-// override states, and args needing escaping.
-func TestUnitTailscaleRoundTrip(t *testing.T) {
+// The unit is the launch flags' only store, so inspection must recover
+// exactly what rendering wrote — for both platforms, every flag
+// combination, and args needing escaping.
+func TestUnitLaunchFlagsRoundTrip(t *testing.T) {
 	env := [][2]string{{"PATH", `/usr/bin:/50% "quoted"\path`}}
 	for goos, tc := range map[string]struct {
 		render func(args []string) string
@@ -148,30 +157,58 @@ func TestUnitTailscaleRoundTrip(t *testing.T) {
 			exe:    `/home/a b/bin/100% "atc"\x`,
 		},
 	} {
-		for _, override := range []bool{false, true} {
-			content := tc.render(unitArgs(tc.exe, override))
-			got, err := unitTailscale(goos, content)
-			if err != nil {
-				t.Errorf("%s override=%v: unitTailscale = %v, want nil", goos, override, err)
-				continue
+		for _, tailscale := range []*bool{nil, boolPtr(false), boolPtr(true)} {
+			for _, webhooks := range []*bool{nil, boolPtr(false), boolPtr(true)} {
+				flags := LaunchFlags{Tailscale: tailscale, Webhooks: webhooks}
+				content := tc.render(unitArgs(tc.exe, flags))
+				got, err := unitLaunchFlags(goos, content)
+				if err != nil {
+					t.Errorf("%s %+v: unitLaunchFlags = %v, want nil", goos, flags, err)
+					continue
+				}
+				if diff := cmp.Diff(flags, got); diff != "" {
+					t.Errorf("%s: unitLaunchFlags mismatch (-want +got):\n%s", goos, diff)
+				}
 			}
-			if got != override {
-				t.Errorf("%s: unitTailscale = %v, want %v", goos, got, override)
-			}
+		}
+	}
+}
+
+// Explicit boolean spellings and either flag order are accepted, since
+// they are what a person would type into a hand-repaired unit and mean
+// exactly one thing.
+func TestFlagsFromArgsAcceptsExplicitBooleans(t *testing.T) {
+	got, err := flagsFromArgs([]string{"/opt/atc", "server", "run", "--webhooks=true", "--tailscale=0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := LaunchFlags{Tailscale: boolPtr(false), Webhooks: boolPtr(true)}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("flagsFromArgs mismatch (-want +got):\n%s", diff)
+	}
+	for name, args := range map[string][]string{
+		"duplicate flag":   {"/opt/atc", "server", "run", "--tailscale", "--tailscale=false"},
+		"unknown flag":     {"/opt/atc", "server", "run", "--port=1"},
+		"non-boolean":      {"/opt/atc", "server", "run", "--webhooks=maybe"},
+		"positional":       {"/opt/atc", "server", "run", "tailscale"},
+		"wrong subcommand": {"/opt/atc", "serve"},
+	} {
+		if _, err := flagsFromArgs(args); err == nil {
+			t.Errorf("%s: flagsFromArgs(%q) = nil error, want unrecognized", name, args)
 		}
 	}
 }
 
 // Anything but the exact shapes renderUnit has ever produced is an error:
 // lifecycle and status must fail loudly instead of guessing.
-func TestUnitTailscaleRejectsUnrecognizedContent(t *testing.T) {
+func TestUnitLaunchFlagsRejectsUnrecognizedContent(t *testing.T) {
 	env := [][2]string{{"PATH", "/usr/bin"}}
 	for name, tc := range map[string]struct {
 		goos    string
 		content string
 	}{
 		"darwin not xml":             {"darwin", "not a plist"},
-		"darwin systemd content":     {"darwin", systemdUnit(unitArgs("/opt/atc", false), env)},
+		"darwin systemd content":     {"darwin", systemdUnit(unitArgs("/opt/atc", LaunchFlags{}), env)},
 		"darwin extra argument":      {"darwin", launchAgentPlist([]string{"/opt/atc", "server", "run", "--port"}, "/l", env)},
 		"darwin wrong subcommand":    {"darwin", launchAgentPlist([]string{"/opt/atc", "serve"}, "/l", env)},
 		"darwin non-string argument": {"darwin", `<plist><dict><key>ProgramArguments</key><array><integer>1</integer></array></dict></plist>`},
@@ -181,7 +218,7 @@ func TestUnitTailscaleRejectsUnrecognizedContent(t *testing.T) {
 		"darwin arguments in nested dict": {"darwin", `<plist><dict><key>Nested</key><dict><key>ProgramArguments</key><array>` +
 			`<string>/opt/atc</string><string>server</string><string>run</string><string>--tailscale</string></array></dict></dict></plist>`},
 		"linux garbage":           {"linux", "garbage"},
-		"linux plist content":     {"linux", launchAgentPlist(unitArgs("/opt/atc", false), "/l", env)},
+		"linux plist content":     {"linux", launchAgentPlist(unitArgs("/opt/atc", LaunchFlags{}), "/l", env)},
 		"linux missing ExecStart": {"linux", "[Service]\nType=simple\n"},
 		"linux ExecStart outside Service": {"linux",
 			"[Unit]\nExecStart=\"/opt/atc\" \"server\" \"run\" \"--tailscale\"\n[Service]\nType=simple\n"},
@@ -192,8 +229,8 @@ func TestUnitTailscaleRejectsUnrecognizedContent(t *testing.T) {
 		"linux unterminated quote":  {"linux", "[Service]\nExecStart=\"/opt/atc\" \"server\" \"run\n"},
 		"linux duplicate ExecStart": {"linux", "[Service]\nExecStart=\"/opt/atc\" \"server\" \"run\"\nExecStart=\"/opt/atc\" \"server\" \"run\"\n"},
 	} {
-		if _, err := unitTailscale(tc.goos, tc.content); err == nil {
-			t.Errorf("%s: unitTailscale = nil error, want unrecognized-content error", name)
+		if _, err := unitLaunchFlags(tc.goos, tc.content); err == nil {
+			t.Errorf("%s: unitLaunchFlags = nil error, want unrecognized-content error", name)
 		}
 	}
 }

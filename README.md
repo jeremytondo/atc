@@ -30,6 +30,32 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 
 Glossary of terms can be found in GLOSSARY.md
 
+## Webhook ingress
+
+ATC can receive webhooks from external systems on an always-on machine
+without a separate receiver or tunnel. Set `webhooks = true` in
+`config.toml` (or pass `--webhooks` to `atc server start`, `restart`, or
+`run`) and the server runs a restricted receiver process behind
+[Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel) on
+the machine's existing Tailscale identity, publicly, on `webhooks_port`
+(443 by default). This is independent of `tailscale = true`, which exposes
+the private API on the tailnet only.
+
+The receiver is a child of the server confined with Linux Landlock and
+seccomp; it proves it can reach nothing but the server's delivery channel
+before anything is exposed, and exposure ends with the server process
+however it ends. Every delivery is verified inside the server by the
+Integration that owns its route; only authorized deliveries are stored,
+acknowledged, and processed. Enabling Funnel is a one-time tailnet policy
+step: the server keeps running and `atc server status` (or
+`GET /v1/webhooks`) shows the approval link, the endpoint's readiness, and
+the inbox. The public hostname becomes part of a public certificate log,
+as with any Funnel. Unsupported platforms and kernels leave only webhook
+intake unavailable, with the reason in status.
+
+`atc server start --help` documents how `--tailscale` and `--webhooks`
+behave across start, restart, and stop.
+
 ## Installing and upgrading
 
 ```sh
