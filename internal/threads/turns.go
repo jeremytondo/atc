@@ -197,7 +197,11 @@ func (s *Service) applyStatus(record *store.ThreadRecord, status api.ThreadStatu
 			changed = s.applyTurn(record, *turn, at) || changed
 		}
 	}
-	return settleTurn(record, turn, at) || changed
+	changed = settleTurn(record, turn, at) || changed
+	if record.Pending == nil {
+		s.forgetPrior(record.ID)
+	}
+	return changed
 }
 
 // applyTurn matches a reported turn to the record's turns and applies
@@ -218,7 +222,6 @@ func (s *Service) applyTurn(record *store.ThreadRecord, o TurnObservation, at ti
 		record.Turn = &store.TurnRecord{ID: pending.ID, ProviderID: o.ProviderID}
 		updateTurn(record.Turn, o, state, at)
 		record.Pending = nil
-		s.forgetPrior(record.ID)
 		return true
 	}
 	if current := ownTurn(record); current != nil {

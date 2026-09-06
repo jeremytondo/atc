@@ -127,6 +127,23 @@ func (s *Service) SubmitMessage(ctx context.Context, id string, sub Submission) 
 	return messageFrom(message)
 }
 
+// MessageByKey returns the message recorded under the client's key, as
+// it stands — a rejected one as ErrMessageRejected — or ErrNotFound. A
+// replay is answered from here before anything reaches the provider.
+func (s *Service) MessageByKey(ctx context.Context, id, key string) (api.ThreadMessage, error) {
+	if _, ok := s.snapshot(id); !ok {
+		return api.ThreadMessage{}, ErrNotFound
+	}
+	existing, err := s.repository.MessageByKey(ctx, id, key)
+	if errors.Is(err, store.ErrMessageNotFound) {
+		return api.ThreadMessage{}, fmt.Errorf("%w: no message under key %q", ErrNotFound, key)
+	}
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	return messageFrom(existing)
+}
+
 // MessageDelivered records the provider committing a message: delivery
 // accepted, for good.
 func (s *Service) MessageDelivered(ctx context.Context, id, messageID string) (api.ThreadMessage, error) {
@@ -159,30 +176,33 @@ func (s *Service) MessageRejected(ctx context.Context, id, messageID, reason str
 		return err
 	}
 	now := s.now()
+	// The pending turn is withdrawn before the rejection is recorded: a
+	// message still uncertain after a failed withdrawal is retried under
+	// its key — the program answers the rejection again — whereas a
+	// rejection recorded over a stranded pending turn would block the
+	// thread for good.
+	if record, ok := s.snapshot(id); ok && record.Pending != nil && record.Pending.ID == message.TurnID {
+		record.Pending = nil
+		s.mu.Lock()
+		prior, remembered := s.priorStatus[id]
+		s.mu.Unlock()
+		if remembered {
+			record.Status, record.StatusDetail = prior.status, prior.detail
+		} else {
+			record.Status, record.StatusDetail = string(api.ThreadUnknown), ""
+		}
+		record.UpdatedAt = now
+		if err := s.persist(ctx, record); err != nil {
+			return err
+		}
+		s.forgetPrior(id)
+		s.hub.Publish(api.EventThreadUpdated, resource, id)
+	}
 	if message.Delivery != messageRejected {
 		if _, err := s.repository.SetMessageDelivery(ctx, messageID, messageRejected, reason, now); err != nil {
 			return err
 		}
 	}
-	record, ok := s.snapshot(id)
-	if !ok || record.Pending == nil || record.Pending.ID != message.TurnID {
-		return nil
-	}
-	record.Pending = nil
-	s.mu.Lock()
-	prior, remembered := s.priorStatus[id]
-	delete(s.priorStatus, id)
-	s.mu.Unlock()
-	if remembered {
-		record.Status, record.StatusDetail = prior.status, prior.detail
-	} else {
-		record.Status, record.StatusDetail = string(api.ThreadUnknown), ""
-	}
-	record.UpdatedAt = now
-	if err := s.persist(ctx, record); err != nil {
-		return err
-	}
-	s.hub.Publish(api.EventThreadUpdated, resource, id)
 	return nil
 }
 

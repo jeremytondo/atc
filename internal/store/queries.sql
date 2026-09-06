@@ -116,9 +116,11 @@ SELECT * FROM thread_messages WHERE id = ?;
 -- name: UpdateThreadMessageDelivery :execrows
 UPDATE thread_messages SET delivery = ?, detail = ?, updated_at = ? WHERE id = ?;
 
--- Keeps a thread's newest messages only; the domain names the bound.
+-- Keeps a thread's newest messages only; the domain names the bound. A
+-- message whose delivery is still uncertain is never pruned: it is the
+-- receipt a retry reconciles against.
 -- name: PruneThreadMessages :exec
-DELETE FROM thread_messages WHERE id IN (
+DELETE FROM thread_messages WHERE delivery != 'uncertain' AND id IN (
     SELECT older.id FROM thread_messages AS older WHERE older.thread_id = ?
     ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
 );

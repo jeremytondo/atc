@@ -93,7 +93,8 @@ type Options struct {
 //
 //	ops serializes each mutation's commit — database write, view change,
 //	    and event publish move as one unit — and guards opening.
-//	mu  guards the view, identity, hold, and active maps only.
+//	mu  guards the in-memory maps only: the view, identities, holds,
+//	    the active projection, approvals, and prior statuses.
 type Service struct {
 	repository *store.Threads
 	terminals  TerminalReader
@@ -130,9 +131,9 @@ type Service struct {
 	// Like active, it is evidence, re-established by observation after a
 	// boot.
 	held map[string]struct{}
-	// permissions holds each thread's permission requests as its
-	// Integration reports them (permissions.go): evidence, like active.
-	permissions map[string][]*permissionEntry
+	// approvals holds each thread's approval requests as its
+	// Integration reports them (approvals.go): evidence, like active.
+	approvals map[string][]*approvalEntry
 	// priorStatus remembers, per thread with a pending submission, the
 	// status the submission provisionally replaced (turns.go).
 	priorStatus map[string]priorStatus
@@ -170,7 +171,7 @@ func NewService(opts Options) *Service {
 		keys:        make(map[string]identityKey),
 		active:      make(map[string]string),
 		held:        make(map[string]struct{}),
-		permissions: make(map[string][]*permissionEntry),
+		approvals:   make(map[string][]*approvalEntry),
 		priorStatus: make(map[string]priorStatus),
 	}
 }
@@ -837,8 +838,8 @@ func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, prov
 	}
 	delete(s.held, threadID)
 	// Nothing is pending on a conversation the program dropped.
-	if len(s.pendingPermissions(threadID)) > 0 {
-		delete(s.permissions, threadID)
+	if len(s.pendingApprovals(threadID)) > 0 {
+		delete(s.approvals, threadID)
 		changed = true
 	}
 	s.mu.Unlock()
@@ -1032,6 +1033,20 @@ func (s *Service) LookupIdentity(integrationID, providerID string) (threadID, te
 	return id, terminalID, true
 }
 
+// Identity resolves a thread to its private identity — the producing
+// Integration and its own conversation id — for the application
+// coordinator to hand to that Integration's seams (ATC-307). It never
+// reaches the wire.
+func (s *Service) Identity(id string) (integrationID, providerID string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.view[id]; !ok {
+		return "", "", ErrNotFound
+	}
+	key := s.keys[id]
+	return key.integrationID, key.providerID, nil
+}
+
 // ActiveThreadID is the projection terminals expose: the thread whose
 // conversation the terminal has open, or empty. The server layer decorates
 // terminal responses with it.
@@ -1197,7 +1212,7 @@ func (s *Service) remove(ctx context.Context, id string) error {
 	s.mu.Lock()
 	delete(s.view, id)
 	s.forgetIdentity(id)
-	delete(s.permissions, id)
+	delete(s.approvals, id)
 	delete(s.priorStatus, id)
 	s.mu.Unlock()
 	s.hub.Publish(api.EventThreadDeleted, resource, id)
@@ -1446,7 +1461,7 @@ func (s *Service) thread(record store.ThreadRecord) api.Thread {
 	thread := threadFrom(record)
 	s.mu.Lock()
 	key := s.keys[record.ID]
-	thread.Permissions = s.pendingPermissions(record.ID)
+	thread.Approvals = s.pendingApprovals(record.ID)
 	s.mu.Unlock()
 	if linker, ok := s.linkers[record.IntegrationID]; ok {
 		thread.Links = linker(key.providerID)

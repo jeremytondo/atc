@@ -78,9 +78,11 @@ type Server struct {
 	commands []map[string]any
 	sequence uint64
 	// details answers thread detail snapshot reads by thread id (absent
-	// answers 404); detailReads counts the reads per thread.
+	// answers 404); detailReads counts the reads per thread; detailDelay
+	// holds each read before it is answered.
 	details     map[string]map[string]any
 	detailReads map[string]int
+	detailDelay time.Duration
 }
 
 type session struct {
@@ -209,6 +211,14 @@ func (s *Server) SetThreadDetail(threadID string, detail map[string]any) {
 	s.details[threadID] = detail
 }
 
+// SetDetailDelay holds every thread detail snapshot read for d before
+// answering — a slow read, for tests of what happens meanwhile.
+func (s *Server) SetDetailDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.detailDelay = d
+}
+
 // DetailReads reports how many thread detail snapshot reads a thread has
 // received.
 func (s *Server) DetailReads(threadID string) int {
@@ -221,15 +231,20 @@ func (s *Server) DetailReads(threadID string) int {
 // authenticates it, and an unknown thread is 404.
 func (s *Server) threadDetail(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if _, ok := s.tokens[token]; !ok {
-		http.Error(w, `{"code":"auth_invalid"}`, http.StatusUnauthorized)
-		return
-	}
+	_, authorized := s.tokens[token]
 	threadID := r.PathValue("threadId")
 	s.detailReads[threadID]++
 	detail, ok := s.details[threadID]
+	delay := s.detailDelay
+	s.mu.Unlock()
+	if !authorized {
+		http.Error(w, `{"code":"auth_invalid"}`, http.StatusUnauthorized)
+		return
+	}
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if !ok {
 		http.Error(w, `{"code":"not_found","reason":"thread_not_found"}`, http.StatusNotFound)
 		return
@@ -609,6 +624,17 @@ func LatestTurn(id, state string, startedAt, completedAt any) ThreadOpt {
 	}
 }
 
+// InteractionMode sets the thread's interaction mode ("default" or
+// "plan"); ThreadItem omits it, as T3 does for the default.
+func InteractionMode(mode string) ThreadOpt {
+	return func(m map[string]any) { m["interactionMode"] = mode }
+}
+
+// RuntimeMode sets the thread's runtime mode.
+func RuntimeMode(mode string) ThreadOpt {
+	return func(m map[string]any) { m["runtimeMode"] = mode }
+}
+
 // AssistantMessage names the latest turn's final assistant message; use
 // after LatestTurn.
 func AssistantMessage(id string) ThreadOpt {
@@ -636,6 +662,79 @@ func ThreadDetailItem(thread map[string]any, messages ...map[string]any) map[str
 	}
 	detail["messages"], detail["activities"], detail["checkpoints"], detail["proposedPlans"] = list, []any{}, []any{}, []any{}
 	return map[string]any{"snapshotSequence": 1, "thread": detail}
+}
+
+// ApprovalOption is one decision an approval request offers, in T3's
+// vocabulary (accept, acceptForSession, acceptAlways, decline, cancel).
+func ApprovalOption(decision, label string) map[string]any {
+	return map[string]any{"decision": decision, "label": label}
+}
+
+// ApprovalRequested is an approval.requested activity for a request of
+// T3's requestType (command_execution_approval, file_change_approval,
+// mcp_elicitation_approval, ...) with the given detail and options; no
+// options leaves T3's default choice to the reader.
+func ApprovalRequested(id, requestID, requestType, detail string, options ...map[string]any) map[string]any {
+	kind, summary := "", "Approval requested"
+	switch requestType {
+	case "command_execution_approval", "exec_command_approval":
+		kind, summary = "command", "Command approval requested"
+	case "file_read_approval":
+		kind, summary = "file-read", "File-read approval requested"
+	case "file_change_approval", "apply_patch_approval":
+		kind, summary = "file-change", "File-change approval requested"
+	case "mcp_elicitation_approval":
+		kind, summary = "mcp-elicitation", "App access approval requested"
+	}
+	payload := map[string]any{"requestId": requestID, "requestType": requestType}
+	if kind != "" {
+		payload["requestKind"] = kind
+	}
+	if detail != "" {
+		payload["detail"] = detail
+	}
+	if len(options) > 0 {
+		list := make([]any, 0, len(options))
+		for _, option := range options {
+			list = append(list, option)
+		}
+		payload["options"] = list
+	}
+	return activityItem(id, "approval", "approval.requested", summary, payload)
+}
+
+// ApprovalResolved is an approval.resolved activity.
+func ApprovalResolved(id, requestID, decision string) map[string]any {
+	return activityItem(id, "approval", "approval.resolved", "Approval resolved", map[string]any{"requestId": requestID, "requestType": "command_execution_approval", "decision": decision})
+}
+
+// ApprovalRespondFailed is the error activity T3 appends when a decision
+// could not be delivered to the provider, with T3's detail text.
+func ApprovalRespondFailed(id, requestID, detail string) map[string]any {
+	return activityItem(id, "error", "provider.approval.respond.failed", "Provider approval response failed", map[string]any{"detail": detail, "requestId": requestID})
+}
+
+// ActivityItem is any other activity, with an opaque payload.
+func ActivityItem(id, kind string, payload any) map[string]any {
+	return activityItem(id, "info", kind, kind, payload)
+}
+
+func activityItem(id, tone, kind, summary string, payload any) map[string]any {
+	return map[string]any{
+		"id": id, "tone": tone, "kind": kind, "summary": summary, "payload": payload, "turnId": nil,
+		"createdAt": "2026-09-01T00:00:0" + id[len(id)-1:] + "Z",
+	}
+}
+
+// WithActivities puts activities on a thread detail snapshot
+// (ThreadDetailItem).
+func WithActivities(detail map[string]any, activities ...map[string]any) map[string]any {
+	list := make([]any, 0, len(activities))
+	for _, activity := range activities {
+		list = append(list, activity)
+	}
+	detail["thread"].(map[string]any)["activities"] = list
+	return detail
 }
 
 // Pending sets the pending-approval and pending-input flags.

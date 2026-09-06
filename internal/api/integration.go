@@ -30,9 +30,9 @@ const (
 	// conversations in its program (POST /v1/threads/{id}/messages,
 	// ATC-307).
 	CapabilityThreadSend IntegrationCapability = "threads.send"
-	// CapabilityThreadDecide: the Integration decides pending permission
+	// CapabilityThreadDecide: the Integration decides pending approval
 	// requests in its program (POST
-	// /v1/threads/{id}/permissions/{permissionId}/decision, ATC-307).
+	// /v1/threads/{id}/approvals/{approvalId}/decide, ATC-307).
 	CapabilityThreadDecide IntegrationCapability = "threads.decide"
 )
 

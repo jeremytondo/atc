@@ -11,5 +11,7 @@
 * **Space** — a group of Terminals with a default directory. Part of the Terminals domain.
 * **Thread** — one conversation with an Agent, owned by a Provider, tracked and, where supported, driven by ATC.
 * **Turn** — one execution on a Thread, from a prompt to the agent's final response. Part of the Threads domain.
+* **Message** — one text a Client sends into an existing Thread through ATC; it starts the next Turn or directs the one running, and ATC keeps its identity so a lost answer is recovered rather than sent twice. Part of the Threads domain.
+* **Approval request** — a request for approval an Agent is blocked on inside a Thread, as its Provider reports it; ATC presents it with the decisions it offers and relays exactly one. Part of the Threads domain.
 * **Client** — anything outside ATC that uses the API.
 * **API** — the contract through which Clients reach ATC's domains and capabilities.

@@ -422,7 +422,7 @@ func TestThreadCreateCLI(t *testing.T) {
 	if id == "" {
 		t.Fatalf("create output has no id:\n%s", stdout)
 	}
-	for _, want := range []string{"t3code", "codex", "working", "Fix the build", projectID, "gpt-5.6-sol", "latest turn", "turn-", "running",
+	for _, want := range []string{"t3code", "codex", "working", "Fix the build", projectID, "gpt-5.6-sol", "pending turn", "turn-", "turn submitted",
 		ts.t3Server.Origin() + "/env-1/", "t3code://threads/env-1/"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("create output lacks %q:\n%s", want, stdout)

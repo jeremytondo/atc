@@ -16,11 +16,13 @@ import (
 
 // The atc thread family: the front door to agent conversations (ATC-282)
 // — open puts you in front of any conversation, live or dormant — create
-// starts one with a prompt in an integration's own program (ATC-289) —
-// plus the reads and the two mutations over observed conversations
-// (ATC-255). Conversations started in an ATC terminal app (`atc terminal
-// create --app`) are observed into existence from their first prompt.
-// archive/unarchive are thin sugar over PATCH.
+// starts one with a prompt in an integration's own program (ATC-289),
+// send continues one and prints its reply, approve, deny, and decide
+// answer what it is blocked on (ATC-307, send.go) — plus the reads and the two
+// mutations over observed conversations (ATC-255). Conversations started
+// in an ATC terminal app (`atc terminal create --app`) are observed into
+// existence from their first prompt. archive/unarchive are thin sugar
+// over PATCH.
 
 func newThreadCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -28,10 +30,10 @@ func newThreadCmd() *cobra.Command {
 		Short: "Start, open, and manage agent conversations",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc thread <create|open|list|get|update|archive|unarchive|delete>")
+			return fmt.Errorf("usage: atc thread <create|send|approve|deny|decide|open|list|get|update|archive|unarchive|delete>")
 		},
 	}
-	cmd.AddCommand(newThreadCreateCmd(), newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(),
+	cmd.AddCommand(newThreadCreateCmd(), newThreadSendCmd(), newThreadApproveCmd(), newThreadDenyCmd(), newThreadDecideCmd(), newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(),
 		newThreadUpdateCmd(), newThreadArchiveCmd(), newThreadUnarchiveCmd(), newThreadDeleteCmd())
 	return cmd
 }
@@ -368,6 +370,20 @@ func printThread(out io.Writer, thread api.Thread) {
 			_, _ = fmt.Fprintf(w, "turn error\t%s\n", turn.Error)
 		}
 	}
+	if pending := thread.PendingTurn; pending != nil {
+		_, _ = fmt.Fprintf(w, "pending turn\t%s\n", pending.ID)
+		_, _ = fmt.Fprintf(w, "turn submitted\t%s\n", pending.SubmittedAt.Format("2006-01-02 15:04:05 MST"))
+	}
+	for _, approval := range thread.Approvals {
+		_, _ = fmt.Fprintf(w, "approval\t%s  %s: %s\n", approval.ID, approval.Kind, approval.Summary)
+		if approval.Detail != "" {
+			_, _ = fmt.Fprintf(w, "  detail\t%s\n", approval.Detail)
+		}
+		if approval.AppName != "" {
+			_, _ = fmt.Fprintf(w, "  app\t%s\n", approval.AppName)
+		}
+		_, _ = fmt.Fprintf(w, "  decisions\t%s\n", approvalOptions(approval))
+	}
 	if thread.LastEvidenceAt != nil {
 		_, _ = fmt.Fprintf(w, "last evidence\t%s\n", thread.LastEvidenceAt.Format("2006-01-02 15:04:05 MST"))
 	}
@@ -376,5 +392,43 @@ func printThread(out io.Writer, thread api.Thread) {
 		_, _ = fmt.Fprintf(w, "app\t%s\n", thread.Links.App)
 	}
 	_, _ = fmt.Fprintf(w, "created\t%s\n", thread.CreatedAt.Format("2006-01-02 15:04:05 MST"))
+	_ = w.Flush()
+}
+
+// approvalOptions renders a request's offered decisions as
+// "decision (Label)" pairs, with any warning.
+func approvalOptions(approval api.ThreadApproval) string {
+	options := make([]string, 0, len(approval.Options))
+	for _, option := range approval.Options {
+		text := fmt.Sprintf("%s (%s)", option.Decision, option.Label)
+		if option.Warning != "" {
+			text += " — " + option.Warning
+		}
+		options = append(options, text)
+	}
+	return strings.Join(options, ", ")
+}
+
+func printApproval(out io.Writer, approval api.ThreadApproval) {
+	w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
+	_, _ = fmt.Fprintf(w, "id\t%s\n", approval.ID)
+	_, _ = fmt.Fprintf(w, "thread\t%s\n", approval.ThreadID)
+	_, _ = fmt.Fprintf(w, "status\t%s\n", approval.Status)
+	_, _ = fmt.Fprintf(w, "kind\t%s\n", approval.Kind)
+	_, _ = fmt.Fprintf(w, "summary\t%s\n", approval.Summary)
+	if approval.Detail != "" {
+		_, _ = fmt.Fprintf(w, "detail\t%s\n", approval.Detail)
+	}
+	if approval.AppName != "" {
+		_, _ = fmt.Fprintf(w, "app\t%s\n", approval.AppName)
+	}
+	_, _ = fmt.Fprintf(w, "decisions\t%s\n", approvalOptions(approval))
+	if approval.Decision != "" {
+		_, _ = fmt.Fprintf(w, "decision\t%s\n", approval.Decision)
+	}
+	_, _ = fmt.Fprintf(w, "requested\t%s\n", approval.RequestedAt.Format("2006-01-02 15:04:05 MST"))
+	if approval.ResolvedAt != nil {
+		_, _ = fmt.Fprintf(w, "resolved\t%s\n", approval.ResolvedAt.Format("2006-01-02 15:04:05 MST"))
+	}
 	_ = w.Flush()
 }

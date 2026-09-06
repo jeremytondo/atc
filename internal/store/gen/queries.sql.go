@@ -991,7 +991,7 @@ func (q *Queries) PruneLinearOutbox(ctx context.Context, cutoff sql.NullString) 
 }
 
 const pruneThreadMessages = `-- name: PruneThreadMessages :exec
-DELETE FROM thread_messages WHERE id IN (
+DELETE FROM thread_messages WHERE delivery != 'uncertain' AND id IN (
     SELECT older.id FROM thread_messages AS older WHERE older.thread_id = ?
     ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
 )
@@ -1002,7 +1002,9 @@ type PruneThreadMessagesParams struct {
 	Offset   int64
 }
 
-// Keeps a thread's newest messages only; the domain names the bound.
+// Keeps a thread's newest messages only; the domain names the bound. A
+// message whose delivery is still uncertain is never pruned: it is the
+// receipt a retry reconciles against.
 func (q *Queries) PruneThreadMessages(ctx context.Context, arg PruneThreadMessagesParams) error {
 	_, err := q.db.ExecContext(ctx, pruneThreadMessages, arg.ThreadID, arg.Offset)
 	return err

@@ -14,13 +14,16 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// Five verbs on /v1/threads (ATC-255, ATC-289): create starts a
-// conversation in an Integration's program — the one write that reaches
-// outside ATC — and archive/unarchive is a PATCH of archived. Putting a
-// user in front of a conversation is a terminal create with threadId
-// (ATC-297), not an action here. Handlers are thin Huma wrappers around
-// the shared wire structs; policy lives in the threads service and, for
-// create, the application coordinator.
+// Five verbs on /v1/threads (ATC-255, ATC-289), plus the two
+// interactions that drive a conversation from outside (ATC-307): create
+// starts a conversation in an Integration's program, a message continues
+// one, an approval decision answers what it is blocked on — the writes
+// that reach outside ATC — and archive/unarchive is a PATCH of archived.
+// Putting a user in front of a conversation is a terminal create with
+// threadId (ATC-297), not an action here. Handlers are thin Huma
+// wrappers around the shared wire structs; policy lives in the threads
+// service and, for the writes that reach a program, the application
+// coordinator.
 
 type threadOutput struct {
 	Body api.Thread
@@ -32,6 +35,14 @@ type threadListOutput struct {
 
 type threadIDInput struct {
 	ID string `path:"id" doc:"Thread identifier."`
+}
+
+type threadMessageOutput struct {
+	Body api.ThreadMessage
+}
+
+type threadApprovalOutput struct {
+	Body api.ThreadApproval
 }
 
 func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *application.Coordinator) {
@@ -99,6 +110,42 @@ func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *ap
 	})
 
 	huma.Register(humaAPI, huma.Operation{
+		OperationID:   "send-thread-message",
+		Method:        http.MethodPost,
+		Path:          "/v1/threads/{id}/messages",
+		Summary:       "Send a message to a thread",
+		Description:   "Directs a text message at an existing conversation under its current agent, model, and settings: on an idle thread it starts the next turn (the thread's pendingTurn, bound to the provider's turn once it starts); while a turn runs it applies at the next opportunity the provider supports — folded into the running turn where the provider steers, started once it ends otherwise — with no queue mode of ATC's own. Returns 202 with the message and its turnId: the execution to wait on, followed through pendingTurn and latestTurn and never a later turn. delivery is accepted once the program committed the message, uncertain when it never answered; a resubmission with the same key returns the recorded message, retrying an uncertain delivery with the exact same command (the program deduplicates), so a lost answer never sends twice. A pending question or approval is not interpreted: the text is sent as any other, and the thread keeps showing what the provider does. Refusals: 400 for blank text or an Integration that cannot send, 404 for an unknown thread, 409 while another submission is pending on the thread, 503 while the Integration is not connected, 502 when the program rejects the message (the detail is its own; nothing remains to wait on).",
+		DefaultStatus: http.StatusAccepted,
+	}, func(ctx context.Context, input *struct {
+		ID   string `path:"id" doc:"Thread identifier."`
+		Body api.ThreadMessageParams
+	}) (*threadMessageOutput, error) {
+		message, err := coordinator.SendMessage(ctx, input.ID, input.Body)
+		if err != nil {
+			return nil, mapThreadMessageError(err)
+		}
+		return &threadMessageOutput{Body: message}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "decide-thread-approval",
+		Method:      http.MethodPost,
+		Path:        "/v1/threads/{id}/approvals/{approvalId}/decide",
+		Summary:     "Decide a pending approval request",
+		Description: "Answers one approval request the thread's agent is blocked on (the thread's approvals) with one of the decisions it offers. Returns the request resolved with the decision once the program committed it; the provider's reaction then shows through the thread's status. Refusals: 400 for a decision the request does not offer or an Integration that cannot decide, 404 for an unknown thread or request, 409 for a request already resolved — through ATC or elsewhere — or one whose different decision still awaits the program's answer, 503 while the Integration is not connected, 502 when the program rejects the decision (the request stays open) or never answers it (the same decision again reconciles; no other is taken until it does).",
+	}, func(ctx context.Context, input *struct {
+		ID         string `path:"id" doc:"Thread identifier."`
+		ApprovalID string `path:"approvalId" doc:"Approval request identifier."`
+		Body       api.ApprovalDecisionParams
+	}) (*threadApprovalOutput, error) {
+		approval, err := coordinator.DecideApproval(ctx, input.ID, input.ApprovalID, input.Body)
+		if err != nil {
+			return nil, mapThreadApprovalError(err)
+		}
+		return &threadApprovalOutput{Body: approval}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
 		OperationID:   "delete-thread",
 		Method:        http.MethodDelete,
 		Path:          "/v1/threads/{id}",
@@ -137,6 +184,50 @@ func mapThreadCreateError(err error) error {
 		return problem(http.StatusBadGateway, api.CodeThreadCreationFailed, err.Error())
 	case errors.Is(err, threads.ErrNoLocalDirectory):
 		return problem(http.StatusUnprocessableEntity, api.CodeProjectDirectoryInvalid, err.Error())
+	}
+	return mapThreadError(err)
+}
+
+// mapThreadMessageError maps a message's refusals (ATC-307).
+func mapThreadMessageError(err error) error {
+	switch {
+	case errors.Is(err, threads.ErrMessageInvalid):
+		return problem(http.StatusBadRequest, api.CodeValidationFailed, err.Error())
+	case errors.Is(err, integrations.ErrNotFound):
+		return problem(http.StatusBadRequest, api.CodeIntegrationNotFound, err.Error())
+	case errors.Is(err, integrations.ErrThreadSendUnsupported):
+		return problem(http.StatusBadRequest, api.CodeThreadSendUnsupported, err.Error())
+	case errors.Is(err, threads.ErrTurnPending):
+		return problem(http.StatusConflict, api.CodeThreadTurnPending, err.Error())
+	case errors.Is(err, integrations.ErrNotConnected):
+		return problem(http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, err.Error())
+	case errors.Is(err, integrations.ErrMessageRejected), errors.Is(err, threads.ErrMessageRejected):
+		return problem(http.StatusBadGateway, api.CodeThreadMessageRejected, err.Error())
+	}
+	return mapThreadError(err)
+}
+
+// mapThreadApprovalError maps a decision's refusals (ATC-307).
+func mapThreadApprovalError(err error) error {
+	switch {
+	case errors.Is(err, integrations.ErrNotFound):
+		return problem(http.StatusBadRequest, api.CodeIntegrationNotFound, err.Error())
+	case errors.Is(err, threads.ErrApprovalNotFound):
+		return problem(http.StatusNotFound, api.CodeApprovalNotFound, err.Error())
+	case errors.Is(err, threads.ErrApprovalResolved):
+		return problem(http.StatusConflict, api.CodeApprovalResolved, err.Error())
+	case errors.Is(err, threads.ErrDecisionPending):
+		return problem(http.StatusConflict, api.CodeApprovalDecisionPending, err.Error())
+	case errors.Is(err, threads.ErrDecisionNotOffered):
+		return problem(http.StatusBadRequest, api.CodeApprovalDecisionInvalid, err.Error())
+	case errors.Is(err, integrations.ErrThreadDecideUnsupported):
+		return problem(http.StatusBadRequest, api.CodeThreadDecideUnsupported, err.Error())
+	case errors.Is(err, integrations.ErrNotConnected):
+		return problem(http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, err.Error())
+	case errors.Is(err, integrations.ErrDecisionRejected):
+		return problem(http.StatusBadGateway, api.CodeApprovalDecisionFailed, err.Error())
+	case errors.Is(err, integrations.ErrDeliveryUncertain):
+		return problem(http.StatusBadGateway, api.CodeApprovalDecisionUnknown, err.Error())
 	}
 	return mapThreadError(err)
 }

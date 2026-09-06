@@ -245,9 +245,14 @@ func (t *Threads) InsertObserved(ctx context.Context, record ThreadRecord, ident
 // record. A terminal or project deleted since the record was read
 // surfaces as ErrForeignKeyViolation.
 func (t *Threads) Update(ctx context.Context, record ThreadRecord) (bool, error) {
+	n, err := t.writes.UpdateThread(ctx, updateThreadParams(record))
+	return n > 0, foreignKeyError(err)
+}
+
+func updateThreadParams(record ThreadRecord) gen.UpdateThreadParams {
 	turn := turnColumnsOf(record.Turn)
 	pending := pendingColumnsOf(record.Pending)
-	n, err := t.writes.UpdateThread(ctx, gen.UpdateThreadParams{
+	return gen.UpdateThreadParams{
 		AgentID:                nullString(record.AgentID),
 		ProjectID:              nullString(record.ProjectID),
 		TerminalID:             nullStringPtr(record.TerminalID),
@@ -274,8 +279,7 @@ func (t *Threads) Update(ctx context.Context, record ThreadRecord) (bool, error)
 		PendingTurnPrior:       pending.prior,
 		PendingTurnSubmittedAt: pending.submittedAt,
 		ID:                     record.ID,
-	})
-	return n > 0, foreignKeyError(err)
+	}
 }
 
 // AssignProject sets the project of a thread that has none; false means
@@ -390,18 +394,6 @@ func threadFrom(row gen.Thread) (ThreadRecord, error) {
 // ErrMessageNotFound reports a message id or key with no row.
 var ErrMessageNotFound = errors.New("thread message not found")
 
-// InsertMessage persists a message record; false reports an id
-// collision (the caller re-rolls). A key already recorded for the thread
-// is ErrMessageKeyTaken; a thread deleted since the caller read it
-// surfaces as ErrForeignKeyViolation.
-func (t *Threads) InsertMessage(ctx context.Context, record ThreadMessageRecord) (bool, error) {
-	n, err := t.writes.InsertThreadMessage(ctx, insertMessageParams(record))
-	if err != nil {
-		return false, messageError(err, record.Key)
-	}
-	return n > 0, nil
-}
-
 // ErrMessageKeyTaken reports a key the thread already has a message for.
 var ErrMessageKeyTaken = errors.New("message key already used")
 
@@ -417,36 +409,7 @@ func (t *Threads) SubmitMessage(ctx context.Context, record ThreadRecord, messag
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := gen.New(tx)
-	turn := turnColumnsOf(record.Turn)
-	pending := pendingColumnsOf(record.Pending)
-	n, err := queries.UpdateThread(ctx, gen.UpdateThreadParams{
-		AgentID:                nullString(record.AgentID),
-		ProjectID:              nullString(record.ProjectID),
-		TerminalID:             nullStringPtr(record.TerminalID),
-		Title:                  nullString(record.Title),
-		TitleUserSet:           boolInt(record.TitleUserSet),
-		Model:                  nullString(record.Model),
-		Effort:                 nullString(record.Effort),
-		Cwd:                    nullString(record.Cwd),
-		PermissionMode:         nullString(record.PermissionMode),
-		Status:                 record.Status,
-		StatusDetail:           nullString(record.StatusDetail),
-		LastEvidenceAt:         nullTime(record.LastEvidenceAt),
-		Archived:               boolInt(record.Archived),
-		ArchivedAt:             nullTime(record.ArchivedAt),
-		UpdatedAt:              formatTime(record.UpdatedAt),
-		TurnID:                 turn.id,
-		TurnProviderID:         turn.providerID,
-		TurnState:              turn.state,
-		TurnStartedAt:          turn.startedAt,
-		TurnCompletedAt:        turn.completedAt,
-		TurnError:              turn.err,
-		TurnResponse:           turn.response,
-		PendingTurnID:          pending.id,
-		PendingTurnPrior:       pending.prior,
-		PendingTurnSubmittedAt: pending.submittedAt,
-		ID:                     record.ID,
-	})
+	n, err := queries.UpdateThread(ctx, updateThreadParams(record))
 	if err != nil {
 		return false, foreignKeyError(err)
 	}
@@ -522,12 +485,6 @@ func (t *Threads) SetMessageDelivery(ctx context.Context, id, delivery, detail s
 		Delivery: delivery, Detail: nullString(detail), UpdatedAt: formatTime(at), ID: id,
 	})
 	return n > 0, err
-}
-
-// PruneMessages keeps a thread's newest keep messages and deletes the
-// rest.
-func (t *Threads) PruneMessages(ctx context.Context, threadID string, keep int) error {
-	return t.writes.PruneThreadMessages(ctx, gen.PruneThreadMessagesParams{ThreadID: threadID, Offset: int64(keep)})
 }
 
 func messageFrom(row gen.ThreadMessage) (ThreadMessageRecord, error) {
