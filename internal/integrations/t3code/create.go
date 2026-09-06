@@ -2,7 +2,6 @@ package t3code
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/ids"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/paths"
 )
@@ -62,7 +62,7 @@ func (s *Service) PrepareThread(ctx context.Context, req integrations.ThreadCrea
 	if projectID == "" {
 		return integrations.PreparedThread{}, fmt.Errorf("%w: %s is not registered in T3 Code", integrations.ErrProjectNotRegistered, req.Directory)
 	}
-	threadID := newUUID()
+	threadID := ids.UUID()
 	title := threadTitle(req.Prompt)
 	command := turnStartCommand(threadID, projectID, title, req, s.now())
 	return integrations.PreparedThread{
@@ -80,9 +80,9 @@ func (s *Service) PrepareThread(ctx context.Context, req integrations.ThreadCrea
 // reports as a failed creation with T3's message. The connection dropping
 // or the caller giving up before the answer leaves the outcome unknown:
 // when T3's shell has meanwhile reported the thread, it exists and the
-// creation succeeded; otherwise it reports as failed too, and a thread T3
-// did create arrives later as an observed one. No connection at all is
-// the not-connected refusal.
+// creation succeeded; otherwise it reports as failed too, marked
+// ErrThreadCreationUncertain, and a thread T3 did create arrives later as
+// an observed one. No connection at all is the not-connected refusal.
 func (s *Service) dispatch(ctx context.Context, client *rpcClient, threadID string, command map[string]any) error {
 	if client == nil {
 		return fmt.Errorf("%w: T3 Code's connection is not up", integrations.ErrNotConnected)
@@ -107,7 +107,7 @@ func (s *Service) dispatch(ctx context.Context, client *rpcClient, threadID stri
 		s.logger.Warn("t3code: T3 Code reported the thread before answering its create; treated as created", "thread", threadID, "error", err)
 		return nil
 	default:
-		return fmt.Errorf("%w: T3 Code did not answer: %w", integrations.ErrThreadCreationFailed, err)
+		return fmt.Errorf("%w: %w: T3 Code did not answer: %w", integrations.ErrThreadCreationFailed, integrations.ErrThreadCreationUncertain, err)
 	}
 }
 
@@ -137,10 +137,10 @@ func turnStartCommand(threadID, projectID, title string, req integrations.Thread
 	createdAt := now.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	return map[string]any{
 		"type":      "thread.turn.start",
-		"commandId": newUUID(),
+		"commandId": ids.UUID(),
 		"threadId":  threadID,
 		"message": map[string]any{
-			"messageId": newUUID(), "role": "user", "text": req.Prompt, "attachments": []any{},
+			"messageId": ids.UUID(), "role": "user", "text": req.Prompt, "attachments": []any{},
 		},
 		"modelSelection":  selection,
 		"titleSeed":       title,
@@ -174,14 +174,4 @@ func threadTitle(prompt string) string {
 		return string(runes[:titleLimit-3]) + "..."
 	}
 	return title
-}
-
-// newUUID mints a random (version 4) UUID: T3's ids are opaque strings,
-// and its own clients use UUIDs.
-func newUUID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

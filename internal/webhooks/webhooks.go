@@ -261,6 +261,13 @@ func (s *Service) Run(ctx context.Context) {
 	wg.Wait()
 }
 
+// Handler is the channel handler as an http.Handler: what the receiver's
+// connections reach. Exposed for the tests of the Integrations that
+// register routes; in production only the ingress serves it.
+func (s *Service) Handler() http.Handler {
+	return http.HandlerFunc(s.serveDelivery)
+}
+
 // serveDelivery is the channel handler — what the receiver's connections
 // reach, and the receiver's entire reach: registered routes and nothing
 // else. It runs one untrusted delivery through the acceptance path: route

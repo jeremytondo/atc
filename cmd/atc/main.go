@@ -29,6 +29,7 @@ import (
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
 	"github.com/jeremytondo/atc/internal/integrations/codex"
+	"github.com/jeremytondo/atc/internal/integrations/linear"
 	"github.com/jeremytondo/atc/internal/integrations/t3code"
 	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/paths"
@@ -681,12 +682,35 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	})
 	threadService.SetLinker(t3code.ID, t3Service.Links)
 
+	// Linear (ATC-302): the Integration that sends work in. It starts
+	// Threads through the application coordinator and reads them through
+	// the threads domain, so it is wired after both exist; its webhook
+	// route is registered with the ingress below, and its connection
+	// report reads the ingress state, which the closure resolves once the
+	// ingress exists.
+	linearSetupPath, err := paths.LinearSetupFile()
+	if err != nil {
+		return err
+	}
+	var webhookService *webhooks.Service
+	starter := &threadStarter{}
+	linearService := linear.New(linear.Options{
+		SetupPath:  linearSetupPath,
+		Repository: database.Linear(),
+		Starter:    starter,
+		Threads:    threadService,
+		Hub:        hub,
+		Ingress:    func(ctx context.Context) api.Webhooks { return webhookService.Status(ctx) },
+		Logger:     logger,
+	})
+
 	// One registration line per built-in Integration; a duplicate id fails
 	// the boot. The typed seams each implements are wired above — the
 	// catalog only describes them.
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
 			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
+			linear.Integration(linearService),
 		},
 	})
 	if err != nil {
@@ -706,13 +730,14 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Cleanups:     []func(string){claudeHooks.Deregister, codexObserver.Forget},
 		Logger:       logger,
 	})
+	starter.coordinator = coordinator
 
 	// Webhook ingress (ATC-306): the durable inbox and its worker always
 	// run, so deliveries accepted by an earlier launch complete even when
 	// intake is off now. Intake itself — the restricted receiver behind
 	// Tailscale Funnel — runs only when enabled, and proves it cannot read
 	// the bearer token or reach the API port before anything is exposed.
-	// Built-in Integrations register their routes here; none does yet.
+	// Built-in Integrations register their routes here.
 	var ingress *webhooks.IngressOptions
 	if cfg.Webhooks {
 		ingress = &webhooks.IngressOptions{
@@ -723,8 +748,9 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 			ProbePath:           tokenPath,
 		}
 	}
-	webhookService, err := webhooks.New(webhooks.Options{
+	webhookService, err = webhooks.New(webhooks.Options{
 		Repository: database.Webhooks(),
+		Routes:     []webhooks.Route{{IntegrationID: linear.ID, Path: linear.RoutePath, Handler: linearService}},
 		Ingress:    ingress,
 		Logger:     logger,
 	})
@@ -760,6 +786,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	background.Go(func() { codexObserver.Run(loopCtx) })
 	background.Go(func() { t3Service.Run(loopCtx) })
 	background.Go(func() { webhookService.Run(loopCtx) })
+	background.Go(func() { linearService.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve
@@ -775,4 +802,14 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	background.Wait()
 	exposure.Wait()
 	return serveErr
+}
+
+// threadStarter is the Linear Integration's creation seam, bound to the
+// coordinator after it exists: the catalog the coordinator routes through
+// lists the Integration, so the two cannot be constructed in one order.
+// The binding lands before any loop runs.
+type threadStarter struct{ coordinator *application.Coordinator }
+
+func (t *threadStarter) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
+	return t.coordinator.StartThread(ctx, params, recorded)
 }

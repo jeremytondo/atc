@@ -104,8 +104,8 @@ exec sleep 300
 		}
 		t.Fatalf("webhooks unavailable: %s\n%s", status.Reason, stderr.String())
 	}
-	if status.URL != "https://host.tailnet.ts.net" || len(status.Routes) != 0 || status.Pending != 0 {
-		t.Errorf("status = %+v, want ready at the public URL with an empty registry", status)
+	if status.URL != "https://host.tailnet.ts.net" || len(status.Routes) != 1 || status.Routes[0] != (api.WebhookRoute{IntegrationID: "linear", Path: "/linear"}) || status.Pending != 0 {
+		t.Errorf("status = %+v, want ready at the public URL with the Linear route registered", status)
 	}
 	match := regexp.MustCompile(`msg="webhook receiver started" pid=(\d+)`).FindStringSubmatch(stderr.String())
 	if match == nil {
@@ -175,9 +175,9 @@ func TestServerRunWebhooksDisabledStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != api.WebhooksDisabled || status.IntakeBlocked || len(status.Routes) != 0 {
+	if status.State != api.WebhooksDisabled || status.IntakeBlocked || len(status.Routes) != 1 || status.Routes[0].IntegrationID != "linear" {
 		raw, _ := json.Marshal(status)
-		t.Errorf("status = %s, want disabled with no routes", raw)
+		t.Errorf("status = %s, want disabled with the Linear route registered", raw)
 	}
 	cancel()
 	if err := <-done; err != nil {

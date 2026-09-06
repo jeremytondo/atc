@@ -8,6 +8,31 @@ import (
 	"database/sql"
 )
 
+type LinearOutbox struct {
+	ID            string
+	SessionID     string
+	Kind          string
+	Body          []byte
+	Attempts      int64
+	NextAttemptAt string
+	SentAt        sql.NullString
+	Failed        sql.NullString
+	CreatedAt     string
+}
+
+type LinearSession struct {
+	ID              string
+	Prompt          sql.NullString
+	State           string
+	ThreadID        sql.NullString
+	TurnID          sql.NullString
+	NoticedStatus   sql.NullString
+	CompletedSeenAt sql.NullString
+	Outcome         sql.NullString
+	CreatedAt       string
+	UpdatedAt       string
+}
+
 type Project struct {
 	ID        string
 	Name      string
@@ -40,33 +65,34 @@ type Terminal struct {
 }
 
 type Thread struct {
-	ID               string
-	IntegrationID    string
-	AppID            sql.NullString
-	AgentID          sql.NullString
-	InitialDirectory sql.NullString
-	ProjectID        sql.NullString
-	TerminalID       sql.NullString
-	Title            sql.NullString
-	TitleUserSet     int64
-	Model            sql.NullString
-	Effort           sql.NullString
-	Cwd              sql.NullString
-	PermissionMode   sql.NullString
-	Status           string
-	LastEvidenceAt   sql.NullString
-	Archived         int64
-	ArchivedAt       sql.NullString
-	CreatedAt        string
-	UpdatedAt        string
-	StatusDetail     sql.NullString
-	TurnID           sql.NullString
-	TurnProviderID   sql.NullString
-	TurnState        sql.NullString
-	TurnStartedAt    sql.NullString
-	TurnCompletedAt  sql.NullString
-	TurnError        sql.NullString
-	TurnResponse     sql.NullString
+	ID                 string
+	IntegrationID      string
+	AppID              sql.NullString
+	AgentID            sql.NullString
+	InitialDirectory   sql.NullString
+	ProjectID          sql.NullString
+	TerminalID         sql.NullString
+	Title              sql.NullString
+	TitleUserSet       int64
+	Model              sql.NullString
+	Effort             sql.NullString
+	Cwd                sql.NullString
+	PermissionMode     sql.NullString
+	Status             string
+	LastEvidenceAt     sql.NullString
+	Archived           int64
+	ArchivedAt         sql.NullString
+	CreatedAt          string
+	UpdatedAt          string
+	StatusDetail       sql.NullString
+	TurnID             sql.NullString
+	TurnProviderID     sql.NullString
+	TurnState          sql.NullString
+	TurnStartedAt      sql.NullString
+	TurnCompletedAt    sql.NullString
+	TurnError          sql.NullString
+	TurnResponse       sql.NullString
+	TurnSubmittedPrior sql.NullString
 }
 
 type ThreadIdentity struct {

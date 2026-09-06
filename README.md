@@ -56,6 +56,11 @@ intake unavailable, with the reason in status.
 `atc server start --help` documents how `--tailscale` and `--webhooks`
 behave across start, restart, and stop.
 
+The Linear Integration receives its deliveries here: an `@atc` mention on
+an issue starts one T3 Code conversation and posts the answer back. Setup
+is manual; see
+[`internal/integrations/linear/README.md`](internal/integrations/linear/README.md).
+
 ## Installing and upgrading
 
 ```sh

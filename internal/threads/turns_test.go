@@ -311,8 +311,10 @@ func TestSubmitTurnBinding(t *testing.T) {
 		t.Errorf("provider-started turn = %+v; want a fresh id", got)
 	}
 
-	// A submitted turn left unbound coerces with the hold and is not
-	// pending afterwards.
+	// A submitted turn left unbound coerces with the hold but stays a
+	// submission: the provider reconnecting — or a new server process over
+	// the same store — still binds its first new turn to the submitted id
+	// (ATC-302), and the prior turn re-reported still binds nothing.
 	pending, err := f.service.SubmitTurn(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -321,8 +323,33 @@ func TestSubmitTurnBinding(t *testing.T) {
 	if got := f.turn(t, id); got.ID != pending || got.State != api.TurnUnknown {
 		t.Errorf("unbound turn after release = %+v; want %s unknown", got, pending)
 	}
-	if _, err := f.service.SubmitTurn(ctx, id); err != nil {
-		t.Errorf("submission after the pending turn coerced = %v", err)
+	if _, err := f.service.SubmitTurn(ctx, id); !errors.Is(err, ErrTurnPending) {
+		t.Errorf("submission after the pending turn coerced = %v; want ErrTurnPending", err)
+	}
+	restarted := NewService(Options{Repository: f.store.Threads(), Terminals: f.terminals, Projects: f.store.Projects(), Hub: f.hub, Now: f.clock.Now})
+	if err := restarted.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.ObserveExternal(ctx, ExternalObservation{
+		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"), Status: api.ThreadIdle, Title: "T",
+		Turn: &TurnObservation{ProviderID: "pt-3", State: api.TurnCompleted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := restarted.Get(id); got.LatestTurn == nil || got.LatestTurn.ID != pending || got.LatestTurn.State != api.TurnUnknown {
+		t.Errorf("prior turn re-reported after restart = %+v; want %s still unknown", got.LatestTurn, pending)
+	}
+	if _, err := restarted.ObserveExternal(ctx, ExternalObservation{
+		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"), Status: api.ThreadIdle, Title: "T",
+		Turn: &TurnObservation{ProviderID: "pt-4", State: api.TurnCompleted, Response: "bound after restart"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := restarted.Get(id); got.LatestTurn == nil || got.LatestTurn.ID != pending || got.LatestTurn.State != api.TurnCompleted || got.LatestTurn.Response != "bound after restart" {
+		t.Errorf("first new turn after restart = %+v; want it bound to %s", got.LatestTurn, pending)
+	}
+	if _, err := restarted.SubmitTurn(ctx, id); err != nil {
+		t.Errorf("submission after binding = %v", err)
 	}
 }
 

@@ -82,18 +82,6 @@ type TurnObservation struct {
 	Response string
 }
 
-// pendingTurn is a submitted turn not yet bound to a provider turn: the
-// ATC id the submission returned, and the provider turn the thread held
-// before it, so the provider re-reporting that older turn is not
-// mistaken for the submitted one starting. Whether a submission is still
-// pending is read off the record (pendingSubmission), never off this
-// map alone, so a persist that fails leaves nothing to undo. Guarded by
-// ops.
-type pendingTurn struct {
-	turnID          string
-	priorProviderID string
-}
-
 // SubmitTurn records that ATC accepted a prompt submission for the
 // thread: a fresh turn id, running from now, with the thread working —
 // provisional facts the provider's first report of the turn replaces.
@@ -114,15 +102,15 @@ func (s *Service) SubmitTurn(ctx context.Context, id string) (string, error) {
 	if !ok {
 		return "", ErrNotFound
 	}
-	if pending, ok := s.pendingSubmission(record); ok {
-		return "", fmt.Errorf("%w: %s", ErrTurnPending, pending.turnID)
+	if _, ok := pendingSubmission(record); ok {
+		return "", fmt.Errorf("%w: %s", ErrTurnPending, record.Turn.ID)
 	}
 	now := s.now()
 	prior := ""
 	if record.Turn != nil {
 		prior = record.Turn.ProviderID
 	}
-	record.Turn = &store.TurnRecord{ID: ids.NewLong(turnPrefix), State: string(api.TurnRunning), StartedAt: now}
+	record.Turn = &store.TurnRecord{ID: ids.NewLong(turnPrefix), State: string(api.TurnRunning), StartedAt: now, SubmittedPrior: &prior}
 	record.Status = string(api.ThreadWorking)
 	record.StatusDetail = ""
 	record.UpdatedAt = now
@@ -133,7 +121,6 @@ func (s *Service) SubmitTurn(ctx context.Context, id string) (string, error) {
 	if !updated {
 		return "", ErrNotFound
 	}
-	s.pending[id] = pendingTurn{turnID: record.Turn.ID, priorProviderID: prior}
 	s.mu.Lock()
 	if entry, ok := s.view[id]; ok {
 		*entry = record
@@ -143,15 +130,20 @@ func (s *Service) SubmitTurn(ctx context.Context, id string) (string, error) {
 	return record.Turn.ID, nil
 }
 
-// pendingSubmission reports the record's unbound submitted turn, if its
-// latest turn still is one. Caller holds ops.
-func (s *Service) pendingSubmission(record store.ThreadRecord) (pendingTurn, bool) {
-	pending, ok := s.pending[record.ID]
-	if !ok || record.Turn == nil || record.Turn.ID != pending.turnID ||
-		record.Turn.ProviderID != "" || record.Turn.State != string(api.TurnRunning) {
-		return pendingTurn{}, false
+// pendingSubmission reports whether the record's latest turn is a
+// submission the provider has not started yet, and the provider turn it
+// followed. The mark is persisted with the turn (ATC-302), so a
+// submission survives a reconnect and a restart — which coerce the
+// provisional running state to unknown — and still binds to the first
+// provider turn reported that is not the prior one. Only a fault ends
+// it before the provider does.
+func pendingSubmission(record store.ThreadRecord) (prior string, ok bool) {
+	turn := record.Turn
+	if turn == nil || turn.SubmittedPrior == nil || turn.ProviderID != "" ||
+		turn.State != string(api.TurnRunning) && turn.State != string(api.TurnUnknown) {
+		return "", false
 	}
-	return pending, true
+	return *turn.SubmittedPrior, true
 }
 
 // applyStatus folds one observation's status, status detail, and turn
@@ -189,7 +181,7 @@ func (s *Service) applyStatus(record *store.ThreadRecord, status api.ThreadStatu
 	// A submitted turn the provider has not started yet is not ended by
 	// the provider's resting status: that status describes the thread
 	// before the submission. Only a fault or a loss of observation ends it.
-	_, pending := s.pendingSubmission(*record)
+	_, pending := pendingSubmission(*record)
 	return settleTurn(record, turn, at, pending) || changed
 }
 
@@ -207,13 +199,14 @@ func (s *Service) applyTurn(record *store.ThreadRecord, o TurnObservation, at ti
 		state = api.TurnUnknown
 	}
 	current := ownTurn(record)
-	if pending, ok := s.pendingSubmission(*record); ok && o.ProviderID != "" {
-		if o.ProviderID == pending.priorProviderID {
+	if prior, ok := pendingSubmission(*record); ok && o.ProviderID != "" {
+		if o.ProviderID == prior {
 			// The provider re-reporting the turn that preceded the
 			// submission says nothing about the submitted one.
 			return false
 		}
 		current.ProviderID = o.ProviderID
+		current.SubmittedPrior = nil
 		updateTurn(current, o, state, at)
 		return true
 	}
@@ -349,6 +342,7 @@ func settleTurn(record *store.ThreadRecord, reported *TurnObservation, at time.T
 		completed := at
 		turn.State = string(api.TurnFailed)
 		turn.CompletedAt = &completed
+		turn.SubmittedPrior = nil
 		if turn.Error == "" {
 			turn.Error = record.StatusDetail
 		}
@@ -395,6 +389,10 @@ func ownTurn(record *store.ThreadRecord) *store.TurnRecord {
 		completed := *turn.CompletedAt
 		turn.CompletedAt = &completed
 	}
+	if turn.SubmittedPrior != nil {
+		prior := *turn.SubmittedPrior
+		turn.SubmittedPrior = &prior
+	}
 	record.Turn = &turn
 	return record.Turn
 }
@@ -406,6 +404,9 @@ func ended(state string) bool {
 
 func turnEqual(a, b store.TurnRecord) bool {
 	if a.ID != b.ID || a.ProviderID != b.ProviderID || a.State != b.State || a.Error != b.Error || a.Response != b.Response || !a.StartedAt.Equal(b.StartedAt) {
+		return false
+	}
+	if (a.SubmittedPrior == nil) != (b.SubmittedPrior == nil) || a.SubmittedPrior != nil && *a.SubmittedPrior != *b.SubmittedPrior {
 		return false
 	}
 	if a.CompletedAt == nil || b.CompletedAt == nil {
