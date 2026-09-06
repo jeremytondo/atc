@@ -50,6 +50,36 @@ func (q *Queries) CompleteWebhookDelivery(ctx context.Context, arg CompleteWebho
 	return result.RowsAffected()
 }
 
+const countLinearSessions = `-- name: CountLinearSessions :one
+SELECT
+    COUNT(*) FILTER (WHERE state != 'done') AS open,
+    COUNT(*) AS total
+FROM linear_sessions
+`
+
+type CountLinearSessionsRow struct {
+	Open  int64
+	Total int64
+}
+
+func (q *Queries) CountLinearSessions(ctx context.Context) (CountLinearSessionsRow, error) {
+	row := q.db.QueryRowContext(ctx, countLinearSessions)
+	var i CountLinearSessionsRow
+	err := row.Scan(&i.Open, &i.Total)
+	return i, err
+}
+
+const countPendingLinearOutbox = `-- name: CountPendingLinearOutbox :one
+SELECT COUNT(*) FROM linear_outbox WHERE sent_at IS NULL AND failed IS NULL
+`
+
+func (q *Queries) CountPendingLinearOutbox(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingLinearOutbox)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPendingWebhookDeliveries = `-- name: CountPendingWebhookDeliveries :one
 SELECT COUNT(*) FROM webhook_deliveries WHERE state = 'pending'
 `
@@ -129,6 +159,28 @@ func (q *Queries) FailWebhookDelivery(ctx context.Context, arg FailWebhookDelive
 	return result.RowsAffected()
 }
 
+const getLinearSession = `-- name: GetLinearSession :one
+SELECT id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at FROM linear_sessions WHERE id = ?
+`
+
+func (q *Queries) GetLinearSession(ctx context.Context, id string) (LinearSession, error) {
+	row := q.db.QueryRowContext(ctx, getLinearSession, id)
+	var i LinearSession
+	err := row.Scan(
+		&i.ID,
+		&i.Prompt,
+		&i.State,
+		&i.ThreadID,
+		&i.TurnID,
+		&i.NoticedStatus,
+		&i.CompletedSeenAt,
+		&i.Outcome,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProject = `-- name: GetProject :one
 SELECT id, name, directory, created_at, updated_at FROM projects WHERE id = ?
 `
@@ -144,6 +196,77 @@ func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertLinearOutbox = `-- name: InsertLinearOutbox :execrows
+INSERT INTO linear_outbox (id, session_id, kind, body, attempts, next_attempt_at, created_at)
+VALUES (?, ?, ?, ?, 0, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertLinearOutboxParams struct {
+	ID            string
+	SessionID     string
+	Kind          string
+	Body          []byte
+	NextAttemptAt string
+	CreatedAt     string
+}
+
+// Linear outbox (ATC-302). The key is the deduplication.
+func (q *Queries) InsertLinearOutbox(ctx context.Context, arg InsertLinearOutboxParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertLinearOutbox,
+		arg.ID,
+		arg.SessionID,
+		arg.Kind,
+		arg.Body,
+		arg.NextAttemptAt,
+		arg.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const insertLinearSession = `-- name: InsertLinearSession :execrows
+INSERT INTO linear_sessions (id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertLinearSessionParams struct {
+	ID              string
+	Prompt          sql.NullString
+	State           string
+	ThreadID        sql.NullString
+	TurnID          sql.NullString
+	NoticedStatus   sql.NullString
+	CompletedSeenAt sql.NullString
+	Outcome         sql.NullString
+	CreatedAt       string
+	UpdatedAt       string
+}
+
+// Linear sessions (ATC-302). Insertion is the duplicate-session check: a
+// second `created` delivery for one session inserts nothing.
+func (q *Queries) InsertLinearSession(ctx context.Context, arg InsertLinearSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertLinearSession,
+		arg.ID,
+		arg.Prompt,
+		arg.State,
+		arg.ThreadID,
+		arg.TurnID,
+		arg.NoticedStatus,
+		arg.CompletedSeenAt,
+		arg.Outcome,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const insertProject = `-- name: InsertProject :execrows
@@ -249,39 +372,40 @@ const insertThread = `-- name: InsertThread :execrows
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
     title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
     archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
-    turn_completed_at, turn_error, turn_response)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    turn_completed_at, turn_error, turn_response, turn_submitted_prior)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertThreadParams struct {
-	ID               string
-	IntegrationID    string
-	AppID            sql.NullString
-	AgentID          sql.NullString
-	InitialDirectory sql.NullString
-	ProjectID        sql.NullString
-	TerminalID       sql.NullString
-	Title            sql.NullString
-	TitleUserSet     int64
-	Model            sql.NullString
-	Effort           sql.NullString
-	Cwd              sql.NullString
-	PermissionMode   sql.NullString
-	Status           string
-	StatusDetail     sql.NullString
-	LastEvidenceAt   sql.NullString
-	Archived         int64
-	ArchivedAt       sql.NullString
-	CreatedAt        string
-	UpdatedAt        string
-	TurnID           sql.NullString
-	TurnProviderID   sql.NullString
-	TurnState        sql.NullString
-	TurnStartedAt    sql.NullString
-	TurnCompletedAt  sql.NullString
-	TurnError        sql.NullString
-	TurnResponse     sql.NullString
+	ID                 string
+	IntegrationID      string
+	AppID              sql.NullString
+	AgentID            sql.NullString
+	InitialDirectory   sql.NullString
+	ProjectID          sql.NullString
+	TerminalID         sql.NullString
+	Title              sql.NullString
+	TitleUserSet       int64
+	Model              sql.NullString
+	Effort             sql.NullString
+	Cwd                sql.NullString
+	PermissionMode     sql.NullString
+	Status             string
+	StatusDetail       sql.NullString
+	LastEvidenceAt     sql.NullString
+	Archived           int64
+	ArchivedAt         sql.NullString
+	CreatedAt          string
+	UpdatedAt          string
+	TurnID             sql.NullString
+	TurnProviderID     sql.NullString
+	TurnState          sql.NullString
+	TurnStartedAt      sql.NullString
+	TurnCompletedAt    sql.NullString
+	TurnError          sql.NullString
+	TurnResponse       sql.NullString
+	TurnSubmittedPrior sql.NullString
 }
 
 func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int64, error) {
@@ -313,6 +437,7 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 		arg.TurnCompletedAt,
 		arg.TurnError,
 		arg.TurnResponse,
+		arg.TurnSubmittedPrior,
 	)
 	if err != nil {
 		return 0, err
@@ -375,6 +500,51 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 	return result.RowsAffected()
 }
 
+const listDueLinearOutbox = `-- name: ListDueLinearOutbox :many
+SELECT id, session_id, kind, body, attempts, next_attempt_at, sent_at, failed, created_at FROM linear_outbox
+WHERE sent_at IS NULL AND failed IS NULL AND next_attempt_at <= ?
+ORDER BY next_attempt_at, created_at, id
+LIMIT ?
+`
+
+type ListDueLinearOutboxParams struct {
+	NextAttemptAt string
+	Limit         int64
+}
+
+func (q *Queries) ListDueLinearOutbox(ctx context.Context, arg ListDueLinearOutboxParams) ([]LinearOutbox, error) {
+	rows, err := q.db.QueryContext(ctx, listDueLinearOutbox, arg.NextAttemptAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LinearOutbox
+	for rows.Next() {
+		var i LinearOutbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Kind,
+			&i.Body,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.SentAt,
+			&i.Failed,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueWebhookDeliveries = `-- name: ListDueWebhookDeliveries :many
 SELECT id, integration_id, route, delivery_id, payload, state, attempts, next_attempt_at, accepted_at, completed_at FROM webhook_deliveries
 WHERE state = 'pending' AND next_attempt_at <= ?
@@ -407,6 +577,44 @@ func (q *Queries) ListDueWebhookDeliveries(ctx context.Context, arg ListDueWebho
 			&i.NextAttemptAt,
 			&i.AcceptedAt,
 			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenLinearSessions = `-- name: ListOpenLinearSessions :many
+SELECT id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at FROM linear_sessions WHERE state != 'done' ORDER BY created_at, id
+`
+
+func (q *Queries) ListOpenLinearSessions(ctx context.Context) ([]LinearSession, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenLinearSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LinearSession
+	for rows.Next() {
+		var i LinearSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.Prompt,
+			&i.State,
+			&i.ThreadID,
+			&i.TurnID,
+			&i.NoticedStatus,
+			&i.CompletedSeenAt,
+			&i.Outcome,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -555,7 +763,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 }
 
 const listThreads = `-- name: ListThreads :many
-SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error, turn_response FROM threads ORDER BY created_at, id
+SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_evidence_at, archived, archived_at, created_at, updated_at, status_detail, turn_id, turn_provider_id, turn_state, turn_started_at, turn_completed_at, turn_error, turn_response, turn_submitted_prior FROM threads ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
@@ -595,6 +803,7 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 			&i.TurnCompletedAt,
 			&i.TurnError,
 			&i.TurnResponse,
+			&i.TurnSubmittedPrior,
 		); err != nil {
 			return nil, err
 		}
@@ -607,6 +816,41 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const markLinearOutboxFailed = `-- name: MarkLinearOutboxFailed :execrows
+UPDATE linear_outbox SET failed = ?, attempts = ? WHERE id = ? AND sent_at IS NULL
+`
+
+type MarkLinearOutboxFailedParams struct {
+	Failed   sql.NullString
+	Attempts int64
+	ID       string
+}
+
+func (q *Queries) MarkLinearOutboxFailed(ctx context.Context, arg MarkLinearOutboxFailedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markLinearOutboxFailed, arg.Failed, arg.Attempts, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markLinearOutboxSent = `-- name: MarkLinearOutboxSent :execrows
+UPDATE linear_outbox SET sent_at = ? WHERE id = ? AND sent_at IS NULL
+`
+
+type MarkLinearOutboxSentParams struct {
+	SentAt sql.NullString
+	ID     string
+}
+
+func (q *Queries) MarkLinearOutboxSent(ctx context.Context, arg MarkLinearOutboxSentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markLinearOutboxSent, arg.SentAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const pruneAgedWebhookReceipts = `-- name: PruneAgedWebhookReceipts :execrows
@@ -633,6 +877,23 @@ WHERE state = 'done' AND id IN (
 
 func (q *Queries) PruneExcessWebhookReceipts(ctx context.Context, offset int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, pruneExcessWebhookReceipts, offset)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const pruneLinearOutbox = `-- name: PruneLinearOutbox :execrows
+DELETE FROM linear_outbox
+WHERE (sent_at IS NOT NULL AND sent_at < ?1)
+   OR (failed IS NOT NULL AND created_at < ?1)
+`
+
+// Sent and refused rows are receipts; they go once the window that could
+// repeat them has passed. Refused rows carry no completion time, so their
+// creation time bounds them.
+func (q *Queries) PruneLinearOutbox(ctx context.Context, cutoff sql.NullString) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneLinearOutbox, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -678,6 +939,60 @@ type RecordTerminalStopIntentParams struct {
 
 func (q *Queries) RecordTerminalStopIntent(ctx context.Context, arg RecordTerminalStopIntentParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, recordTerminalStopIntent, arg.StopRequestedAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const retryLinearOutbox = `-- name: RetryLinearOutbox :execrows
+UPDATE linear_outbox SET attempts = ?, next_attempt_at = ? WHERE id = ? AND sent_at IS NULL
+`
+
+type RetryLinearOutboxParams struct {
+	Attempts      int64
+	NextAttemptAt string
+	ID            string
+}
+
+func (q *Queries) RetryLinearOutbox(ctx context.Context, arg RetryLinearOutboxParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retryLinearOutbox, arg.Attempts, arg.NextAttemptAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateLinearSession = `-- name: UpdateLinearSession :execrows
+UPDATE linear_sessions SET prompt = ?, state = ?, thread_id = ?, turn_id = ?, noticed_status = ?,
+    completed_seen_at = ?, outcome = ?, updated_at = ?
+WHERE id = ?
+`
+
+type UpdateLinearSessionParams struct {
+	Prompt          sql.NullString
+	State           string
+	ThreadID        sql.NullString
+	TurnID          sql.NullString
+	NoticedStatus   sql.NullString
+	CompletedSeenAt sql.NullString
+	Outcome         sql.NullString
+	UpdatedAt       string
+	ID              string
+}
+
+func (q *Queries) UpdateLinearSession(ctx context.Context, arg UpdateLinearSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateLinearSession,
+		arg.Prompt,
+		arg.State,
+		arg.ThreadID,
+		arg.TurnID,
+		arg.NoticedStatus,
+		arg.CompletedSeenAt,
+		arg.Outcome,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -775,34 +1090,35 @@ const updateThread = `-- name: UpdateThread :execrows
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
-    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?, turn_submitted_prior = ?
 WHERE id = ?
 `
 
 type UpdateThreadParams struct {
-	AgentID         sql.NullString
-	ProjectID       sql.NullString
-	TerminalID      sql.NullString
-	Title           sql.NullString
-	TitleUserSet    int64
-	Model           sql.NullString
-	Effort          sql.NullString
-	Cwd             sql.NullString
-	PermissionMode  sql.NullString
-	Status          string
-	StatusDetail    sql.NullString
-	LastEvidenceAt  sql.NullString
-	Archived        int64
-	ArchivedAt      sql.NullString
-	UpdatedAt       string
-	TurnID          sql.NullString
-	TurnProviderID  sql.NullString
-	TurnState       sql.NullString
-	TurnStartedAt   sql.NullString
-	TurnCompletedAt sql.NullString
-	TurnError       sql.NullString
-	TurnResponse    sql.NullString
-	ID              string
+	AgentID            sql.NullString
+	ProjectID          sql.NullString
+	TerminalID         sql.NullString
+	Title              sql.NullString
+	TitleUserSet       int64
+	Model              sql.NullString
+	Effort             sql.NullString
+	Cwd                sql.NullString
+	PermissionMode     sql.NullString
+	Status             string
+	StatusDetail       sql.NullString
+	LastEvidenceAt     sql.NullString
+	Archived           int64
+	ArchivedAt         sql.NullString
+	UpdatedAt          string
+	TurnID             sql.NullString
+	TurnProviderID     sql.NullString
+	TurnState          sql.NullString
+	TurnStartedAt      sql.NullString
+	TurnCompletedAt    sql.NullString
+	TurnError          sql.NullString
+	TurnResponse       sql.NullString
+	TurnSubmittedPrior sql.NullString
+	ID                 string
 }
 
 // One broad update: the domain service owns the view and serializes
@@ -832,6 +1148,7 @@ func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int
 		arg.TurnCompletedAt,
 		arg.TurnError,
 		arg.TurnResponse,
+		arg.TurnSubmittedPrior,
 		arg.ID,
 	)
 	if err != nil {

@@ -229,6 +229,23 @@ func (c *Coordinator) DeleteProject(ctx context.Context, id string) error {
 // program has committed the creation. Model and options pass through
 // untouched: the program is their only judge.
 func (c *Coordinator) CreateThread(ctx context.Context, params api.ThreadCreateParams) (api.Thread, error) {
+	return c.StartThread(ctx, params, nil)
+}
+
+// StartThread is CreateThread with a durability seam (ATC-302): recorded,
+// when non-nil, runs once the thread record and its provisional turn
+// exist and before the command is dispatched, with the ids a caller must
+// hold to recognize the conversation after a crash. A caller that owes
+// work to someone else persists them there; if it cannot, the create is
+// discarded before anything is sent, so a start that was never recorded
+// is a start that never happened. What runs before recorded is
+// idempotent from the program's point of view — nothing has reached it.
+// A recorded create whose dispatch went unanswered
+// (integrations.ErrThreadCreationUncertain) keeps its record: the program
+// may hold the conversation, its later report finds the record and binds
+// the turn, and the caller — not this workflow — judges what to tell its
+// user. An unrecorded create discards it, as CreateThread always has.
+func (c *Coordinator) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
 	switch {
 	case strings.TrimSpace(params.Prompt) == "":
 		return api.Thread{}, fmt.Errorf("%w: prompt is empty", ErrThreadCreateInvalid)
@@ -265,12 +282,21 @@ func (c *Coordinator) CreateThread(ctx context.Context, params api.ThreadCreateP
 	if err != nil {
 		return api.Thread{}, err
 	}
-	if _, err := c.threads.SubmitTurn(ctx, id); err != nil {
+	turnID, err := c.threads.SubmitTurn(ctx, id)
+	if err != nil {
 		c.discard(ctx, params.IntegrationID, prepared.ProviderID)
 		return api.Thread{}, err
 	}
+	if recorded != nil {
+		if err := recorded(id, turnID); err != nil {
+			c.discard(ctx, params.IntegrationID, prepared.ProviderID)
+			return api.Thread{}, fmt.Errorf("recording the thread before dispatch: %w", err)
+		}
+	}
 	if err := prepared.Dispatch(ctx); err != nil {
-		c.discard(ctx, params.IntegrationID, prepared.ProviderID)
+		if recorded == nil || !errors.Is(err, integrations.ErrThreadCreationUncertain) {
+			c.discard(ctx, params.IntegrationID, prepared.ProviderID)
+		}
 		return api.Thread{}, err
 	}
 	return c.threads.Get(id)

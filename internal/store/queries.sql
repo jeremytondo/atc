@@ -67,8 +67,8 @@ DELETE FROM projects WHERE id = ?;
 INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
     title_user_set, model, effort, cwd, permission_mode, status, status_detail, last_evidence_at, archived,
     archived_at, created_at, updated_at, turn_id, turn_provider_id, turn_state, turn_started_at,
-    turn_completed_at, turn_error, turn_response)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    turn_completed_at, turn_error, turn_response, turn_submitted_prior)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreads :many
@@ -81,7 +81,7 @@ SELECT * FROM threads ORDER BY created_at, id;
 UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, status_detail = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?, turn_id = ?, turn_provider_id = ?, turn_state = ?,
-    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?
+    turn_started_at = ?, turn_completed_at = ?, turn_error = ?, turn_response = ?, turn_submitted_prior = ?
 WHERE id = ?;
 
 -- Backfill assigns only threads still unassigned, so a project change
@@ -139,3 +139,59 @@ WHERE state = 'done' AND id IN (
     SELECT id FROM webhook_deliveries WHERE state = 'done'
     ORDER BY completed_at DESC, id DESC LIMIT -1 OFFSET ?
 );
+
+-- Linear sessions (ATC-302). Insertion is the duplicate-session check: a
+-- second `created` delivery for one session inserts nothing.
+-- name: InsertLinearSession :execrows
+INSERT INTO linear_sessions (id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: GetLinearSession :one
+SELECT * FROM linear_sessions WHERE id = ?;
+
+-- name: ListOpenLinearSessions :many
+SELECT * FROM linear_sessions WHERE state != 'done' ORDER BY created_at, id;
+
+-- name: CountLinearSessions :one
+SELECT
+    COUNT(*) FILTER (WHERE state != 'done') AS open,
+    COUNT(*) AS total
+FROM linear_sessions;
+
+-- name: UpdateLinearSession :execrows
+UPDATE linear_sessions SET prompt = ?, state = ?, thread_id = ?, turn_id = ?, noticed_status = ?,
+    completed_seen_at = ?, outcome = ?, updated_at = ?
+WHERE id = ?;
+
+-- Linear outbox (ATC-302). The key is the deduplication.
+-- name: InsertLinearOutbox :execrows
+INSERT INTO linear_outbox (id, session_id, kind, body, attempts, next_attempt_at, created_at)
+VALUES (?, ?, ?, ?, 0, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: ListDueLinearOutbox :many
+SELECT * FROM linear_outbox
+WHERE sent_at IS NULL AND failed IS NULL AND next_attempt_at <= ?
+ORDER BY next_attempt_at, created_at, id
+LIMIT ?;
+
+-- name: CountPendingLinearOutbox :one
+SELECT COUNT(*) FROM linear_outbox WHERE sent_at IS NULL AND failed IS NULL;
+
+-- name: MarkLinearOutboxSent :execrows
+UPDATE linear_outbox SET sent_at = ? WHERE id = ? AND sent_at IS NULL;
+
+-- name: MarkLinearOutboxFailed :execrows
+UPDATE linear_outbox SET failed = ?, attempts = ? WHERE id = ? AND sent_at IS NULL;
+
+-- name: RetryLinearOutbox :execrows
+UPDATE linear_outbox SET attempts = ?, next_attempt_at = ? WHERE id = ? AND sent_at IS NULL;
+
+-- Sent and refused rows are receipts; they go once the window that could
+-- repeat them has passed. Refused rows carry no completion time, so their
+-- creation time bounds them.
+-- name: PruneLinearOutbox :execrows
+DELETE FROM linear_outbox
+WHERE (sent_at IS NOT NULL AND sent_at < sqlc.arg(cutoff))
+   OR (failed IS NOT NULL AND created_at < sqlc.arg(cutoff));

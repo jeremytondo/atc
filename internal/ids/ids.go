@@ -8,7 +8,11 @@
 // that are never typed and never collision-checked (ATC-301).
 package ids
 
-import "crypto/rand"
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"fmt"
+)
 
 const (
 	// SuffixLength is the fixed random-suffix length of every ID a person
@@ -55,4 +59,29 @@ func mint(prefix string, length int) string {
 		}
 	}
 	return prefix + string(suffix)
+}
+
+// UUID mints a random (version 4) UUID, for identifiers a provider
+// expects in that form (T3 Code's thread and command ids).
+func UUID() string {
+	var b [16]byte
+	rand.Read(b[:])
+	return uuidOf(b)
+}
+
+// UUIDFrom derives a UUID-shaped identifier from a key, the same for the
+// same key: for a provider that deduplicates on the id (Linear's agent
+// activities), a retry after a lost answer presents the identity the
+// first attempt did, however long ago that was.
+func UUIDFrom(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	var b [16]byte
+	copy(b[:], sum[:16])
+	return uuidOf(b)
+}
+
+func uuidOf(b [16]byte) string {
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

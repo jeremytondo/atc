@@ -55,6 +55,11 @@ var (
 	// ErrThreadCreationFailed reports the program refusing or failing a
 	// dispatched creation; the message is the program's own.
 	ErrThreadCreationFailed = errors.New("thread creation failed")
+	// ErrThreadCreationUncertain accompanies ErrThreadCreationFailed when
+	// the program never answered the dispatch (ATC-302): it may have
+	// created the conversation. A caller that must not start a duplicate
+	// tells this apart from a refusal; the API reports both as failed.
+	ErrThreadCreationUncertain = errors.New("thread creation outcome unknown")
 )
 
 // Options wires a Service.

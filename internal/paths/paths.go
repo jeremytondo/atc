@@ -7,6 +7,7 @@
 //	data    $XDG_DATA_HOME/atc/auth-token     (~/.local/share/atc/auth-token)
 //	data    $XDG_DATA_HOME/atc/atc.db         (~/.local/share/atc/atc.db)
 //	data    $XDG_DATA_HOME/atc/t3code-session.json
+//	data    $XDG_DATA_HOME/atc/linear.json
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
@@ -78,6 +79,14 @@ func DatabaseFile() (string, error) {
 // config.toml, never the environment.
 func T3CodeSessionFile() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "t3code-session.json")
+}
+
+// LinearSetupFile is the Linear Integration's setup and credentials
+// (ATC-302): the OAuth app's identity, its signing secret, its tokens, and
+// the Project it starts work in, written by the operator and rewritten by
+// the server as tokens renew. A 0600 credential beside auth-token.
+func LinearSetupFile() (string, error) {
+	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "linear.json")
 }
 
 // TerminalSocketDir is ATC's private zmx socket directory (ATC-251).

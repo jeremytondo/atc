@@ -109,9 +109,6 @@ type Service struct {
 	// other terminal — and a concurrent open of the same thread waits
 	// here instead of racing it.
 	opening map[string]chan struct{}
-	// pending holds each thread's submitted turn until the provider
-	// reports it starting (turns.go).
-	pending map[string]pendingTurn
 
 	// linkers derive deep links per Integration id at read time; set at
 	// composition, before serving, and read without mu.
@@ -162,7 +159,6 @@ func NewService(opts Options) *Service {
 		now:        opts.Now,
 		linkers:    make(map[string]Linker),
 		opening:    make(map[string]chan struct{}),
-		pending:    make(map[string]pendingTurn),
 		view:       make(map[string]*store.ThreadRecord),
 		identities: make(map[identityKey]string),
 		keys:       make(map[string]identityKey),
@@ -1185,7 +1181,6 @@ func (s *Service) remove(ctx context.Context, id string) error {
 	if !deleted {
 		return ErrNotFound
 	}
-	delete(s.pending, id)
 	s.mu.Lock()
 	delete(s.view, id)
 	s.forgetIdentity(id)
