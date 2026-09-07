@@ -18,11 +18,12 @@ import (
 // — open puts you in front of any conversation, live or dormant — create
 // starts one with a prompt in an integration's own program (ATC-289),
 // send continues one and prints its reply, approve, deny, and decide
-// answer what it is blocked on (ATC-307, send.go) — plus the reads and the two
-// mutations over observed conversations (ATC-255). Conversations started
-// in an ATC terminal app (`atc terminal create --app`) are observed into
-// existence from their first prompt. archive/unarchive are thin sugar
-// over PATCH.
+// decide the approval it is blocked on (ATC-307, send.go), answer
+// answers the question it is blocked on and stop ends its work (ATC-308,
+// control.go) — plus the reads and the two mutations over observed
+// conversations (ATC-255). Conversations started in an ATC terminal app
+// (`atc terminal create --app`) are observed into existence from their
+// first prompt. archive/unarchive are thin sugar over PATCH.
 
 func newThreadCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -30,11 +31,11 @@ func newThreadCmd() *cobra.Command {
 		Short: "Start, open, and manage agent conversations",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc thread <create|send|approve|deny|decide|open|list|get|update|archive|unarchive|delete>")
+			return fmt.Errorf("usage: atc thread <create|send|approve|deny|decide|answer|stop|open|list|get|update|archive|unarchive|delete>")
 		},
 	}
-	cmd.AddCommand(newThreadCreateCmd(), newThreadSendCmd(), newThreadApproveCmd(), newThreadDenyCmd(), newThreadDecideCmd(), newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(),
-		newThreadUpdateCmd(), newThreadArchiveCmd(), newThreadUnarchiveCmd(), newThreadDeleteCmd())
+	cmd.AddCommand(newThreadCreateCmd(), newThreadSendCmd(), newThreadApproveCmd(), newThreadDenyCmd(), newThreadDecideCmd(), newThreadAnswerCmd(), newThreadStopCmd(),
+		newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(), newThreadUpdateCmd(), newThreadArchiveCmd(), newThreadUnarchiveCmd(), newThreadDeleteCmd())
 	return cmd
 }
 
@@ -321,8 +322,12 @@ func activityTime(thread api.Thread) time.Time {
 	return thread.UpdatedAt
 }
 
+func newTabWriter(out io.Writer) *tabwriter.Writer {
+	return tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
+}
+
 func printThread(out io.Writer, thread api.Thread) {
-	w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
+	w := newTabWriter(out)
 	_, _ = fmt.Fprintf(w, "id\t%s\n", thread.ID)
 	_, _ = fmt.Fprintf(w, "integration\t%s\n", thread.IntegrationID)
 	if thread.AppID != "" {
@@ -384,6 +389,19 @@ func printThread(out io.Writer, thread api.Thread) {
 		}
 		_, _ = fmt.Fprintf(w, "  decisions\t%s\n", approvalOptions(approval))
 	}
+	for _, request := range thread.InputRequests {
+		_, _ = fmt.Fprintf(w, "input request\t%s\n", request.ID)
+		if request.Unanswerable != "" {
+			_, _ = fmt.Fprintf(w, "  unanswerable\t%s\n", request.Unanswerable)
+		}
+		writeQuestions(w, "  ", request)
+		if request.Answer != nil {
+			_, _ = fmt.Fprintf(w, "  answer\t%s (%s)\n", request.Answer.State, request.Answer.Delivery)
+		}
+	}
+	if stop := thread.Stop; stop != nil {
+		_, _ = fmt.Fprintf(w, "stopping\t%s (%s)\n", stop.ID, stop.Delivery)
+	}
 	if thread.LastEvidenceAt != nil {
 		_, _ = fmt.Fprintf(w, "last evidence\t%s\n", thread.LastEvidenceAt.Format("2006-01-02 15:04:05 MST"))
 	}
@@ -410,7 +428,7 @@ func approvalOptions(approval api.ThreadApproval) string {
 }
 
 func printApproval(out io.Writer, approval api.ThreadApproval) {
-	w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
+	w := newTabWriter(out)
 	_, _ = fmt.Fprintf(w, "id\t%s\n", approval.ID)
 	_, _ = fmt.Fprintf(w, "thread\t%s\n", approval.ThreadID)
 	_, _ = fmt.Fprintf(w, "status\t%s\n", approval.Status)

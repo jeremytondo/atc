@@ -35,6 +35,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // Integration is one catalog registration.
@@ -76,6 +77,79 @@ type Integration struct {
 	// a request its program reports pending. Nil for an Integration that
 	// cannot; declared together with the threads.decide capability.
 	Approvals ApprovalDecider
+	// Inputs is the Integration's structured-answer seam (ATC-308):
+	// answering the questions its program reports pending. Nil for an
+	// Integration that cannot; declared together with the threads.answer
+	// capability.
+	Inputs InputAnswerer
+	// Stops is the Integration's stop seam (ATC-308): stopping a
+	// conversation's work in its program. Nil for an Integration that
+	// cannot; declared together with the threads.stop capability.
+	Stops ThreadStopper
+}
+
+// InputAnswerer answers pending structured requests (ATC-308). The
+// domain has validated the answer set against the request and recorded
+// it; the Integration translates it into the program's command, under
+// identities derived from the answer's, so a retry after a lost answer
+// is deduplicated by the program. The program committing the command is
+// not the request being resolved: that evidence arrives through the
+// Integration's observation of the request.
+type InputAnswerer interface {
+	// PrepareAnswer resolves an answer against the program's live state
+	// without sending anything: ErrNotConnected while the program is not
+	// reachable. It returns the dispatch, which sends the answer and
+	// returns once the program has committed it: ErrAnswerRejected with
+	// the program's own reason when it refuses, ErrDeliveryUncertain when
+	// it never answers, ErrNotConnected when the connection went away
+	// since preparation.
+	PrepareAnswer(ctx context.Context, providerID string) (AnswerDispatch, error)
+}
+
+// AnswerDispatch sends one prepared answer.
+type AnswerDispatch func(ctx context.Context, answer InputAnswer) error
+
+// InputAnswer is one answer to dispatch: the provider's request id
+// (private), the answers keyed by the provider's own question ids, the
+// ATC answer id the program-side identities derive from, and when it
+// was submitted.
+type InputAnswer struct {
+	RequestID string
+	Answers   []ProviderAnswer
+	Key       string
+	CreatedAt time.Time
+}
+
+// ProviderAnswer is one question's answer in the provider's terms, as
+// the threads domain translates it.
+type ProviderAnswer = threads.ProviderAnswer
+
+// ThreadStopper stops a conversation's work in its program (ATC-308):
+// the turn running and any submitted turn that has not started, while
+// preserving the conversation for a later message to continue. The
+// domain records the operation before dispatch and resolves it only on
+// the evidence the Integration observes afterwards; the program
+// committing the command is not the work being stopped.
+type ThreadStopper interface {
+	// PrepareStop resolves a stop against the program's live state without
+	// sending anything: ErrNotConnected while the program is not
+	// reachable. It returns the dispatch, which sends the stop and returns
+	// once the program has committed it: ErrStopRejected with the program's
+	// own reason when it refuses, ErrDeliveryUncertain when it never
+	// answers, ErrNotConnected when the connection went away since
+	// preparation.
+	PrepareStop(ctx context.Context, providerID string) (StopDispatch, error)
+}
+
+// StopDispatch sends one prepared stop.
+type StopDispatch func(ctx context.Context, stop ThreadStop) error
+
+// ThreadStop is one stop to dispatch: the ATC stop id the program-side
+// identities derive from, and when it was accepted — the instant the
+// program's evidence is correlated against.
+type ThreadStop struct {
+	Key       string
+	CreatedAt time.Time
 }
 
 // ThreadMessenger sends messages into existing conversations (ATC-307).

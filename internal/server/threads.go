@@ -14,11 +14,12 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// Five verbs on /v1/threads (ATC-255, ATC-289), plus the two
-// interactions that drive a conversation from outside (ATC-307): create
+// Five verbs on /v1/threads (ATC-255, ATC-289), plus the interactions
+// that drive a conversation from outside (ATC-307, ATC-308): create
 // starts a conversation in an Integration's program, a message continues
-// one, an approval decision answers what it is blocked on — the writes
-// that reach outside ATC — and archive/unarchive is a PATCH of archived.
+// one, an approval decision or a structured answer resolves what it is
+// blocked on, a stop ends its work — the writes that reach outside ATC —
+// and archive/unarchive is a PATCH of archived.
 // Putting a user in front of a conversation is a terminal create with
 // threadId (ATC-297), not an action here. Handlers are thin Huma
 // wrappers around the shared wire structs; policy lives in the threads
@@ -43,6 +44,14 @@ type threadMessageOutput struct {
 
 type threadApprovalOutput struct {
 	Body api.ThreadApproval
+}
+
+type threadInputRequestOutput struct {
+	Body api.ThreadInputRequest
+}
+
+type threadStopOutput struct {
+	Body api.ThreadStop
 }
 
 func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *application.Coordinator) {
@@ -146,6 +155,77 @@ func registerThreads(humaAPI huma.API, service *threads.Service, coordinator *ap
 	})
 
 	huma.Register(humaAPI, huma.Operation{
+		OperationID: "get-thread-input-request",
+		Method:      http.MethodGet,
+		Path:        "/v1/threads/{id}/input-requests/{requestId}",
+		Summary:     "Get a structured request",
+		Description: "One structured request the thread's agent asked, pending or resolved while remembered: its questions with the choices and answer forms each allows, the answer submitted through ATC with its outcome, and how the request was resolved. Pending requests also ride the thread as inputRequests. 404 for an unknown thread or request.",
+	}, func(ctx context.Context, input *struct {
+		ID        string `path:"id" doc:"Thread identifier."`
+		RequestID string `path:"requestId" doc:"Input request identifier."`
+	}) (*threadInputRequestOutput, error) {
+		request, err := service.InputRequest(input.ID, input.RequestID)
+		if err != nil {
+			return nil, mapThreadAnswerError(err)
+		}
+		return &threadInputRequestOutput{Body: request}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID:   "answer-thread-input-request",
+		Method:        http.MethodPost,
+		Path:          "/v1/threads/{id}/input-requests/{requestId}/answer",
+		Summary:       "Answer a pending structured request",
+		Description:   "Submits one complete answer set for a request the thread's agent is blocked on (the thread's inputRequests): every question answered exactly once, with the choices it offers or a custom text where it allows one. Returns 202 with the request carrying the answer: delivery is accepted once the program committed it, uncertain when it never answered (submit the same answers again to reconcile); state stays sent until the provider's evidence resolves the request — with exactly these answers, and the request reads resolved by answer — or reports a failure. The request is never resolved on the program's acceptance alone, and never on its disappearance. Resubmitting the same answers recovers the recorded answer; different answers are refused while it awaits evidence. Refusals: 400 for an answer set that does not answer the request, a request ATC cannot answer (its unanswerable reason), or an Integration that cannot answer; 404 for an unknown thread or request; 409 for a request already resolved, a different answer still awaiting evidence, or a stop being confirmed on the thread; 503 while the Integration is not connected; 502 when the program rejects the answer (the request takes another).",
+		DefaultStatus: http.StatusAccepted,
+	}, func(ctx context.Context, input *struct {
+		ID        string `path:"id" doc:"Thread identifier."`
+		RequestID string `path:"requestId" doc:"Input request identifier."`
+		Body      api.InputAnswerParams
+	}) (*threadInputRequestOutput, error) {
+		request, err := coordinator.AnswerInput(ctx, input.ID, input.RequestID, input.Body)
+		if err != nil {
+			return nil, mapThreadAnswerError(err)
+		}
+		return &threadInputRequestOutput{Body: request}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID:   "stop-thread",
+		Method:        http.MethodPost,
+		Path:          "/v1/threads/{id}/stop",
+		Summary:       "Stop a thread's work",
+		Description:   "Stops the work on a thread: the turn running, a submitted turn that has not started, and the question or approval it is blocked on, while preserving the conversation for a later message. Returns 202 with the stop operation: delivery is accepted once the program committed it, uncertain when it never answered (submit the same key again to reconcile); state is stopping until the provider's evidence resolves it — stopped when the covered work was cut short, finished when it had already ended or nothing was running (a thread at rest resolves at once, with nothing sent) — or failed when the program refused. While a stop is stopping the thread refuses messages, answers, and decisions, across restarts; submitting a stop meanwhile returns the same operation, and the same key returns its stop in any state, never stopping later work. Confirmation withdraws a submitted turn that never started and closes the pending requests. Refusals: 400 for an Integration that cannot stop, 404 for an unknown thread, 503 while the Integration is not connected, 502 when the program rejects the stop.",
+		DefaultStatus: http.StatusAccepted,
+	}, func(ctx context.Context, input *struct {
+		ID   string `path:"id" doc:"Thread identifier."`
+		Body api.ThreadStopParams
+	}) (*threadStopOutput, error) {
+		stop, err := coordinator.StopThread(ctx, input.ID, input.Body)
+		if err != nil {
+			return nil, mapThreadStopError(err)
+		}
+		return &threadStopOutput{Body: stop}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "get-thread-stop",
+		Method:      http.MethodGet,
+		Path:        "/v1/threads/{id}/stops/{stopId}",
+		Summary:     "Get a stop operation",
+		Description: "One stop operation on the thread, as it stands. The stop still stopping also rides the thread as stop. 404 for an unknown thread or stop.",
+	}, func(ctx context.Context, input *struct {
+		ID     string `path:"id" doc:"Thread identifier."`
+		StopID string `path:"stopId" doc:"Stop identifier."`
+	}) (*threadStopOutput, error) {
+		stop, err := service.Stop(input.ID, input.StopID)
+		if err != nil {
+			return nil, mapThreadStopError(err)
+		}
+		return &threadStopOutput{Body: stop}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
 		OperationID:   "delete-thread",
 		Method:        http.MethodDelete,
 		Path:          "/v1/threads/{id}",
@@ -199,10 +279,54 @@ func mapThreadMessageError(err error) error {
 		return problem(http.StatusBadRequest, api.CodeThreadSendUnsupported, err.Error())
 	case errors.Is(err, threads.ErrTurnPending):
 		return problem(http.StatusConflict, api.CodeThreadTurnPending, err.Error())
+	case errors.Is(err, threads.ErrMessageWithdrawn):
+		return problem(http.StatusConflict, api.CodeThreadMessageWithdrawn, err.Error())
 	case errors.Is(err, integrations.ErrNotConnected):
 		return problem(http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, err.Error())
 	case errors.Is(err, integrations.ErrMessageRejected), errors.Is(err, threads.ErrMessageRejected):
 		return problem(http.StatusBadGateway, api.CodeThreadMessageRejected, err.Error())
+	}
+	return mapThreadError(err)
+}
+
+// mapThreadAnswerError maps an answer's refusals (ATC-308).
+func mapThreadAnswerError(err error) error {
+	switch {
+	case errors.Is(err, integrations.ErrNotFound):
+		return problem(http.StatusBadRequest, api.CodeIntegrationNotFound, err.Error())
+	case errors.Is(err, threads.ErrInputNotFound):
+		return problem(http.StatusNotFound, api.CodeInputRequestNotFound, err.Error())
+	case errors.Is(err, threads.ErrInputResolved):
+		return problem(http.StatusConflict, api.CodeInputRequestResolved, err.Error())
+	case errors.Is(err, threads.ErrInputUnanswerable):
+		return problem(http.StatusBadRequest, api.CodeInputRequestUnanswerable, err.Error())
+	case errors.Is(err, threads.ErrAnswerInvalid):
+		return problem(http.StatusBadRequest, api.CodeInputAnswerInvalid, err.Error())
+	case errors.Is(err, threads.ErrAnswerPending):
+		return problem(http.StatusConflict, api.CodeInputAnswerPending, err.Error())
+	case errors.Is(err, integrations.ErrThreadAnswerUnsupported):
+		return problem(http.StatusBadRequest, api.CodeThreadAnswerUnsupported, err.Error())
+	case errors.Is(err, integrations.ErrNotConnected):
+		return problem(http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, err.Error())
+	case errors.Is(err, integrations.ErrAnswerRejected):
+		return problem(http.StatusBadGateway, api.CodeInputAnswerFailed, err.Error())
+	}
+	return mapThreadError(err)
+}
+
+// mapThreadStopError maps a stop's refusals (ATC-308).
+func mapThreadStopError(err error) error {
+	switch {
+	case errors.Is(err, integrations.ErrNotFound):
+		return problem(http.StatusBadRequest, api.CodeIntegrationNotFound, err.Error())
+	case errors.Is(err, threads.ErrStopNotFound):
+		return problem(http.StatusNotFound, api.CodeStopNotFound, err.Error())
+	case errors.Is(err, integrations.ErrThreadStopUnsupported):
+		return problem(http.StatusBadRequest, api.CodeThreadStopUnsupported, err.Error())
+	case errors.Is(err, integrations.ErrNotConnected):
+		return problem(http.StatusServiceUnavailable, api.CodeIntegrationNotConnected, err.Error())
+	case errors.Is(err, integrations.ErrStopRejected):
+		return problem(http.StatusBadGateway, api.CodeThreadStopFailed, err.Error())
 	}
 	return mapThreadError(err)
 }
@@ -238,6 +362,8 @@ func mapThreadError(err error) error {
 		return problem(http.StatusNotFound, api.CodeThreadNotFound, "thread not found")
 	case errors.Is(err, threads.ErrActive):
 		return problem(http.StatusConflict, api.CodeThreadActive, err.Error())
+	case errors.Is(err, threads.ErrThreadStopping):
+		return problem(http.StatusConflict, api.CodeThreadStopping, err.Error())
 	case errors.Is(err, threads.ErrProjectUnknown):
 		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
 	case errors.Is(err, threads.ErrInvalidUpdate):

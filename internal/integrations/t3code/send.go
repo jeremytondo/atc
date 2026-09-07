@@ -52,18 +52,7 @@ func (s *Service) PrepareMessage(ctx context.Context, providerID string) (integr
 		// The connection the thread was resolved on is the one the
 		// command goes to.
 		Dispatch: func(ctx context.Context, msg integrations.ThreadMessage) error {
-			err := s.deliver(ctx, client, turnStartMessage(providerID, thread, msg))
-			var failure *rpcFailure
-			switch {
-			case err == nil:
-				return nil
-			case errors.As(err, &failure):
-				return fmt.Errorf("%w: T3 Code rejected the message: %s", integrations.ErrMessageRejected, failureMessage(failure))
-			case errors.Is(err, integrations.ErrNotConnected):
-				return err
-			default:
-				return fmt.Errorf("%w: T3 Code did not answer: %w", integrations.ErrDeliveryUncertain, err)
-			}
+			return outcome(s.deliver(ctx, client, turnStartMessage(providerID, thread, msg)), integrations.ErrMessageRejected, "message")
 		},
 	}, nil
 }
@@ -109,6 +98,25 @@ func (s *Service) deliver(ctx context.Context, client *rpcClient, command map[st
 	ctx, cancel := context.WithTimeout(ctx, dispatchTimeout)
 	defer cancel()
 	return client.call(ctx, dispatchMethod, command)
+}
+
+// outcome classifies a command's delivery, the same way for every
+// command: nil once T3 committed it; the given rejection, with T3's own
+// reason, when T3 refused it for good; ErrNotConnected as it came; and
+// ErrDeliveryUncertain when T3 never answered — it may hold the command,
+// and the same command again reconciles.
+func outcome(err error, rejected error, what string) error {
+	var failure *rpcFailure
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &failure):
+		return fmt.Errorf("%w: T3 Code rejected the %s: %s", rejected, what, failureMessage(failure))
+	case errors.Is(err, integrations.ErrNotConnected):
+		return err
+	default:
+		return fmt.Errorf("%w: T3 Code did not answer: %w", integrations.ErrDeliveryUncertain, err)
+	}
 }
 
 // failureMessage is T3's own words for a refusal.

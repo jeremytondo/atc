@@ -25,8 +25,12 @@ const (
 	messagePrefix = "msg-"
 	// messageRejected is the stored delivery of a message the provider
 	// refused; it never appears on the wire, where a rejection is the
-	// request's error.
-	messageRejected = "rejected"
+	// request's error. messageWithdrawn is the stored delivery of a
+	// message still uncertain when a stop covered its turn (ATC-308): a
+	// replay of its key is the withdrawal, never a delivery into stopped
+	// work.
+	messageRejected  = "rejected"
+	messageWithdrawn = "withdrawn"
 	// messagesKept bounds the messages retained per thread: enough for
 	// any retry a client still remembers the key of, small enough never
 	// to matter.
@@ -40,6 +44,12 @@ var ErrMessageInvalid = errors.New("invalid message")
 // the reason is the provider's own. A replay of the same key reports the
 // same rejection and sends nothing.
 var ErrMessageRejected = errors.New("message rejected")
+
+// ErrMessageWithdrawn reports a message withdrawn by a confirmed stop
+// before its delivery was confirmed (ATC-308): the work it directed was
+// stopped, so it is never re-sent; a new message continues the
+// conversation. The API layer maps it to 409.
+var ErrMessageWithdrawn = errors.New("message withdrawn")
 
 // Submission is one message submission: the text, the client's optional
 // idempotency key, and whether the Integration steers — folds a message
@@ -58,8 +68,10 @@ type Submission struct {
 // thread provisionally working, and a second submission while one is
 // pending is refused (ErrTurnPending). A key already recorded on the
 // thread returns that message as it stands — a rejected one as
-// ErrMessageRejected with the recorded reason — so nothing is sent
-// twice.
+// ErrMessageRejected with the recorded reason, a withdrawn one as
+// ErrMessageWithdrawn — so nothing is sent twice. While a stop is being
+// confirmed on the thread (ErrThreadStopping) nothing new is recorded,
+// and a message still uncertain is not returned for another dispatch.
 func (s *Service) SubmitMessage(ctx context.Context, id string, sub Submission) (api.ThreadMessage, error) {
 	if strings.TrimSpace(sub.Text) == "" {
 		return api.ThreadMessage{}, fmt.Errorf("%w: text is empty", ErrMessageInvalid)
@@ -70,14 +82,23 @@ func (s *Service) SubmitMessage(ctx context.Context, id string, sub Submission) 
 	if !ok {
 		return api.ThreadMessage{}, ErrNotFound
 	}
+	s.mu.Lock()
+	stop := s.stopping(id)
+	s.mu.Unlock()
 	if sub.Key != "" {
 		existing, err := s.repository.MessageByKey(ctx, id, sub.Key)
 		if err == nil {
+			if stop != nil && existing.Delivery == string(api.MessageUncertain) {
+				return api.ThreadMessage{}, fmt.Errorf("%w: %s", ErrThreadStopping, stop.ID)
+			}
 			return messageFrom(existing)
 		}
 		if !errors.Is(err, store.ErrMessageNotFound) {
 			return api.ThreadMessage{}, err
 		}
+	}
+	if stop != nil {
+		return api.ThreadMessage{}, fmt.Errorf("%w: %s", ErrThreadStopping, stop.ID)
 	}
 	if record.Pending != nil {
 		return api.ThreadMessage{}, fmt.Errorf("%w: %s", ErrTurnPending, record.Pending.ID)
@@ -216,10 +237,13 @@ func (s *Service) message(ctx context.Context, id, messageID string) (store.Thre
 }
 
 // messageFrom converts a record to its wire shape; a rejected message is
-// its rejection.
+// its rejection, a withdrawn one its withdrawal.
 func messageFrom(record store.ThreadMessageRecord) (api.ThreadMessage, error) {
-	if record.Delivery == messageRejected {
+	switch record.Delivery {
+	case messageRejected:
 		return api.ThreadMessage{}, fmt.Errorf("%w: %s", ErrMessageRejected, record.Detail)
+	case messageWithdrawn:
+		return api.ThreadMessage{}, fmt.Errorf("%w: %s", ErrMessageWithdrawn, record.Detail)
 	}
 	return api.ThreadMessage{
 		ID:        record.ID,

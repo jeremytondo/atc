@@ -67,7 +67,7 @@ Ctrl-C stops waiting and nothing else: the work continues in the provider.
 
 A pending question or approval is not interpreted: the text is sent as any
 other message. Answer an approval request with ` + "`atc thread approve`" + ` or
-` + "`atc thread deny`" + `.
+` + "`atc thread deny`" + `, and a question with ` + "`atc thread answer`" + `.
 
 Submission is idempotent under --key: a retry with the same key on the same
 thread recovers the message already sent rather than sending it again. Without
@@ -168,78 +168,32 @@ func submitMessage(ctx context.Context, client *api.Client, threadID string, par
 
 // waitForReply follows one turn to its end: a refetch now, on every
 // change event for the thread, after every reconnect or resync, and on
-// the quiet poll. The feed is subscribed before each refetch, so a
-// change between the two is delivered rather than missed, and
-// re-established with the last event id whenever it drops. The reply is
-// the turn's final response; any other end is the error.
+// the quiet poll (follow, control.go). The reply is the turn's final
+// response; any other end is the error.
 func waitForReply(ctx context.Context, client *api.Client, threadID, turnID string, stderr io.Writer) (string, error) {
-	var stream *api.EventStream
-	defer func() {
-		if stream != nil {
-			_ = stream.Close()
-		}
-	}()
 	var completedAt time.Time
-	lastEventID := ""
-	backoff := sendBackoff
-	for {
-		if stream == nil {
-			opened, err := client.Events(ctx, lastEventID, 0)
-			if err != nil && ctx.Err() != nil {
-				return "", ctx.Err()
-			}
-			if err != nil {
-				// The feed is down; the refetch below still runs, then the
-				// backoff before the next attempt.
-				_, _ = fmt.Fprintf(stderr, "atc: %v; reconnecting in %s\n", err, backoff)
-			}
-			stream = opened
-		}
+	reply := ""
+	err := follow(ctx, client, threadID, stderr, func(ctx context.Context) (bool, time.Duration, error) {
 		thread, err := client.Thread(ctx, threadID)
 		if err != nil {
 			var problem *api.Problem
-			switch {
-			case ctx.Err() != nil:
-				return "", ctx.Err()
-			case errors.As(err, &problem) && problem.Status == http.StatusNotFound:
-				return "", fmt.Errorf("turn %s: the thread was deleted while waiting", turnID)
-			case errors.As(err, &problem):
-				return "", err
+			if errors.As(err, &problem) && problem.Status == http.StatusNotFound {
+				return true, 0, fmt.Errorf("turn %s: the thread was deleted while waiting", turnID)
 			}
-			_, _ = fmt.Fprintf(stderr, "atc: %v; reconnecting in %s\n", err, backoff)
-		} else {
-			reply, done, err := evaluateReply(thread, turnID, &completedAt, time.Now())
-			if done {
-				return reply, err
-			}
+			return false, 0, err
 		}
-		if err != nil || stream == nil {
-			if !sleep(ctx, backoff) {
-				return "", ctx.Err()
-			}
-			backoff = min(backoff*2, sendBackoffMax)
-			continue
-		}
-		backoff = sendBackoff
-		// Wait for a reason to refetch: a change to this thread, a resync,
-		// the poll, or the reply grace running out.
-		timeout := waitPoll
+		text, done, err := evaluateReply(thread, turnID, &completedAt, time.Now())
+		reply = text
+		within := time.Duration(0)
 		if !completedAt.IsZero() {
-			timeout = min(timeout, time.Until(completedAt.Add(replyGrace))+time.Second)
+			within = time.Until(completedAt.Add(replyGrace)) + time.Second
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, timeout)
-		err = nextChange(waitCtx, stream, threadID)
-		cancel()
-		if err != nil && ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			// The feed dropped: reconnect with the cursor, refetch first.
-			lastEventID = stream.LastEventID
-			_ = stream.Close()
-			stream = nil
-		}
+		return done, within, err
+	})
+	if err != nil {
+		return "", err
 	}
+	return reply, nil
 }
 
 // nextChange reads the feed until a change to the thread or a resync —
@@ -277,7 +231,7 @@ func evaluateReply(thread api.Thread, turnID string, completedAt *time.Time, now
 	turn := thread.LatestTurn
 	if turn == nil || turn.ID != turnID {
 		if turn != nil {
-			return "", true, fmt.Errorf("turn %s was replaced by turn %s (%s) before its reply was recovered", turnID, turn.ID, turn.State)
+			return "", true, fmt.Errorf("turn %s was withdrawn or replaced before its reply was recovered; the thread's latest turn is %s (%s)", turnID, turn.ID, turn.State)
 		}
 		return "", true, fmt.Errorf("turn %s is no longer known to the thread", turnID)
 	}

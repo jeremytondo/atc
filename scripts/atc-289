@@ -94,6 +94,10 @@ fi
 workspace="$(cd "$workspace" && pwd -P)"
 export XDG_CONFIG_HOME="$scratch/xdg/config" XDG_DATA_HOME="$scratch/xdg/data" XDG_STATE_HOME="$scratch/xdg/state"
 export T3CODE_HOME="$t3_home"
+# A shell opened by a service-run T3 Code (T3 Code's own terminal) carries
+# the launcher's context; the private server must not think the launcher
+# manages it, or it refuses to start without the launcher's IPC channel.
+unset T3_SERVICE_LAUNCHER_CONTEXT T3_BOOT_SERVICE_UNIT
 
 t3_pid=""
 atc_pid=""

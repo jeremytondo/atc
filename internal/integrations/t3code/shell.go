@@ -68,10 +68,14 @@ type modelSelection struct {
 	Model string `json:"model"`
 }
 
+// sessionShell is T3's provider session behind a thread. updatedAt is
+// when the session last changed; for a stopped session it is the stop
+// command's own createdAt, the evidence a stop resolves on (stop.go).
 type sessionShell struct {
-	Status       string  `json:"status"`
-	ProviderName *string `json:"providerName"`
-	LastError    *string `json:"lastError"`
+	Status       string     `json:"status"`
+	ProviderName *string    `json:"providerName"`
+	LastError    *string    `json:"lastError"`
+	UpdatedAt    *time.Time `json:"updatedAt"`
 }
 
 // latestTurnShell is T3's latest turn: its id is the private provider

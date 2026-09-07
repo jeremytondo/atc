@@ -114,18 +114,20 @@ type Thread struct {
 	Cwd              string `json:"cwd,omitempty" doc:"Provider-reported current working directory, best-effort and mutable; a resumed conversation can run from a different directory than it originated in."`
 	// PermissionMode is provider-native and read-only; ATC imposes no
 	// normalized vocabulary on it.
-	PermissionMode string           `json:"permissionMode,omitempty" doc:"Provider-native permission mode string, read-only."`
-	Status         ThreadStatus     `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence. Says nothing about how the last turn ended — see latestTurn."`
-	StatusDetail   string           `json:"statusDetail,omitempty" doc:"The provider's own explanation of a faulted session; present only while status is error."`
-	LatestTurn     *ThreadTurn      `json:"latestTurn,omitempty" doc:"The most recent turn the provider reported on the thread; omitted until there is one."`
-	PendingTurn    *PendingTurn     `json:"pendingTurn,omitempty" doc:"A turn ATC submitted (a thread create or a message) that the provider has not reported starting yet; omitted when none. Its id becomes latestTurn's once the provider starts the turn."`
-	Approvals      []ThreadApproval `json:"approvals,omitempty" doc:"Approval requests the agent is blocked on right now, as the Integration observes them; omitted when none. Each is decided through its own decide route, never by an ordinary message."`
-	LastEvidenceAt *time.Time       `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
-	Links          *ThreadLinks     `json:"links,omitempty" doc:"Where the conversation opens in the provider's own program; present only for threads that live there rather than in an ATC terminal."`
-	Archived       bool             `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its provider) unarchives it."`
-	ArchivedAt     *time.Time       `json:"archivedAt,omitempty" doc:"When the thread was archived; server-managed."`
-	CreatedAt      time.Time        `json:"createdAt"`
-	UpdatedAt      time.Time        `json:"updatedAt"`
+	PermissionMode string               `json:"permissionMode,omitempty" doc:"Provider-native permission mode string, read-only."`
+	Status         ThreadStatus         `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence. Says nothing about how the last turn ended — see latestTurn."`
+	StatusDetail   string               `json:"statusDetail,omitempty" doc:"The provider's own explanation of a faulted session; present only while status is error."`
+	LatestTurn     *ThreadTurn          `json:"latestTurn,omitempty" doc:"The most recent turn the provider reported on the thread; omitted until there is one."`
+	PendingTurn    *PendingTurn         `json:"pendingTurn,omitempty" doc:"A turn ATC submitted (a thread create or a message) that the provider has not reported starting yet; omitted when none. Its id becomes latestTurn's once the provider starts the turn."`
+	Approvals      []ThreadApproval     `json:"approvals,omitempty" doc:"Approval requests the agent is blocked on right now, as the Integration observes them; omitted when none. Each is decided through its own decide route, never by an ordinary message."`
+	InputRequests  []ThreadInputRequest `json:"inputRequests,omitempty" doc:"Structured questions the agent is blocked on right now, as the Integration observes them; omitted when none. Each is answered through its own answer route with one complete answer set, never by an ordinary message."`
+	Stop           *ThreadStop          `json:"stop,omitempty" doc:"The stop operation still being confirmed on the thread, if any (ATC-308); while present, messages, answers, and decisions are refused. Omitted once the stop resolved."`
+	LastEvidenceAt *time.Time           `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
+	Links          *ThreadLinks         `json:"links,omitempty" doc:"Where the conversation opens in the provider's own program; present only for threads that live there rather than in an ATC terminal."`
+	Archived       bool                 `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its provider) unarchives it."`
+	ArchivedAt     *time.Time           `json:"archivedAt,omitempty" doc:"When the thread was archived; server-managed."`
+	CreatedAt      time.Time            `json:"createdAt"`
+	UpdatedAt      time.Time            `json:"updatedAt"`
 }
 
 // ThreadLinks are the deep links into the provider's own program that owns a
@@ -275,4 +277,146 @@ type ThreadApproval struct {
 // ApprovalDecisionParams is the request body of an approval decision.
 type ApprovalDecisionParams struct {
 	Decision ApprovalDecision `json:"decision" enum:"approve,approve_for_session,approve_always,deny,cancel" doc:"One of the request's offered decisions."`
+}
+
+// InputRequestStatus is whether a structured request still waits on an
+// answer.
+type InputRequestStatus string
+
+const (
+	InputRequestPending  InputRequestStatus = "pending"
+	InputRequestResolved InputRequestStatus = "resolved"
+)
+
+// InputResolution is how a resolved request was resolved: by the answer
+// submitted through ATC, elsewhere (the provider's own surfaces, or a
+// resolution ATC could not attribute to its answer), or by a stop of the
+// work that asked.
+type InputResolution string
+
+const (
+	InputResolvedByAnswer  InputResolution = "answer"
+	InputResolvedElsewhere InputResolution = "elsewhere"
+	InputResolvedByStop    InputResolution = "stop"
+)
+
+// InputAnswerState is how an answer submitted through ATC stands: sent
+// and awaiting the provider's evidence, resolved (the provider resolved
+// the request with exactly this answer), failed (the provider refused or
+// could not deliver it; the request takes another answer unless it was
+// stale), or superseded (the request was resolved otherwise — elsewhere,
+// or by a stop — before this answer was confirmed).
+type InputAnswerState string
+
+const (
+	InputAnswerSent       InputAnswerState = "sent"
+	InputAnswerResolved   InputAnswerState = "resolved"
+	InputAnswerFailed     InputAnswerState = "failed"
+	InputAnswerSuperseded InputAnswerState = "superseded"
+)
+
+// InputOption is one choice a structured question offers.
+type InputOption struct {
+	Value       string `json:"value" doc:"The value to submit as a choice; the provider's option id, or its label when it names none."`
+	Label       string `json:"label" doc:"The provider's label for the choice."`
+	Description string `json:"description,omitempty" doc:"The provider's description of the choice, when it gave one."`
+}
+
+// InputQuestion is one question of a structured request, with the
+// answer forms it allows. Ids are ATC's, positional within the request
+// (q1, q2, …), and stable for the request's lifetime.
+type InputQuestion struct {
+	ID             string        `json:"id" doc:"Question identifier within the request (q1, q2, …)."`
+	Header         string        `json:"header,omitempty" doc:"The provider's short heading for the question."`
+	Text           string        `json:"text" doc:"The question as the provider asks it."`
+	Options        []InputOption `json:"options" doc:"The choices offered, in the provider's order; may be empty when only custom text is allowed."`
+	AllowsCustom   bool          `json:"allowsCustom" doc:"Whether a custom text answer is allowed instead of a choice."`
+	AllowsMultiple bool          `json:"allowsMultiple" doc:"Whether more than one choice may be selected."`
+}
+
+// QuestionAnswer is the answer to one question: the chosen option
+// values — one, or several when the question allows multiple — or a
+// custom text when the question allows it; never both.
+type QuestionAnswer struct {
+	QuestionID string   `json:"questionId" doc:"The question answered (its id within the request)."`
+	Choices    []string `json:"choices,omitempty" doc:"The option values chosen; exactly one unless the question allows multiple."`
+	Text       string   `json:"text,omitempty" doc:"A custom text answer, when the question allows one; exclusive with choices."`
+}
+
+// InputAnswerParams is the request body of an answer: one complete
+// answer set for the request, every question answered exactly once.
+type InputAnswerParams struct {
+	Answers []QuestionAnswer `json:"answers" doc:"One answer per question of the request; a missing or unknown question, a choice the question does not offer, or a form it does not allow is refused as a whole."`
+}
+
+// InputAnswer is the answer submitted through ATC for a request
+// (ATC-308): recorded under the request before anything reaches the
+// provider, so a resubmission of the same answers recovers it, and
+// settled only on the provider's evidence — its delivery says whether the
+// program committed the command, its state whether the request was
+// resolved with it.
+type InputAnswer struct {
+	Answers     []QuestionAnswer `json:"answers"`
+	Delivery    MessageDelivery  `json:"delivery" enum:"accepted,uncertain" doc:"accepted once the provider committed the answer; uncertain when it never answered — resubmit the same answers to reconcile."`
+	State       InputAnswerState `json:"state" enum:"sent,resolved,failed,superseded" doc:"sent while the provider's evidence is awaited; resolved once the provider resolved the request with exactly this answer; failed when it refused or could not deliver it; superseded when the request was resolved otherwise first."`
+	Detail      string           `json:"detail,omitempty" doc:"The provider's reason for a failure, or what superseded the answer."`
+	SubmittedAt time.Time        `json:"submittedAt"`
+	UpdatedAt   time.Time        `json:"updatedAt"`
+}
+
+// ThreadInputRequest is one structured request an agent is blocked on
+// (ATC-308): its questions, with the choices and answer forms each
+// allows, and — once answered through ATC — the answer and its outcome.
+// The id is stable for the request's lifetime and the provider's own
+// request id never appears. Pending requests ride the thread as
+// inputRequests; an answer goes to
+// POST /v1/threads/{id}/input-requests/{requestId}/answer and the
+// request is read back at GET /v1/threads/{id}/input-requests/{requestId}.
+type ThreadInputRequest struct {
+	ID           string             `json:"id" doc:"Server-derived request identifier (inpt-…), stable for the request's lifetime."`
+	ThreadID     string             `json:"threadId"`
+	Status       InputRequestStatus `json:"status" enum:"pending,resolved"`
+	Questions    []InputQuestion    `json:"questions" doc:"The questions asked, in the provider's order."`
+	Unanswerable string             `json:"unanswerable,omitempty" doc:"Why ATC cannot faithfully answer this request (content it does not support); present only for such a request, whose answer route is refused."`
+	Answer       *InputAnswer       `json:"answer,omitempty" doc:"The answer submitted through ATC, with its outcome; omitted when none was."`
+	Resolution   InputResolution    `json:"resolution,omitempty" enum:"answer,elsewhere,stop" doc:"How the request was resolved; omitted while pending."`
+	RequestedAt  time.Time          `json:"requestedAt"`
+	ResolvedAt   *time.Time         `json:"resolvedAt,omitempty"`
+}
+
+// ThreadStopParams is the POST /v1/threads/{id}/stop request body.
+type ThreadStopParams struct {
+	Key string `json:"key,omitempty" maxLength:"200" doc:"Optional idempotency key, unique per thread on the client's side: a resubmission with the same key returns the stop already recorded, in whatever state — retrying its dispatch if the delivery was uncertain — and never stops later work."`
+}
+
+// StopState is how a stop operation stands (ATC-308): stopping while the
+// provider's evidence is awaited; stopped once the covered work was
+// confirmed cut short; finished when the covered work had already ended,
+// or nothing was running, by the time the stop applied; failed when the
+// provider refused the stop.
+type StopState string
+
+const (
+	StopStopping StopState = "stopping"
+	StopStopped  StopState = "stopped"
+	StopFinished StopState = "finished"
+	StopFailed   StopState = "failed"
+)
+
+// ThreadStop is one stop operation on a thread (ATC-308): the explicit
+// request to stop its work — the turn running, and any submitted turn
+// that has not started — recorded durably before anything reaches the
+// provider and resolved only on the provider's evidence. While one is
+// stopping, the thread refuses messages, answers, and decisions, across
+// ATC restarts; a resubmission returns the same operation. The
+// conversation itself is preserved for a later message to continue.
+type ThreadStop struct {
+	ID         string          `json:"id" doc:"Server-minted stop identifier (stop-…)."`
+	ThreadID   string          `json:"threadId"`
+	Key        string          `json:"key,omitempty" doc:"The client's idempotency key, when one was given; the same key on the same thread returns this stop again, whatever its state, instead of stopping later work."`
+	State      StopState       `json:"state" enum:"stopping,stopped,finished,failed" doc:"stopping while the provider's evidence is awaited; stopped once the covered work was confirmed cut short; finished when it had already ended or nothing was running; failed when the provider refused."`
+	Delivery   MessageDelivery `json:"delivery" enum:"accepted,uncertain" doc:"accepted once the provider committed the stop command; uncertain when it never answered — submit the stop again to reconcile."`
+	Detail     string          `json:"detail,omitempty" doc:"The provider's reason for a failure, or what the outcome rests on."`
+	CreatedAt  time.Time       `json:"createdAt"`
+	ResolvedAt *time.Time      `json:"resolvedAt,omitempty"`
 }

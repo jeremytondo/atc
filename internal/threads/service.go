@@ -94,7 +94,8 @@ type Options struct {
 //	ops serializes each mutation's commit — database write, view change,
 //	    and event publish move as one unit — and guards opening.
 //	mu  guards the in-memory maps only: the view, identities, holds,
-//	    the active projection, approvals, and prior statuses.
+//	    the active projection, approvals, input requests, answers, stops,
+//	    and prior statuses.
 type Service struct {
 	repository *store.Threads
 	terminals  TerminalReader
@@ -133,7 +134,14 @@ type Service struct {
 	held map[string]struct{}
 	// approvals holds each thread's approval requests as its
 	// Integration reports them (approvals.go): evidence, like active.
+	// inputs holds its structured requests the same way (inputs.go).
 	approvals map[string][]*approvalEntry
+	inputs    map[string][]*inputEntry
+	// answers and stops hold each thread's recent answers and stops
+	// (inputs.go, stops.go): durable, read whole at boot, the unresolved
+	// ones among them the operations still awaiting evidence.
+	answers map[string][]*store.ThreadAnswerRecord
+	stops   map[string][]*store.ThreadStopRecord
 	// priorStatus remembers, per thread with a pending submission, the
 	// status the submission provisionally replaced (turns.go).
 	priorStatus map[string]priorStatus
@@ -172,6 +180,9 @@ func NewService(opts Options) *Service {
 		active:      make(map[string]string),
 		held:        make(map[string]struct{}),
 		approvals:   make(map[string][]*approvalEntry),
+		inputs:      make(map[string][]*inputEntry),
+		answers:     make(map[string][]*store.ThreadAnswerRecord),
+		stops:       make(map[string][]*store.ThreadStopRecord),
 		priorStatus: make(map[string]priorStatus),
 	}
 }
@@ -189,13 +200,23 @@ func (s *Service) SetLinker(integrationID string, linker Linker) {
 // claims about an observation that no longer exists, so they coerce to
 // unknown — persisted immediately, so the database never claims liveness
 // it cannot back. Idle, error, unknown, and finished turns persist as
-// recorded.
+// recorded, and so do the answers and stops (ATC-308): an operation
+// unresolved at the last shutdown is unresolved now, its restriction in
+// force, until the Integration's evidence settles it.
 func (s *Service) Load(ctx context.Context) error {
 	records, err := s.repository.List(ctx)
 	if err != nil {
 		return err
 	}
 	identities, err := s.repository.ListIdentities(ctx)
+	if err != nil {
+		return err
+	}
+	answers, err := s.repository.ListAnswers(ctx)
+	if err != nil {
+		return err
+	}
+	stops, err := s.repository.ListStops(ctx)
 	if err != nil {
 		return err
 	}
@@ -219,6 +240,18 @@ func (s *Service) Load(ctx context.Context) error {
 		key := identityKey{identity.IntegrationID, identity.ProviderConversationID}
 		s.identities[key] = identity.ThreadID
 		s.keys[identity.ThreadID] = key
+	}
+	for _, answer := range answers {
+		if _, ok := s.view[answer.ThreadID]; ok {
+			entry := answer
+			s.answers[answer.ThreadID] = append(s.answers[answer.ThreadID], &entry)
+		}
+	}
+	for _, stop := range stops {
+		if _, ok := s.view[stop.ThreadID]; ok {
+			entry := stop
+			s.stops[stop.ThreadID] = append(s.stops[stop.ThreadID], &entry)
+		}
 	}
 	return nil
 }
@@ -723,6 +756,26 @@ func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (s
 	if changed {
 		record.UpdatedAt = at
 	}
+	// The program closing the session no earlier than a stop was accepted
+	// is the stop confirmed: its resolution commits the record instead.
+	s.mu.Lock()
+	stop := s.stopping(threadID)
+	s.mu.Unlock()
+	if stop != nil && !o.SessionClosedAt.IsZero() && !o.SessionClosedAt.Before(stop.CreatedAt) {
+		ok, err := s.confirmStop(ctx, &record, *stop, at, "the program closed the session")
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			s.logger.Debug("observation for a deleted thread dropped", "thread", threadID)
+			return "", nil
+		}
+		s.mu.Lock()
+		s.held[threadID] = struct{}{}
+		s.mu.Unlock()
+		s.hub.Publish(api.EventThreadUpdated, resource, threadID)
+		return threadID, nil
+	}
 	updated, err := s.repository.Update(ctx, record)
 	if err != nil {
 		return "", err
@@ -796,19 +849,22 @@ func (s *Service) ReleaseIntegration(ctx context.Context, integrationID string) 
 // from what it reports: the hold releases and the thread archives, with
 // a live status coerced to unknown. Archiving is the lossless mirror —
 // the program hides archived and deleted conversations alike, and a
-// later report of the same identity unarchives the same record. An
-// unknown identity is ignored.
+// later report of the same identity unarchives the same record. A stop
+// being confirmed resolves: nothing runs on a conversation the program
+// dropped. An unknown identity is ignored.
 func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
 	threadID, known := s.identities[identityKey{integrationID, providerID}]
 	var record store.ThreadRecord
+	var stop *store.ThreadStopRecord
 	if known {
 		entry, ok := s.view[threadID]
 		known = ok
 		if ok {
 			record = *entry
+			stop = s.stopping(threadID)
 		}
 	}
 	s.mu.Unlock()
@@ -821,6 +877,24 @@ func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, prov
 		record.Archived = true
 		record.ArchivedAt = &at
 		changed = true
+	}
+	if stop != nil {
+		ok, err := s.confirmStop(ctx, &record, *stop, s.now(), "the program dropped the thread")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		s.mu.Lock()
+		delete(s.held, threadID)
+		s.mu.Unlock()
+		s.hub.Publish(api.EventThreadUpdated, resource, threadID)
+		return nil
+	}
+	// No answer resolves on a conversation the program dropped.
+	if _, err := s.repository.SupersedeAnswers(ctx, threadID, "the program dropped the thread", s.now()); err != nil {
+		return err
 	}
 	if changed {
 		record.UpdatedAt = s.now()
@@ -840,6 +914,14 @@ func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, prov
 	// Nothing is pending on a conversation the program dropped.
 	if len(s.pendingApprovals(threadID)) > 0 {
 		delete(s.approvals, threadID)
+		changed = true
+	}
+	if len(s.pendingInputs(threadID)) > 0 {
+		delete(s.inputs, threadID)
+		changed = true
+	}
+	if s.unresolvedAnswers(threadID) {
+		s.supersedeAnswers(threadID, "the program dropped the thread", s.now())
 		changed = true
 	}
 	s.mu.Unlock()
@@ -1213,6 +1295,9 @@ func (s *Service) remove(ctx context.Context, id string) error {
 	delete(s.view, id)
 	s.forgetIdentity(id)
 	delete(s.approvals, id)
+	delete(s.inputs, id)
+	delete(s.answers, id)
+	delete(s.stops, id)
 	delete(s.priorStatus, id)
 	s.mu.Unlock()
 	s.hub.Publish(api.EventThreadDeleted, resource, id)
@@ -1462,6 +1547,8 @@ func (s *Service) thread(record store.ThreadRecord) api.Thread {
 	s.mu.Lock()
 	key := s.keys[record.ID]
 	thread.Approvals = s.pendingApprovals(record.ID)
+	thread.InputRequests = s.pendingInputs(record.ID)
+	thread.Stop = s.unresolvedStop(record.ID)
 	s.mu.Unlock()
 	if linker, ok := s.linkers[record.IntegrationID]; ok {
 		thread.Links = linker(key.providerID)
