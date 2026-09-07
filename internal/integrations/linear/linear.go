@@ -1,21 +1,31 @@
-// Package linear is Linear's Integration (ATC-302): the one that faces the
-// other way. Linear sends work in — an explicit @atc mention on an issue
-// creates an Agent Session — and receives the result: ATC starts exactly
-// one Thread with its initial Turn in T3 Code, under a fixed execution
-// profile and in one configured Project, tells the session where the
-// conversation opens, watches that exact Turn for as long as it takes,
-// and posts its final response back. Everything a person does with the
-// run — answer a question, approve, follow up, stop — happens in T3;
-// Linear only ever gets told where to go and how it ended.
+// Package linear is Linear's Integration (ATC-302, ATC-309): the one that
+// faces the other way. Linear sends work in — an explicit @atc mention on
+// an issue creates an Agent Session — and the session becomes a
+// conversation: ATC starts exactly one Thread in T3 Code, under a fixed
+// execution profile and in one configured Project, binds the session to
+// it for good, and relays what the person does in the session through
+// the shared Thread capabilities. A message continues the Thread; the
+// agent's questions and approval requests are presented as elicitations
+// with the exact choices offered, and a choice, a reply in words, or a
+// decision goes back through the answer and decision capabilities; a
+// stop goes through the stop capability. Every result — a turn's final
+// response, a question resolved, a stop confirmed, a failure — is
+// reported against the exact submission it belongs to, on evidence,
+// never on a command's acceptance. Linear interprets nothing: a reply is
+// the user's text, verbatim, and the agent reads it.
 //
 // The Integration owns Linear's protocol and nothing of T3's: it verifies
-// deliveries for the shared webhook ingress (verify.go), interprets
-// sessions (process.go), asks the application coordinator to start the
-// Thread and reads the normalized Thread through the threads domain
-// (service.go), and speaks Linear's GraphQL API (api.go). Its state is
-// durable Integration state in ATC's store, not a domain: one row per
-// session binding it to the Thread and Turn it started, and an outbox of
-// the calls owed to Linear, each under a deterministic key so a repeated
+// deliveries for the shared webhook ingress (verify.go), turns sessions
+// and prompts into durable submissions (process.go), drives each session
+// through the application coordinator — the start, then every
+// submission in order (session.go) — reads the normalized Thread through
+// the threads domain to report outcomes and present requests
+// (observe.go), and speaks Linear's GraphQL API (api.go). Its state is
+// durable Integration state in ATC's store, not a domain: a session row
+// binding it to its Thread, a submission row per Linear input with its
+// target, operation, delivery, and outcome, a request row per question
+// or approval presented with the options offered, and an outbox of the
+// calls owed to Linear, each under a deterministic key so a repeated
 // inbox delivery, observation, or restart can never post twice
 // (outbox.go). Credentials live in one 0600 setup file (setup.go) and
 // appear nowhere else — never in status, logs, responses, or the
@@ -25,10 +35,10 @@
 // Verify is pure computation and Process only writes rows; the session
 // must hear something within ten seconds of its creation, so the
 // acknowledgement is an outbox row the sender posts immediately, before
-// T3 is asked for anything. Tracking has no duration bound — a Turn that
-// runs for hours, waits for a person, or outlives a connectivity outage
-// stays watched — while every individual request is bounded and retried
-// with backoff.
+// T3 is asked for anything. A session has no duration bound — a
+// conversation that runs for days, waits for a person, or outlives a
+// connectivity outage stays bound and watched — while every individual
+// request is bounded and retried with backoff.
 package linear
 
 import (

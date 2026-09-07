@@ -343,10 +343,17 @@ type QuestionAnswer struct {
 	Text       string   `json:"text,omitempty" doc:"A custom text answer, when the question allows one; exclusive with choices."`
 }
 
-// InputAnswerParams is the request body of an answer: one complete
-// answer set for the request, every question answered exactly once.
+// InputAnswerParams is the request body of an answer: structured
+// answers to the request's questions, or a conversational reply to the
+// request as a whole (ATC-309). A structured set need not answer every
+// question — the provider forwards whatever is answered, and the agent
+// reads what it received — but each question at most once, in a form it
+// allows. A reply is the user's text, passed to the agent verbatim for
+// it to interpret: an answer in prose, a partial answer, or a change of
+// direction; ATC neither classifies nor completes it.
 type InputAnswerParams struct {
-	Answers []QuestionAnswer `json:"answers" doc:"One answer per question of the request; a missing or unknown question, a choice the question does not offer, or a form it does not allow is refused as a whole."`
+	Answers []QuestionAnswer `json:"answers,omitempty" doc:"Structured answers: one per question answered, each question at most once, with the choices it offers or a custom text where it allows one. A subset of the questions is accepted; an unknown question, a choice the question does not offer, or a form it does not allow is refused as a whole. Exclusive with reply."`
+	Reply   string           `json:"reply,omitempty" doc:"A conversational reply to the request as a whole, passed to the agent verbatim for it to interpret against its questions. Exclusive with answers."`
 }
 
 // InputAnswer is the answer submitted through ATC for a request
@@ -356,7 +363,8 @@ type InputAnswerParams struct {
 // program committed the command, its state whether the request was
 // resolved with it.
 type InputAnswer struct {
-	Answers     []QuestionAnswer `json:"answers"`
+	Answers     []QuestionAnswer `json:"answers" doc:"The structured answers submitted; empty for a reply."`
+	Reply       string           `json:"reply,omitempty" doc:"The conversational reply submitted, when the answer was one."`
 	Delivery    MessageDelivery  `json:"delivery" enum:"accepted,uncertain" doc:"accepted once the provider committed the answer; uncertain when it never answered — resubmit the same answers to reconcile."`
 	State       InputAnswerState `json:"state" enum:"sent,resolved,failed,superseded" doc:"sent while the provider's evidence is awaited; resolved once the provider resolved the request with exactly this answer; failed when it refused or could not deliver it; superseded when the request was resolved otherwise first."`
 	Detail      string           `json:"detail,omitempty" doc:"The provider's reason for a failure, or what superseded the answer."`

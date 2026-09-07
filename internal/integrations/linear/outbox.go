@@ -23,11 +23,13 @@ import (
 // twice. Sent rows stay as receipts for as long as anything could try to
 // enqueue their key again.
 
-// Activity content types, as Linear names them.
+// Activity content types and signals, as Linear names them.
 const (
-	contentThought  = "thought"
-	contentResponse = "response"
-	contentError    = "error"
+	contentThought     = "thought"
+	contentElicitation = "elicitation"
+	contentResponse    = "response"
+	contentError       = "error"
+	signalSelect       = "select"
 
 	kindActivity = "activity"
 	kindLinks    = "links"
@@ -41,13 +43,30 @@ const (
 // that key, so the same purpose presents the same identity even after
 // the row's receipt is pruned.
 func (s *Service) activity(sessionID, purpose, kind, body string) store.LinearOutboxRow {
+	return s.row(sessionID, purpose, activityInput{Content: activityContent{Type: kind, Body: body}})
+}
+
+// elicitation builds the outbox row for an elicitation offering options
+// under Linear's select signal (ATC-309); without options it is a plain
+// elicitation.
+func (s *Service) elicitation(sessionID, purpose, body string, options []selectOption) store.LinearOutboxRow {
+	input := activityInput{Content: activityContent{Type: contentElicitation, Body: body}}
+	if len(options) > 0 {
+		input.Signal = signalSelect
+		input.SignalMetadata = &signalMetadata{Options: options}
+	}
+	return s.row(sessionID, purpose, input)
+}
+
+func (s *Service) row(sessionID, purpose string, input activityInput) store.LinearOutboxRow {
 	key := sessionID + "/" + purpose
-	input, err := json.Marshal(activityInput{ID: ids.UUIDFrom("linear-activity:" + key), AgentSessionID: sessionID, Content: activityContent{Type: kind, Body: body}})
+	input.ID, input.AgentSessionID = ids.UUIDFrom("linear-activity:"+key), sessionID
+	body, err := json.Marshal(input)
 	if err != nil {
 		panic("linear: encoding an activity: " + err.Error())
 	}
 	now := s.now()
-	return store.LinearOutboxRow{ID: key, SessionID: sessionID, Kind: kindActivity, Body: input, NextAttemptAt: now, CreatedAt: now}
+	return store.LinearOutboxRow{ID: key, SessionID: sessionID, Kind: kindActivity, Body: body, NextAttemptAt: now, CreatedAt: now}
 }
 
 // links builds the outbox row that sets a session's external URLs to the
@@ -90,11 +109,13 @@ func (s *Service) sendLoop(ctx context.Context) {
 	}
 }
 
-// sendDue posts one batch and reports whether it was full. Sessions are
-// sent concurrently, sendWorkers at a time, so a slow call for one
-// session never holds another session's acknowledgement past its
-// deadline; a session's own rows go in order, so its story reads in
-// sequence.
+// sendDue posts one batch — each due session's oldest outstanding row —
+// and reports whether another pass is owed at once: the batch was full,
+// or a row went out and the row behind it is due. Sessions are sent
+// concurrently, sendWorkers at a time, so a slow call for one session
+// never holds another session's acknowledgement past its deadline; a
+// session's own rows go one at a time in order, so its story reads in
+// sequence and a row backing off holds the rows behind it.
 func (s *Service) sendDue(ctx context.Context) bool {
 	due, err := s.repo.Due(ctx, s.now(), sendBatch)
 	if err != nil {
@@ -113,6 +134,8 @@ func (s *Service) sendDue(ctx context.Context) bool {
 	}
 	slots := make(chan struct{}, sendWorkers)
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sent := false
 	for _, sessionID := range order {
 		rows := bySession[sessionID]
 		select {
@@ -127,16 +150,21 @@ func (s *Service) sendDue(ctx context.Context) bool {
 				if ctx.Err() != nil {
 					return
 				}
-				s.send(ctx, row)
+				if s.send(ctx, row) {
+					mu.Lock()
+					sent = true
+					mu.Unlock()
+				}
 			}
 		})
 	}
 	wg.Wait()
-	return len(due) == sendBatch
+	return sent || len(due) == sendBatch
 }
 
-// send makes one attempt at a row and records the result.
-func (s *Service) send(ctx context.Context, row store.LinearOutboxRow) {
+// send makes one attempt at a row and records the result, reporting
+// whether the row is done — sent, or refused for good.
+func (s *Service) send(ctx context.Context, row store.LinearOutboxRow) bool {
 	token, err := s.token(ctx)
 	if err == nil {
 		err = s.post(ctx, token, row)
@@ -151,7 +179,7 @@ func (s *Service) send(ctx context.Context, row store.LinearOutboxRow) {
 		}
 	}
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	now := s.now()
 	attempts := row.Attempts + 1
@@ -159,8 +187,10 @@ func (s *Service) send(ctx context.Context, row store.LinearOutboxRow) {
 	case err == nil, classify(err) == failureDuplicate:
 		if err := s.repo.Sent(ctx, row.ID, now); err != nil {
 			s.logger.Error("linear: recording a sent call", "key", row.ID, "error", err)
+			return false
 		}
 		s.logger.Debug("linear: sent", "key", row.ID)
+		return true
 	case errors.Is(err, ErrNotConfigured):
 		// Not an attempt: nothing to send with. The row waits for setup.
 		s.retry(ctx, row.ID, row.Attempts, now.Add(s.probeRetry))
@@ -177,17 +207,19 @@ func (s *Service) send(ctx context.Context, row store.LinearOutboxRow) {
 		if strings.HasSuffix(row.ID, "/result") {
 			// The answer itself was refused (too long, most likely): the
 			// user still learns the run is over and where the answer is.
-			fallback := s.activity(row.SessionID, "result-rejected", contentError, responseRejected(s.sessionLinks(ctx, row.SessionID)))
+			fallback := s.activity(row.SessionID, strings.TrimPrefix(row.ID, row.SessionID+"/")+"-rejected", contentError, responseRejected(s.sessionLinks(ctx, row.SessionID)))
 			if _, err := s.repo.Enqueue(ctx, fallback); err != nil && ctx.Err() == nil {
 				s.logger.Error("linear: queueing the fallback for a refused response", "key", row.ID, "error", err)
 			}
 			s.wake(s.sendKick)
 		}
+		return true
 	default:
 		s.noteFailure(row, err)
 		s.logger.Warn("linear: posting to Linear failed", "key", row.ID, "attempt", attempts, "error", err)
 		s.retry(ctx, row.ID, attempts, now.Add(s.backoff(attempts)))
 	}
+	return false
 }
 
 // post makes the GraphQL call a row describes and requires Linear to
@@ -228,16 +260,6 @@ func (s *Service) noteFailure(row store.LinearOutboxRow, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastFailure = fmt.Sprintf("%s: %v", row.Kind, err)
-}
-
-// backoff is the delay before the next attempt: retryBase doubling per
-// failed attempt, capped at retryMax.
-func (s *Service) backoff(attempts int) time.Duration {
-	delay := s.retryBase
-	for i := 1; i < attempts && delay < s.retryMax; i++ {
-		delay *= 2
-	}
-	return min(delay, s.retryMax)
 }
 
 func (s *Service) prune(ctx context.Context) {

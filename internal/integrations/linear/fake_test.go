@@ -41,9 +41,11 @@ type fakeLinear struct {
 }
 
 type recordedActivity struct {
-	ID   string
-	Type string
-	Body string
+	ID      string
+	Type    string
+	Body    string
+	Signal  string
+	Options []selectOption
 }
 
 func newFakeLinear(t *testing.T) *fakeLinear {
@@ -111,7 +113,11 @@ func (f *fakeLinear) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.activityIDs[input.ID] = true
-		f.activities[input.AgentSessionID] = append(f.activities[input.AgentSessionID], recordedActivity{ID: input.ID, Type: input.Content.Type, Body: input.Content.Body})
+		recorded := recordedActivity{ID: input.ID, Type: input.Content.Type, Body: input.Content.Body, Signal: input.Signal}
+		if input.SignalMetadata != nil {
+			recorded.Options = input.SignalMetadata.Options
+		}
+		f.activities[input.AgentSessionID] = append(f.activities[input.AgentSessionID], recorded)
 		if f.ambiguousNext > 0 {
 			f.ambiguousNext--
 			w.WriteHeader(http.StatusBadGateway)

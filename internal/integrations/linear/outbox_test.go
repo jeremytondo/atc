@@ -8,6 +8,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // Outbound calls survive Linear's bad days: transient failures back off
@@ -20,7 +21,7 @@ func TestOutboxRetriesRenewsAndRecordsRefusals(t *testing.T) {
 	f.start()
 	now := f.clock.Now()
 	f.process(t, "dlv-1", createdEvent("sess-1", now))
-	f.startedThread("sess-1")
+	_, providerID := f.startedThread("sess-1")
 	// Retried rows land in whatever order their backoff allows.
 	acts := f.waitActivities("sess-1", 2)
 	if bodies := acts[0].Body + acts[1].Body; !strings.Contains(bodies, "ATC accepted") || !strings.Contains(bodies, "conversation is running") {
@@ -29,13 +30,15 @@ func TestOutboxRetriesRenewsAndRecordsRefusals(t *testing.T) {
 	if calls, _ := f.linear.counts(); calls < 4 {
 		t.Errorf("calls = %d, want the failed attempts and their retries", calls)
 	}
+	f.report(providerID, api.ThreadIdle, &threads.TurnObservation{ProviderID: "t3-turn-1", State: api.TurnCompleted, Response: "First."})
+	f.waitActivities("sess-1", 3)
 
 	// The token expires: the next call is refused, renewed once, and sent;
 	// the setup file holds the renewed tokens.
 	f.linear.set(func(l *fakeLinear) { l.expireToken = true })
-	f.process(t, "dlv-2", promptedEvent("sess-1", now, "ping", ""))
-	acts = f.waitActivities("sess-1", 3)
-	contains(t, acts[2].Body, "Follow-up messages")
+	f.prompt(t, "dlv-2", "sess-1", "ping")
+	acts = f.waitActivities("sess-1", 4)
+	contains(t, acts[3].Body, "Sent to the agent")
 	setup := f.readSetup()
 	if setup.AccessToken != "token-1" || setup.RefreshToken != "refresh-1" || setup.AccessTokenExpiresAt.IsZero() || setup.ClientSecret != "secret-1" {
 		t.Errorf("setup after renewal = %+v", setup)
@@ -47,20 +50,20 @@ func TestOutboxRetriesRenewsAndRecordsRefusals(t *testing.T) {
 	// An answer lost on the wire: the retry finds Linear already has the
 	// activity id, and the row is done.
 	f.linear.set(func(l *fakeLinear) { l.ambiguousNext = 1 })
-	f.process(t, "dlv-3", promptedEvent("sess-1", now, "pong", ""))
-	f.waitActivities("sess-1", 4)
+	f.prompt(t, "dlv-3", "sess-unknown", "pong")
+	f.waitActivities("sess-unknown", 1)
 	waitFor(t, "ambiguous row sent", func() bool {
 		pending, err := f.store.Linear().Pending(context.Background())
 		return err == nil && pending == 0
 	})
 	time.Sleep(40 * time.Millisecond)
-	if n := len(f.linear.activitiesOf("sess-1")); n != 4 {
-		t.Errorf("activities = %d after an ambiguous send, want 4", n)
+	if n := len(f.linear.activitiesOf("sess-unknown")); n != 1 {
+		t.Errorf("activities = %d after an ambiguous send, want 1", n)
 	}
 
 	// Linear declining without an error is a refusal too.
 	f.linear.set(func(l *fakeLinear) { l.declineNext = 1 })
-	f.process(t, "dlv-3b", promptedEvent("sess-1", now, "declined?", ""))
+	f.prompt(t, "dlv-3b", "sess-unknown", "declined?")
 	waitFor(t, "declined row recorded", func() bool {
 		pending, err := f.store.Linear().Pending(context.Background())
 		return err == nil && pending == 0
@@ -69,11 +72,13 @@ func TestOutboxRetriesRenewsAndRecordsRefusals(t *testing.T) {
 
 	// Linear refuses one body for good; the row records it and later rows
 	// still flow.
-	f.linear.set(func(l *fakeLinear) { l.refuseBodies = "has not been stopped" })
-	f.process(t, "dlv-4", promptedEvent("sess-1", now, "", "stop"))
-	f.process(t, "dlv-5", promptedEvent("sess-1", now, "still there?", ""))
+	f.linear.set(func(l *fakeLinear) { l.refuseBodies = "not tracking a conversation" })
+	f.prompt(t, "dlv-4", "sess-unknown", "refused?")
+	// The ping's turn is still pending, so this one is refused — and the
+	// refusal is a row that flows.
+	f.prompt(t, "dlv-5", "sess-1", "still there?")
 	acts = f.waitActivities("sess-1", 5)
-	contains(t, acts[4].Body, "Follow-up messages")
+	contains(t, acts[4].Body, "not sent")
 	waitFor(t, "refusal recorded", func() bool {
 		pending, err := f.store.Linear().Pending(context.Background())
 		return err == nil && pending == 0
@@ -126,7 +131,7 @@ func TestConnectionReportsSetupAndCredentialState(t *testing.T) {
 
 	f.linear.set(func(l *fakeLinear) { l.orgID = testOrg })
 	connection := waitState(t, f.service, api.IntegrationConnected)
-	for _, want := range []string{"acting as atc in workspace Eleven Ideas", "0 of 0 sessions open, 0 Linear updates owed", "webhook route https://node.ts.net/linear"} {
+	for _, want := range []string{"acting as atc in workspace Eleven Ideas", "0 of 0 sessions open, 0 submissions in flight, 0 Linear updates owed", "webhook route https://node.ts.net/linear"} {
 		contains(t, connection.Detail, want)
 	}
 
@@ -152,66 +157,64 @@ func waitState(t *testing.T, service *Service, state api.IntegrationConnectionSt
 	return service.Connection()
 }
 
-// evaluate's rules, one reading at a time.
-func TestEvaluate(t *testing.T) {
+// evaluateTurn's rules, one reading at a time.
+func TestEvaluateTurn(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	session := store.LinearSession{ID: "s", State: stateStarted, ThreadID: "thrd-a", TurnID: "turn-a"}
+	sub := store.LinearSubmission{ID: "s/start", SessionID: "s", Kind: kindStart, State: subSent, TurnID: "turn-a"}
 	links := &api.ThreadLinks{Web: "https://t3/x", App: "t3code://x"}
 	thread := func(state api.TurnState, status api.ThreadStatus, response string) api.Thread {
 		return api.Thread{ID: "thrd-a", Status: status, Links: links, LatestTurn: &api.ThreadTurn{ID: "turn-a", State: state, Response: response}}
 	}
 	seen := now.Add(-3 * time.Minute)
 	cases := map[string]struct {
-		session     store.LinearSession
+		sub         store.LinearSubmission
 		thread      api.Thread
-		err         error
 		wantState   string
 		wantOutcome string
-		wantNotice  string
+		wantNotice  bool
 		wantChanged bool
 	}{
-		"running says nothing":        {session, thread(api.TurnRunning, api.ThreadWorking, ""), nil, stateStarted, "", "", false},
-		"idle says nothing":           {session, thread(api.TurnUnknown, api.ThreadIdle, ""), nil, stateStarted, "", "", false},
-		"waiting notices once":        {session, thread(api.TurnRunning, api.ThreadWaitingForInput, ""), nil, stateStarted, "", "notice/waiting_for_input", true},
-		"same wait stays quiet":       {withNoticed(session, api.ThreadWaitingForInput), thread(api.TurnRunning, api.ThreadWaitingForInput, ""), nil, stateStarted, "", "", false},
-		"response delivered":          {session, thread(api.TurnCompleted, api.ThreadIdle, "answer"), nil, stateDone, outcomeResponded, "result", true},
-		"completion without answer":   {session, thread(api.TurnCompleted, api.ThreadIdle, ""), nil, stateStarted, "", "", true},
-		"answer still missing":        {withSeen(session, now), thread(api.TurnCompleted, api.ThreadIdle, ""), nil, stateStarted, "", "", false},
-		"answer given up":             {withSeen(session, seen), thread(api.TurnCompleted, api.ThreadIdle, ""), nil, stateDone, outcomeUnrecoverable, "result", true},
-		"failed":                      {session, thread(api.TurnFailed, api.ThreadIdle, ""), nil, stateDone, outcomeFailed, "result", true},
-		"interrupted":                 {session, thread(api.TurnInterrupted, api.ThreadIdle, ""), nil, stateDone, outcomeInterrupted, "result", true},
-		"newer turn":                  {session, api.Thread{LatestTurn: &api.ThreadTurn{ID: "turn-b", State: api.TurnCompleted, Response: "other"}}, nil, stateDone, outcomeUnrecoverable, "result", true},
-		"no turn":                     {session, api.Thread{}, nil, stateDone, outcomeUnrecoverable, "result", true},
-		"pending says nothing":        {session, api.Thread{ID: "thrd-a", Status: api.ThreadWorking, PendingTurn: &api.PendingTurn{ID: "turn-a"}}, nil, stateStarted, "", "", false},
-		"pending on a dropped thread": {session, withArchived(api.Thread{ID: "thrd-a", Status: api.ThreadUnknown, Links: links, PendingTurn: &api.PendingTurn{ID: "turn-a"}}), nil, stateDone, outcomeUnrecoverable, "result", true},
-		"pending is another's":        {session, api.Thread{ID: "thrd-a", PendingTurn: &api.PendingTurn{ID: "turn-b"}, LatestTurn: &api.ThreadTurn{ID: "turn-a", State: api.TurnCompleted, Response: "answer"}}, nil, stateDone, outcomeResponded, "result", true},
-		"archived unfinished":         {session, withArchived(thread(api.TurnUnknown, api.ThreadUnknown, "")), nil, stateDone, outcomeUnrecoverable, "result", true},
-		"archived after completion":   {session, withArchived(thread(api.TurnCompleted, api.ThreadUnknown, "answer")), nil, stateDone, outcomeResponded, "result", true},
-		"gone":                        {session, api.Thread{}, errNotFound, stateDone, outcomeUnrecoverable, "result", true},
+		"running says nothing":        {sub, thread(api.TurnRunning, api.ThreadWorking, ""), subSent, "", false, false},
+		"idle says nothing":           {sub, thread(api.TurnUnknown, api.ThreadIdle, ""), subSent, "", false, false},
+		"waiting says nothing":        {sub, thread(api.TurnRunning, api.ThreadWaitingForInput, ""), subSent, "", false, false},
+		"response delivered":          {sub, thread(api.TurnCompleted, api.ThreadIdle, "answer"), subDone, outcomeResponded, true, true},
+		"completion without answer":   {sub, thread(api.TurnCompleted, api.ThreadIdle, ""), subSent, "", false, true},
+		"answer still missing":        {withSeen(sub, now), thread(api.TurnCompleted, api.ThreadIdle, ""), subSent, "", false, false},
+		"answer given up":             {withSeen(sub, seen), thread(api.TurnCompleted, api.ThreadIdle, ""), subDone, outcomeUnrecoverable, true, true},
+		"failed":                      {sub, thread(api.TurnFailed, api.ThreadIdle, ""), subDone, outcomeFailed, true, true},
+		"interrupted":                 {sub, thread(api.TurnInterrupted, api.ThreadIdle, ""), subDone, outcomeInterrupted, true, true},
+		"newer turn":                  {sub, api.Thread{LatestTurn: &api.ThreadTurn{ID: "turn-b", State: api.TurnCompleted, Response: "other"}}, subDone, outcomeUnrecoverable, true, true},
+		"no turn":                     {sub, api.Thread{}, subDone, outcomeUnrecoverable, true, true},
+		"pending says nothing":        {sub, api.Thread{ID: "thrd-a", Status: api.ThreadWorking, PendingTurn: &api.PendingTurn{ID: "turn-a"}}, subSent, "", false, false},
+		"pending on a dropped thread": {sub, withArchived(api.Thread{ID: "thrd-a", Status: api.ThreadUnknown, Links: links, PendingTurn: &api.PendingTurn{ID: "turn-a"}}), subDone, outcomeUnrecoverable, true, true},
+		"pending is another's":        {sub, api.Thread{ID: "thrd-a", PendingTurn: &api.PendingTurn{ID: "turn-b"}, LatestTurn: &api.ThreadTurn{ID: "turn-a", State: api.TurnCompleted, Response: "answer"}}, subDone, outcomeResponded, true, true},
+		"archived unfinished":         {sub, withArchived(thread(api.TurnUnknown, api.ThreadUnknown, "")), subDone, outcomeUnrecoverable, true, true},
+		"archived after completion":   {sub, withArchived(thread(api.TurnCompleted, api.ThreadUnknown, "answer")), subDone, outcomeResponded, true, true},
 	}
+	s := &Service{responseGrace: 2 * time.Minute, now: func() time.Time { return now }}
 	for name, tc := range cases {
-		got, notices, changed := evaluate(tc.session, tc.thread, tc.err, now, 2*time.Minute)
-		if got.State != tc.wantState || got.Outcome != tc.wantOutcome || changed != tc.wantChanged {
-			t.Errorf("%s: state/outcome/changed = %s/%s/%t, want %s/%s/%t", name, got.State, got.Outcome, changed, tc.wantState, tc.wantOutcome, tc.wantChanged)
+		got, rows := s.evaluateTurn(tc.sub, tc.thread, now)
+		changed := got != nil
+		state, outcome := tc.sub.State, tc.sub.Outcome
+		if got != nil {
+			state, outcome = got.State, got.Outcome
+		}
+		if state != tc.wantState || outcome != tc.wantOutcome || changed != tc.wantChanged {
+			t.Errorf("%s: state/outcome/changed = %s/%s/%t, want %s/%s/%t", name, state, outcome, changed, tc.wantState, tc.wantOutcome, tc.wantChanged)
 		}
 		switch {
-		case tc.wantNotice == "" && len(notices) != 0:
-			t.Errorf("%s: notices = %+v, want none", name, notices)
-		case tc.wantNotice != "" && (len(notices) != 1 || notices[0].purpose != tc.wantNotice):
-			t.Errorf("%s: notices = %+v, want %s", name, notices, tc.wantNotice)
+		case !tc.wantNotice && len(rows) != 0:
+			t.Errorf("%s: rows = %+v, want none", name, rows)
+		case tc.wantNotice && (len(rows) != 1 || rows[0].ID != "s/turn/turn-a/result"):
+			t.Errorf("%s: rows = %+v, want the result", name, rows)
 		}
-		if name == "newer turn" && strings.Contains(notices[0].body, "other") {
+		if name == "newer turn" && strings.Contains(string(rows[0].Body), "other") {
 			t.Errorf("%s delivered the newer turn's response", name)
 		}
 	}
 }
 
-func withNoticed(s store.LinearSession, status api.ThreadStatus) store.LinearSession {
-	s.NoticedStatus = string(status)
-	return s
-}
-
-func withSeen(s store.LinearSession, at time.Time) store.LinearSession {
+func withSeen(s store.LinearSubmission, at time.Time) store.LinearSubmission {
 	s.CompletedSeenAt = &at
 	return s
 }

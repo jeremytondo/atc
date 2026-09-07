@@ -26,6 +26,11 @@ func twoQuestions(requestID string, at time.Time) InputObservation {
 	}}
 }
 
+// structured wraps answers as an answer submission.
+func structured(answers ...api.QuestionAnswer) api.InputAnswerParams {
+	return api.InputAnswerParams{Answers: answers}
+}
+
 // external observes a T3 thread into the fixture and returns its id.
 func (f *fixture) external(t *testing.T, providerID string, status api.ThreadStatus) string {
 	t.Helper()
@@ -88,7 +93,7 @@ func TestObserveInputs(t *testing.T) {
 	if len(thread.InputRequests) != 2 || thread.InputRequests[0].ID != requestID || thread.InputRequests[1].Unanswerable == "" || len(thread.InputRequests[1].Questions[0].Options) != 0 {
 		t.Errorf("requests = %+v", thread.InputRequests)
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, thread.InputRequests[1].ID, []api.QuestionAnswer{{QuestionID: "q1", Text: "x"}}); !errors.Is(err, ErrInputUnanswerable) {
+	if _, err := f.service.BeginAnswer(ctx, id, thread.InputRequests[1].ID, structured(api.QuestionAnswer{QuestionID: "q1", Text: "x"})); !errors.Is(err, ErrInputUnanswerable) {
 		t.Errorf("answering an unanswerable request = %v", err)
 	}
 	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {
@@ -107,7 +112,7 @@ func TestObserveInputs(t *testing.T) {
 	if err != nil || resolved.Status != api.InputRequestResolved || resolved.Resolution != api.InputResolvedElsewhere || resolved.ResolvedAt == nil {
 		t.Errorf("resolved request = %+v, %v", resolved, err)
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, requestID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Choices: []string{"go"}}}); !errors.Is(err, ErrInputResolved) || !strings.Contains(err.Error(), "elsewhere") {
+	if _, err := f.service.BeginAnswer(ctx, id, requestID, structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Red"}}, api.QuestionAnswer{QuestionID: "q2", Choices: []string{"go"}})); !errors.Is(err, ErrInputResolved) || !strings.Contains(err.Error(), "elsewhere") {
 		t.Errorf("answer on a request resolved elsewhere = %v", err)
 	}
 	if _, err := f.service.ObserveInputs(ctx, "t3code", "t1", []InputObservation{first, second}, nil); err != nil {
@@ -150,8 +155,9 @@ func TestObserveInputs(t *testing.T) {
 	}
 }
 
-// An answer set must answer the request exactly: every question once,
-// in a form it allows, with choices it offers.
+// An answer must address the request: each question at most once, in a
+// form it allows, with choices it offers; a subset of the questions, or
+// a reply alone, is an answer too (ATC-309).
 func TestBeginAnswerValidation(t *testing.T) {
 	f := newFixture(t)
 	f.plant(t, "proj-aaaaa")
@@ -163,7 +169,7 @@ func TestBeginAnswerValidation(t *testing.T) {
 	thread, _ := f.service.Get(id)
 	requestID := thread.InputRequests[0].ID
 	cases := map[string][]api.QuestionAnswer{
-		"missing":           {{QuestionID: "q1", Choices: []string{"Red"}}},
+		"nothing":           {},
 		"unknown":           {{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Choices: []string{"go"}}, {QuestionID: "q9", Text: "x"}},
 		"twice":             {{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q1", Choices: []string{"Blue"}}, {QuestionID: "q2", Choices: []string{"go"}}},
 		"not offered":       {{QuestionID: "q1", Choices: []string{"Green"}}, {QuestionID: "q2", Choices: []string{"go"}}},
@@ -175,11 +181,20 @@ func TestBeginAnswerValidation(t *testing.T) {
 		"duplicate choice":  {{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Choices: []string{"go", "go"}}},
 	}
 	for name, answers := range cases {
-		if _, err := f.service.BeginAnswer(ctx, id, requestID, answers); !errors.Is(err, ErrAnswerInvalid) {
+		if _, err := f.service.BeginAnswer(ctx, id, requestID, structured(answers...)); !errors.Is(err, ErrAnswerInvalid) {
 			t.Errorf("%s = %v; want ErrAnswerInvalid", name, err)
 		}
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, "inpt-nope", nil); !errors.Is(err, ErrInputNotFound) {
+	for name, params := range map[string]api.InputAnswerParams{
+		"blank reply":             {Reply: "  "},
+		"reply and answers":       {Reply: "Blue", Answers: []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}}},
+		"blank reply and answers": {Reply: " ", Answers: []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}}},
+	} {
+		if _, err := f.service.BeginAnswer(ctx, id, requestID, params); !errors.Is(err, ErrAnswerInvalid) {
+			t.Errorf("%s = %v; want ErrAnswerInvalid", name, err)
+		}
+	}
+	if _, err := f.service.BeginAnswer(ctx, id, "inpt-nope", api.InputAnswerParams{}); !errors.Is(err, ErrInputNotFound) {
 		t.Errorf("unknown request = %v", err)
 	}
 	if got, _ := f.service.Get(id); got.InputRequests[0].Answer != nil {
@@ -188,7 +203,7 @@ func TestBeginAnswerValidation(t *testing.T) {
 	// The valid forms: one choice, several choices, custom text
 	// (trimmed); the provider's terms follow the provider's question ids
 	// and the multiple-selection shape.
-	req, err := f.service.BeginAnswer(ctx, id, requestID, []api.QuestionAnswer{{QuestionID: "q2", Text: " vim "}, {QuestionID: "q1", Choices: []string{"Blue"}}})
+	req, err := f.service.BeginAnswer(ctx, id, requestID, structured(api.QuestionAnswer{QuestionID: "q2", Text: " vim "}, api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Blue"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +213,46 @@ func TestBeginAnswerValidation(t *testing.T) {
 	}
 	if got, _ := f.service.Get(id); got.InputRequests[0].Answer == nil || got.InputRequests[0].Answer.State != api.InputAnswerSent || got.InputRequests[0].Answer.Answers[1].Text != "vim" {
 		t.Errorf("recorded answer = %+v", got.InputRequests[0].Answer)
+	}
+	// A subset of the questions is an answer (ATC-309): the provider
+	// forwards what is answered. A reply is the user's text alone, with
+	// the provider's question ids for the Integration's translation.
+	if _, err := f.service.ObserveInputs(ctx, "t3code", "t1", []InputObservation{twoQuestions("req-1", f.clock.Now()), twoQuestions("req-2", f.clock.Now()), twoQuestions("req-3", f.clock.Now())}, nil); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ = f.service.Get(id)
+	partial, err := f.service.BeginAnswer(ctx, id, thread.InputRequests[1].ID, structured(api.QuestionAnswer{QuestionID: "q2", Choices: []string{"make"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]ProviderAnswer{{QuestionID: "tools", Values: []string{"make"}, Multiple: true}}, partial.Answers); diff != "" {
+		t.Errorf("partial answer = %+v (-want +got):\n%s", partial, diff)
+	}
+	reply, err := f.service.BeginAnswer(ctx, id, thread.InputRequests[2].ID, api.InputAnswerParams{Reply: " Blue, and just go for now "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Verbatim, whitespace included, as the first question's custom
+	// answer and nothing for the others.
+	if diff := cmp.Diff([]ProviderAnswer{{QuestionID: "Which color?", Values: []string{" Blue, and just go for now "}}}, reply.Answers); diff != "" || !reply.Dispatch {
+		t.Errorf("reply = %+v (-want +got):\n%s", reply, diff)
+	}
+	if got, _ := f.service.InputRequest(id, thread.InputRequests[2].ID); got.Answer == nil || got.Answer.Reply != " Blue, and just go for now " || len(got.Answer.Answers) != 0 {
+		t.Errorf("recorded reply = %+v", got.Answer)
+	}
+	// The same reply recovers it; a different one is refused while it
+	// awaits evidence; the evidence naming the reply as sent resolves it.
+	if again, err := f.service.BeginAnswer(ctx, id, thread.InputRequests[2].ID, api.InputAnswerParams{Reply: " Blue, and just go for now "}); err != nil || again.AnswerID != reply.AnswerID {
+		t.Errorf("same reply = %+v, %v", again, err)
+	}
+	if _, err := f.service.BeginAnswer(ctx, id, thread.InputRequests[2].ID, api.InputAnswerParams{Reply: "Red"}); !errors.Is(err, ErrAnswerPending) {
+		t.Errorf("different reply while sent = %v", err)
+	}
+	if _, err := f.service.ObserveInputs(ctx, "t3code", "t1", nil, []InputResolution{{RequestID: "req-3", Answers: []ProviderAnswer{{QuestionID: "Which color?", Values: []string{" Blue, and just go for now "}}}, At: f.clock.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.service.InputRequest(id, thread.InputRequests[2].ID); got.Resolution != api.InputResolvedByAnswer || got.Answer.State != api.InputAnswerResolved {
+		t.Errorf("reply resolved = %+v (answer %+v)", got, got.Answer)
 	}
 }
 
@@ -233,7 +288,7 @@ func TestAnswerOutcomes(t *testing.T) {
 	answers := []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Choices: []string{"go", "make"}}}
 	begin := func(request string) AnswerRequest {
 		t.Helper()
-		req, err := f.service.BeginAnswer(ctx, id, ids[request], answers)
+		req, err := f.service.BeginAnswer(ctx, id, ids[request], structured(answers...))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,16 +302,16 @@ func TestAnswerOutcomes(t *testing.T) {
 	// A retry of the same answers while uncertain dispatches again under
 	// the same id; a different set is refused; once delivered, the same
 	// set is returned without a dispatch.
-	if again, err := f.service.BeginAnswer(ctx, id, ids["req-1"], answers); err != nil || again.AnswerID != first.AnswerID || !again.Dispatch {
+	if again, err := f.service.BeginAnswer(ctx, id, ids["req-1"], structured(answers...)); err != nil || again.AnswerID != first.AnswerID || !again.Dispatch {
 		t.Errorf("retry while uncertain = %+v, %v", again, err)
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, ids["req-1"], []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Blue"}}, {QuestionID: "q2", Choices: []string{"go"}}}); !errors.Is(err, ErrAnswerPending) {
+	if _, err := f.service.BeginAnswer(ctx, id, ids["req-1"], structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Blue"}}, api.QuestionAnswer{QuestionID: "q2", Choices: []string{"go"}})); !errors.Is(err, ErrAnswerPending) {
 		t.Errorf("different answer while sent = %v", err)
 	}
 	if request, err := f.service.AnswerDelivered(ctx, id, first.AnswerID); err != nil || request.Answer.Delivery != api.MessageAccepted || request.Answer.State != api.InputAnswerSent {
 		t.Errorf("AnswerDelivered = %+v, %v", request, err)
 	}
-	if again, err := f.service.BeginAnswer(ctx, id, ids["req-1"], answers); err != nil || again.AnswerID != first.AnswerID || again.Dispatch {
+	if again, err := f.service.BeginAnswer(ctx, id, ids["req-1"], structured(answers...)); err != nil || again.AnswerID != first.AnswerID || again.Dispatch {
 		t.Errorf("retry once delivered = %+v, %v", again, err)
 	}
 	if got := f.drain(); !slices.Equal(got, []string{"thread.updated " + id}) {
@@ -304,13 +359,13 @@ func TestAnswerOutcomes(t *testing.T) {
 	}
 	// The failed request takes another answer; the same answers on the
 	// resolved request recover the resolved answer, others are refused.
-	if req, err := f.service.BeginAnswer(ctx, id, ids["req-3"], answers); err != nil || req.AnswerID == third.AnswerID {
+	if req, err := f.service.BeginAnswer(ctx, id, ids["req-3"], structured(answers...)); err != nil || req.AnswerID == third.AnswerID {
 		t.Errorf("answer after failure = %+v, %v", req, err)
 	}
-	if req, err := f.service.BeginAnswer(ctx, id, ids["req-1"], answers); err != nil || req.AnswerID != first.AnswerID || req.Dispatch {
+	if req, err := f.service.BeginAnswer(ctx, id, ids["req-1"], structured(answers...)); err != nil || req.AnswerID != first.AnswerID || req.Dispatch {
 		t.Errorf("same answers on a resolved request = %+v, %v", req, err)
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, ids["req-1"], []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Blue"}}, {QuestionID: "q2", Choices: []string{"go"}}}); !errors.Is(err, ErrInputResolved) {
+	if _, err := f.service.BeginAnswer(ctx, id, ids["req-1"], structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Blue"}}, api.QuestionAnswer{QuestionID: "q2", Choices: []string{"go"}})); !errors.Is(err, ErrInputResolved) {
 		t.Errorf("other answers on a resolved request = %v", err)
 	}
 	// A stale failure — the request no longer live — supersedes the
@@ -365,7 +420,7 @@ func TestAnswerSurvivesRestart(t *testing.T) {
 	thread, _ := f.service.Get(id)
 	requestID := thread.InputRequests[0].ID
 	answers := []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Text: "vim"}}
-	req, err := f.service.BeginAnswer(ctx, id, requestID, answers)
+	req, err := f.service.BeginAnswer(ctx, id, requestID, structured(answers...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,22 +442,22 @@ func TestAnswerSurvivesRestart(t *testing.T) {
 	// Before the Integration reports the request again, the durable
 	// answer stands in: the same answers recover it, validated against
 	// the questions it kept; different ones are refused.
-	if again, err := reloaded.BeginAnswer(ctx, id, requestID, answers); err != nil || again.AnswerID != req.AnswerID || again.Dispatch || again.RequestID != "req-1" {
+	if again, err := reloaded.BeginAnswer(ctx, id, requestID, structured(answers...)); err != nil || again.AnswerID != req.AnswerID || again.Dispatch || again.RequestID != "req-1" {
 		t.Errorf("retry before the request is reported again = %+v, %v", again, err)
 	}
-	if _, err := reloaded.BeginAnswer(ctx, id, requestID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Blue"}}, {QuestionID: "q2", Text: "vim"}}); !errors.Is(err, ErrAnswerPending) {
+	if _, err := reloaded.BeginAnswer(ctx, id, requestID, structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Blue"}}, api.QuestionAnswer{QuestionID: "q2", Text: "vim"})); !errors.Is(err, ErrAnswerPending) {
 		t.Errorf("different answer before the request is reported again = %v", err)
 	}
-	if _, err := reloaded.BeginAnswer(ctx, id, requestID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Green"}}, {QuestionID: "q2", Text: "vim"}}); !errors.Is(err, ErrAnswerInvalid) {
+	if _, err := reloaded.BeginAnswer(ctx, id, requestID, structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Green"}}, api.QuestionAnswer{QuestionID: "q2", Text: "vim"})); !errors.Is(err, ErrAnswerInvalid) {
 		t.Errorf("invalid answer before the request is reported again = %v", err)
 	}
-	if _, err := reloaded.BeginAnswer(ctx, id, "inpt-nope", answers); !errors.Is(err, ErrInputNotFound) {
+	if _, err := reloaded.BeginAnswer(ctx, id, "inpt-nope", structured(answers...)); !errors.Is(err, ErrInputNotFound) {
 		t.Errorf("unknown request after reload = %v", err)
 	}
 	if _, err := reloaded.ObserveInputs(ctx, "t3code", "t1", []InputObservation{twoQuestions("req-1", requested)}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := reloaded.BeginAnswer(ctx, id, requestID, answers); err != nil || again.AnswerID != req.AnswerID || again.Dispatch {
+	if again, err := reloaded.BeginAnswer(ctx, id, requestID, structured(answers...)); err != nil || again.AnswerID != req.AnswerID || again.Dispatch {
 		t.Errorf("retry after reload = %+v, %v", again, err)
 	}
 	unresolved, err := reloaded.ObserveInputs(ctx, "t3code", "t1", nil, []InputResolution{{RequestID: "req-1", Answers: req.Answers, At: f.clock.Now()}})
@@ -422,7 +477,7 @@ func TestAnswerSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread, _ = reloaded.Get(id)
-	second, err := reloaded.BeginAnswer(ctx, id, thread.InputRequests[0].ID, answers)
+	second, err := reloaded.BeginAnswer(ctx, id, thread.InputRequests[0].ID, structured(answers...))
 	if err != nil {
 		t.Fatal(err)
 	}

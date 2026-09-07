@@ -5,8 +5,11 @@ an issue creates a Linear Agent Session, ATC starts one T3 Code
 conversation (Codex, `gpt-5.6-sol`, high reasoning effort) in one
 configured Project, adds the conversation's T3 links to the session, and
 posts the conversation's final response back when its first turn ends.
-Everything else — answering the agent's questions, approvals, follow-ups,
-stopping — happens in T3 Code; Linear is told where to go.
+The session stays bound to that conversation: a follow-up message in the
+session continues it, the agent's questions and approval requests appear
+in the session with the choices offered, a choice or a reply in words
+answers them, and Linear's stop stops the work. Every result is reported
+against the exact message, question, or stop it belongs to.
 
 Setup is manual. It needs a Linear OAuth application installed as an app
 actor, ATC's public webhook endpoint, and one setup file.
@@ -97,28 +100,52 @@ it renews them.
 reason while the file is missing or incomplete, `auth_failed` with the
 operator action when Linear refuses the token, `connecting` while Linear
 is unreachable, and `connected` naming the app user and workspace. The
-detail also counts open sessions and owed Linear updates and names the
-webhook route with its readiness. `atc server status` shows the ingress
+detail also counts open sessions, submissions in flight, and owed Linear
+updates, and names the webhook route with its readiness. `atc server status` shows the ingress
 side.
 
 Then mention `@atc` in an issue comment with an explicitly read-only
 question against the Project. Within seconds the session shows an
 acknowledgement, then the T3 links when T3 Code provides them; the answer
-follows when the run ends.
+follows when the run ends. Reply in the session to continue.
 
 ## Behavior worth knowing
 
 - Only an explicit mention in an issue comment starts work. Delegating
   the issue, or a mention without context, gets an explanation and no
   run.
-- Follow-up messages and stop signals in the session get a fixed
-  explanation pointing to T3 Code; they never reach the agent and never
-  end ATC's tracking.
-- Tracking has no duration limit and survives server restarts. A server
-  that restarts mid-start, or a T3 Code that never answers the start,
-  never leads to a second conversation: ATC says the start is uncertain
-  and watches what it recorded. T3 Code being disconnected defers the
-  start until it is back.
-- The answer is the exact turn's final response. If a newer turn replaces
-  it in T3, or the response cannot be recovered, Linear gets an
-  explanation with the links instead of a substitute.
+- A message in the session continues the same conversation under its
+  current agent, model, and settings, exactly as `atc thread send` does:
+  it starts the next turn once the current one is over, and while a
+  submitted turn has not started yet a further message is refused and
+  says so — nothing is queued or reinterpreted. Each turn's final
+  response is posted against the message that started it.
+- The agent's questions appear as an elicitation listing the questions
+  and choices, with Linear's select options. Picking an option answers
+  that one question with that exact choice; replying in words sends the
+  text verbatim as a reply to the open question — the agent reads it
+  against its questions; ATC neither classifies it nor fills in the rest.
+  A reply to a question that is no longer open is not sent, and not
+  turned into a message either; the session says so.
+- Approval requests appear the same way with the decisions offered. Only
+  picking one decides — text such as "yes, go ahead", or the decision's
+  label typed out, is a message and approves nothing. A decision on a
+  request already resolved elsewhere is refused and reported as such.
+- Linear's stop goes through ATC's stop: the session hears that the stop
+  was sent, then what T3 Code confirmed — stopped, already finished, or
+  refused. While the stop is being confirmed, new messages, answers, and
+  decisions are refused rather than held. The conversation is kept, and
+  a later message continues it.
+- Everything is durable and survives server restarts: the session's
+  binding, every submission with its target and outcome, and every
+  request presented with the options offered. A submission the program
+  never answered is retried under the same identity, never sent twice;
+  one the program could not take because T3 Code was away waits with a
+  bounded backoff and goes on T3 Code's return. A server that restarts
+  mid-start, or a T3 Code that never answers the start, never leads to a
+  second conversation.
+- Results are exact: a turn's final response, a failure with its detail,
+  or an explanation with the links when a newer turn replaced the tracked
+  one, T3 dropped the conversation, or the response could not be
+  recovered — never a substitute. Turns started from T3 Code itself are
+  not mirrored.

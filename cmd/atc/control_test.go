@@ -120,6 +120,39 @@ func TestThreadAnswerCLI(t *testing.T) {
 	_, _, _ = sending.wait(t)
 }
 
+// A reply (ATC-309) goes to T3 as the first question's custom answer,
+// verbatim; --reply and --answer are exclusive, and one is required.
+func TestThreadAnswerCLIReply(t *testing.T) {
+	ts, _ := connectedT3(t)
+	thread := ts.asking(t, 3)
+	request := thread.InputRequests[0]
+	if _, _, err := runCLI(t, "thread", "answer", thread.ID, request.ID, "--reply", "Blue", "--answer", "q2=go"); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Errorf("reply with answers = %v", err)
+	}
+	if _, _, err := runCLI(t, "thread", "answer", thread.ID, request.ID); err == nil || !strings.Contains(err.Error(), "an answer is required") {
+		t.Errorf("no answer = %v", err)
+	}
+	cli := startCLI(context.Background(), "", "thread", "answer", thread.ID, request.ID, "--reply", "Blue, and skip the tools for now")
+	waitForCLI(t, "the command to reach T3", func() bool { return len(ts.t3Server.Commands()) == 1 })
+	command := ts.t3Server.Commands()[0]
+	if answers := command["answers"].(map[string]any); command["type"] != "thread.user-input.respond" || answers["color"] != "Blue, and skip the tools for now" || len(answers) != 1 {
+		t.Errorf("command = %v", command)
+	}
+	ts.t3Server.SetThreadDetail("t1", t3codetest.WithActivities(t3codetest.ThreadDetailItem(t3codetest.ThreadItem("t1", "p1", "One")),
+		t3codetest.UserInputRequested("a1", "req-1", t3codetest.Question("color", "Color", "Which color?", t3codetest.QuestionOption("Blue", "")), t3codetest.Question("tools", "Tools", "Which tools?", t3codetest.QuestionOption("go", ""), t3codetest.MultiSelect())),
+		t3codetest.ActivityAt(t3codetest.UserInputResolved("b2", "req-1", map[string]any{"color": "Blue, and skip the tools for now"}), command["createdAt"].(string))))
+	ts.t3Server.Push(t3codetest.Upserted(4, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("pt-1", "running", "2026-09-01T00:00:03Z", nil))))
+	stdout, _, err := cli.wait(t)
+	if err != nil {
+		t.Fatalf("answer = %v; stdout %q", err, stdout)
+	}
+	for _, row := range [][]string{{"status", "resolved"}, {"resolution", "answer"}, {"reply", `"Blue, and skip the tools for now"`}} {
+		if !hasRow(stdout, row...) {
+			t.Errorf("answer output lacks row %q:\n%s", row, stdout)
+		}
+	}
+}
+
 // Answer outcomes short of resolution (ATC-308): a failure T3 reports
 // exits non-zero naming it; Ctrl-C ends the wait only — the answer
 // stays sent and nothing more reaches T3.

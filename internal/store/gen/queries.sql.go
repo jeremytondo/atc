@@ -80,6 +80,17 @@ func (q *Queries) CountPendingLinearOutbox(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPendingLinearSubmissions = `-- name: CountPendingLinearSubmissions :one
+SELECT COUNT(*) FROM linear_submissions WHERE state != 'done'
+`
+
+func (q *Queries) CountPendingLinearSubmissions(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingLinearSubmissions)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPendingWebhookDeliveries = `-- name: CountPendingWebhookDeliveries :one
 SELECT COUNT(*) FROM webhook_deliveries WHERE state = 'pending'
 `
@@ -160,7 +171,7 @@ func (q *Queries) FailWebhookDelivery(ctx context.Context, arg FailWebhookDelive
 }
 
 const getLinearSession = `-- name: GetLinearSession :one
-SELECT id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at FROM linear_sessions WHERE id = ?
+SELECT id, state, thread_id, outcome, created_at, updated_at FROM linear_sessions WHERE id = ?
 `
 
 func (q *Queries) GetLinearSession(ctx context.Context, id string) (LinearSession, error) {
@@ -168,12 +179,8 @@ func (q *Queries) GetLinearSession(ctx context.Context, id string) (LinearSessio
 	var i LinearSession
 	err := row.Scan(
 		&i.ID,
-		&i.Prompt,
 		&i.State,
 		&i.ThreadID,
-		&i.TurnID,
-		&i.NoticedStatus,
-		&i.CompletedSeenAt,
 		&i.Outcome,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -276,37 +283,120 @@ func (q *Queries) InsertLinearOutbox(ctx context.Context, arg InsertLinearOutbox
 	return result.RowsAffected()
 }
 
+const insertLinearRequest = `-- name: InsertLinearRequest :execrows
+INSERT INTO linear_requests (id, session_id, kind, options, state, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertLinearRequestParams struct {
+	ID        string
+	SessionID string
+	Kind      string
+	Options   string
+	State     string
+	CreatedAt string
+	UpdatedAt string
+}
+
+// Linear requests (ATC-309): what was presented, so a selection is
+// matched against it.
+func (q *Queries) InsertLinearRequest(ctx context.Context, arg InsertLinearRequestParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertLinearRequest,
+		arg.ID,
+		arg.SessionID,
+		arg.Kind,
+		arg.Options,
+		arg.State,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertLinearSession = `-- name: InsertLinearSession :execrows
-INSERT INTO linear_sessions (id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO linear_sessions (id, state, thread_id, outcome, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertLinearSessionParams struct {
+	ID        string
+	State     string
+	ThreadID  sql.NullString
+	Outcome   sql.NullString
+	CreatedAt string
+	UpdatedAt string
+}
+
+// Linear sessions (ATC-302, ATC-309). Insertion is the duplicate-session
+// check: a second `created` delivery for one session inserts nothing.
+func (q *Queries) InsertLinearSession(ctx context.Context, arg InsertLinearSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertLinearSession,
+		arg.ID,
+		arg.State,
+		arg.ThreadID,
+		arg.Outcome,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const insertLinearSubmission = `-- name: InsertLinearSubmission :execrows
+INSERT INTO linear_submissions (id, session_id, kind, text, request_id, question_id, value, state, delivery, operation_id, turn_id,
+    attempts, next_attempt_at, completed_seen_at, outcome, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertLinearSubmissionParams struct {
 	ID              string
-	Prompt          sql.NullString
+	SessionID       string
+	Kind            string
+	Text            sql.NullString
+	RequestID       sql.NullString
+	QuestionID      sql.NullString
+	Value           sql.NullString
 	State           string
-	ThreadID        sql.NullString
+	Delivery        string
+	OperationID     sql.NullString
 	TurnID          sql.NullString
-	NoticedStatus   sql.NullString
+	Attempts        int64
+	NextAttemptAt   string
 	CompletedSeenAt sql.NullString
 	Outcome         sql.NullString
+	Detail          sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
 }
 
-// Linear sessions (ATC-302). Insertion is the duplicate-session check: a
-// second `created` delivery for one session inserts nothing.
-func (q *Queries) InsertLinearSession(ctx context.Context, arg InsertLinearSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertLinearSession,
+// Linear submissions (ATC-309). Insertion is the duplicate-activity
+// check: a repeated delivery of one prompt activity inserts nothing.
+func (q *Queries) InsertLinearSubmission(ctx context.Context, arg InsertLinearSubmissionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertLinearSubmission,
 		arg.ID,
-		arg.Prompt,
+		arg.SessionID,
+		arg.Kind,
+		arg.Text,
+		arg.RequestID,
+		arg.QuestionID,
+		arg.Value,
 		arg.State,
-		arg.ThreadID,
+		arg.Delivery,
+		arg.OperationID,
 		arg.TurnID,
-		arg.NoticedStatus,
+		arg.Attempts,
+		arg.NextAttemptAt,
 		arg.CompletedSeenAt,
 		arg.Outcome,
+		arg.Detail,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -497,8 +587,8 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 }
 
 const insertThreadAnswer = `-- name: InsertThreadAnswer :execrows
-INSERT INTO thread_answers (id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO thread_answers (id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, reply, delivery, state, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
@@ -510,6 +600,7 @@ type InsertThreadAnswerParams struct {
 	Questions         string
 	Answers           string
 	ProviderAnswers   string
+	Reply             sql.NullString
 	Delivery          string
 	State             string
 	Detail            sql.NullString
@@ -529,6 +620,7 @@ func (q *Queries) InsertThreadAnswer(ctx context.Context, arg InsertThreadAnswer
 		arg.Questions,
 		arg.Answers,
 		arg.ProviderAnswers,
+		arg.Reply,
 		arg.Delivery,
 		arg.State,
 		arg.Detail,
@@ -675,10 +767,61 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 	return result.RowsAffected()
 }
 
+const listActiveLinearSubmissions = `-- name: ListActiveLinearSubmissions :many
+SELECT id, session_id, kind, text, request_id, question_id, value, state, delivery, operation_id, turn_id, attempts, next_attempt_at, completed_seen_at, outcome, detail, created_at, updated_at FROM linear_submissions WHERE session_id = ? AND state != 'done' ORDER BY created_at, id
+`
+
+func (q *Queries) ListActiveLinearSubmissions(ctx context.Context, sessionID string) ([]LinearSubmission, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveLinearSubmissions, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LinearSubmission
+	for rows.Next() {
+		var i LinearSubmission
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Kind,
+			&i.Text,
+			&i.RequestID,
+			&i.QuestionID,
+			&i.Value,
+			&i.State,
+			&i.Delivery,
+			&i.OperationID,
+			&i.TurnID,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.CompletedSeenAt,
+			&i.Outcome,
+			&i.Detail,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueLinearOutbox = `-- name: ListDueLinearOutbox :many
-SELECT id, session_id, kind, body, attempts, next_attempt_at, sent_at, failed, created_at FROM linear_outbox
-WHERE sent_at IS NULL AND failed IS NULL AND next_attempt_at <= ?
-ORDER BY next_attempt_at, created_at, id
+SELECT id, session_id, kind, body, attempts, next_attempt_at, sent_at, failed, created_at FROM linear_outbox AS o
+WHERE o.sent_at IS NULL AND o.failed IS NULL AND o.next_attempt_at <= ?
+  AND NOT EXISTS (
+    SELECT 1 FROM linear_outbox AS p
+    WHERE p.session_id = o.session_id AND p.sent_at IS NULL AND p.failed IS NULL
+      AND (p.created_at < o.created_at OR p.created_at = o.created_at AND p.id < o.id)
+  )
+ORDER BY o.next_attempt_at, o.created_at, o.id
 LIMIT ?
 `
 
@@ -687,6 +830,8 @@ type ListDueLinearOutboxParams struct {
 	Limit         int64
 }
 
+// A session's calls go out in order: only its oldest outstanding row is
+// due, so a row backing off holds the rows behind it.
 func (q *Queries) ListDueLinearOutbox(ctx context.Context, arg ListDueLinearOutboxParams) ([]LinearOutbox, error) {
 	rows, err := q.db.QueryContext(ctx, listDueLinearOutbox, arg.NextAttemptAt, arg.Limit)
 	if err != nil {
@@ -766,8 +911,89 @@ func (q *Queries) ListDueWebhookDeliveries(ctx context.Context, arg ListDueWebho
 	return items, nil
 }
 
+const listLinearRequests = `-- name: ListLinearRequests :many
+SELECT id, session_id, kind, options, state, created_at, updated_at FROM linear_requests WHERE session_id = ? ORDER BY created_at, id
+`
+
+func (q *Queries) ListLinearRequests(ctx context.Context, sessionID string) ([]LinearRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listLinearRequests, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LinearRequest
+	for rows.Next() {
+		var i LinearRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Kind,
+			&i.Options,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLinearSubmissions = `-- name: ListLinearSubmissions :many
+SELECT id, session_id, kind, text, request_id, question_id, value, state, delivery, operation_id, turn_id, attempts, next_attempt_at, completed_seen_at, outcome, detail, created_at, updated_at FROM linear_submissions WHERE session_id = ? ORDER BY created_at, id
+`
+
+func (q *Queries) ListLinearSubmissions(ctx context.Context, sessionID string) ([]LinearSubmission, error) {
+	rows, err := q.db.QueryContext(ctx, listLinearSubmissions, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LinearSubmission
+	for rows.Next() {
+		var i LinearSubmission
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Kind,
+			&i.Text,
+			&i.RequestID,
+			&i.QuestionID,
+			&i.Value,
+			&i.State,
+			&i.Delivery,
+			&i.OperationID,
+			&i.TurnID,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.CompletedSeenAt,
+			&i.Outcome,
+			&i.Detail,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenLinearSessions = `-- name: ListOpenLinearSessions :many
-SELECT id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at FROM linear_sessions WHERE state != 'done' ORDER BY created_at, id
+SELECT id, state, thread_id, outcome, created_at, updated_at FROM linear_sessions WHERE state != 'done' ORDER BY created_at, id
 `
 
 func (q *Queries) ListOpenLinearSessions(ctx context.Context) ([]LinearSession, error) {
@@ -781,12 +1007,8 @@ func (q *Queries) ListOpenLinearSessions(ctx context.Context) ([]LinearSession, 
 		var i LinearSession
 		if err := rows.Scan(
 			&i.ID,
-			&i.Prompt,
 			&i.State,
 			&i.ThreadID,
-			&i.TurnID,
-			&i.NoticedStatus,
-			&i.CompletedSeenAt,
 			&i.Outcome,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -911,7 +1133,7 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 }
 
 const listThreadAnswers = `-- name: ListThreadAnswers :many
-SELECT id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at FROM thread_answers ORDER BY created_at, id
+SELECT id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at, reply FROM thread_answers ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreadAnswers(ctx context.Context) ([]ThreadAnswer, error) {
@@ -936,6 +1158,7 @@ func (q *Queries) ListThreadAnswers(ctx context.Context) ([]ThreadAnswer, error)
 			&i.Detail,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Reply,
 		); err != nil {
 			return nil, err
 		}
@@ -1294,33 +1517,84 @@ func (q *Queries) SupersedeThreadAnswers(ctx context.Context, arg SupersedeThrea
 	return result.RowsAffected()
 }
 
+const updateLinearRequest = `-- name: UpdateLinearRequest :execrows
+UPDATE linear_requests SET state = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdateLinearRequestParams struct {
+	State     string
+	UpdatedAt string
+	ID        string
+}
+
+func (q *Queries) UpdateLinearRequest(ctx context.Context, arg UpdateLinearRequestParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateLinearRequest, arg.State, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateLinearSession = `-- name: UpdateLinearSession :execrows
-UPDATE linear_sessions SET prompt = ?, state = ?, thread_id = ?, turn_id = ?, noticed_status = ?,
-    completed_seen_at = ?, outcome = ?, updated_at = ?
+UPDATE linear_sessions SET state = ?, thread_id = ?, outcome = ?, updated_at = ?
 WHERE id = ?
 `
 
 type UpdateLinearSessionParams struct {
-	Prompt          sql.NullString
-	State           string
-	ThreadID        sql.NullString
-	TurnID          sql.NullString
-	NoticedStatus   sql.NullString
-	CompletedSeenAt sql.NullString
-	Outcome         sql.NullString
-	UpdatedAt       string
-	ID              string
+	State     string
+	ThreadID  sql.NullString
+	Outcome   sql.NullString
+	UpdatedAt string
+	ID        string
 }
 
 func (q *Queries) UpdateLinearSession(ctx context.Context, arg UpdateLinearSessionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateLinearSession,
-		arg.Prompt,
 		arg.State,
 		arg.ThreadID,
+		arg.Outcome,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateLinearSubmission = `-- name: UpdateLinearSubmission :execrows
+UPDATE linear_submissions SET text = ?, state = ?, delivery = ?, operation_id = ?, turn_id = ?, attempts = ?, next_attempt_at = ?,
+    completed_seen_at = ?, outcome = ?, detail = ?, updated_at = ?
+WHERE id = ?
+`
+
+type UpdateLinearSubmissionParams struct {
+	Text            sql.NullString
+	State           string
+	Delivery        string
+	OperationID     sql.NullString
+	TurnID          sql.NullString
+	Attempts        int64
+	NextAttemptAt   string
+	CompletedSeenAt sql.NullString
+	Outcome         sql.NullString
+	Detail          sql.NullString
+	UpdatedAt       string
+	ID              string
+}
+
+func (q *Queries) UpdateLinearSubmission(ctx context.Context, arg UpdateLinearSubmissionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateLinearSubmission,
+		arg.Text,
+		arg.State,
+		arg.Delivery,
+		arg.OperationID,
 		arg.TurnID,
-		arg.NoticedStatus,
+		arg.Attempts,
+		arg.NextAttemptAt,
 		arg.CompletedSeenAt,
 		arg.Outcome,
+		arg.Detail,
 		arg.UpdatedAt,
 		arg.ID,
 	)

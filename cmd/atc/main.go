@@ -693,15 +693,15 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	var webhookService *webhooks.Service
-	starter := &threadStarter{}
+	starter := &linearCoordinator{}
 	linearService := linear.New(linear.Options{
-		SetupPath:  linearSetupPath,
-		Repository: database.Linear(),
-		Starter:    starter,
-		Threads:    threadService,
-		Hub:        hub,
-		Ingress:    func(ctx context.Context) api.Webhooks { return webhookService.Status(ctx) },
-		Logger:     logger,
+		SetupPath:   linearSetupPath,
+		Repository:  database.Linear(),
+		Coordinator: starter,
+		Threads:     threadService,
+		Hub:         hub,
+		Ingress:     func(ctx context.Context) api.Webhooks { return webhookService.Status(ctx) },
+		Logger:      logger,
 	})
 
 	// One registration line per built-in Integration; a duplicate id fails
@@ -804,12 +804,29 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	return serveErr
 }
 
-// threadStarter is the Linear Integration's creation seam, bound to the
-// coordinator after it exists: the catalog the coordinator routes through
-// lists the Integration, so the two cannot be constructed in one order.
-// The binding lands before any loop runs.
-type threadStarter struct{ coordinator *application.Coordinator }
+// linearCoordinator is the Linear Integration's seam into the
+// application coordinator, bound after the coordinator exists: the
+// catalog the coordinator routes through lists the Integration, so the
+// two cannot be constructed in one order. The binding lands before any
+// loop runs.
+type linearCoordinator struct{ coordinator *application.Coordinator }
 
-func (t *threadStarter) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
-	return t.coordinator.StartThread(ctx, params, recorded)
+func (l *linearCoordinator) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
+	return l.coordinator.StartThread(ctx, params, recorded)
+}
+
+func (l *linearCoordinator) SendMessage(ctx context.Context, threadID string, params api.ThreadMessageParams) (api.ThreadMessage, error) {
+	return l.coordinator.SendMessage(ctx, threadID, params)
+}
+
+func (l *linearCoordinator) DecideApproval(ctx context.Context, threadID, approvalID string, params api.ApprovalDecisionParams) (api.ThreadApproval, error) {
+	return l.coordinator.DecideApproval(ctx, threadID, approvalID, params)
+}
+
+func (l *linearCoordinator) AnswerInput(ctx context.Context, threadID, requestID string, params api.InputAnswerParams) (api.ThreadInputRequest, error) {
+	return l.coordinator.AnswerInput(ctx, threadID, requestID, params)
+}
+
+func (l *linearCoordinator) StopThread(ctx context.Context, threadID string, params api.ThreadStopParams) (api.ThreadStop, error) {
+	return l.coordinator.StopThread(ctx, threadID, params)
 }

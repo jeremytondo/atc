@@ -110,9 +110,10 @@ type InputAnswerer interface {
 type AnswerDispatch func(ctx context.Context, answer InputAnswer) error
 
 // InputAnswer is one answer to dispatch: the provider's request id
-// (private), the answers keyed by the provider's own question ids, the
-// ATC answer id the program-side identities derive from, and when it
-// was submitted.
+// (private), the answers keyed by the provider's own question ids (a
+// conversational reply arrives translated by the domain, as the first
+// question's custom answer), the ATC answer id the program-side
+// identities derive from, and when it was submitted.
 type InputAnswer struct {
 	RequestID string
 	Answers   []ProviderAnswer

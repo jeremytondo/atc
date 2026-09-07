@@ -1,0 +1,39 @@
+{
+  "case": "partial",
+  "questions": [
+    {
+      "id": "color",
+      "options": [
+        "Red (Recommended)",
+        "Blue"
+      ],
+      "isOther": true
+    },
+    {
+      "id": "tool",
+      "options": [
+        "go (Recommended)",
+        "make"
+      ],
+      "isOther": true
+    },
+    {
+      "id": "tests",
+      "options": [
+        "Yes (Recommended)",
+        "No"
+      ],
+      "isOther": true
+    }
+  ],
+  "answers_sent": {
+    "tool": {
+      "answers": [
+        "make"
+      ]
+    }
+  },
+  "agent_final": [
+    "ANSWERED: tool\nTEXT: make\nPLAN: I would use make for the build."
+  ]
+}

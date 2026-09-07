@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,11 +64,13 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// fakeStarter is the application coordinator's creation seam: it records
-// the thread and its provisional turn in the real threads domain, exactly
-// as the coordinator does, then answers as the test decided — after a
-// block the test controls, so a slow T3 is one channel close away.
-type fakeStarter struct {
+// fakeCoordinator is the application coordinator's seam as the tests
+// drive it: it records threads, messages, answers, decisions, and stops
+// in the real threads domain exactly as the coordinator does, and
+// answers each dispatch as the test decided — the program committed it,
+// refused it, never answered, or is not connected — after a block the
+// test controls, so a slow T3 is one channel close away.
+type fakeCoordinator struct {
 	threads *threads.Service
 	dir     string
 
@@ -79,9 +82,18 @@ type fakeStarter struct {
 	// created maps each created ATC thread id to its provider id.
 	created map[string]string
 	nextID  int
+	// dispatch is how the program answers every message, answer,
+	// decision, and stop dispatch: nil commits it; ErrNotConnected
+	// refuses before anything is recorded; ErrDeliveryUncertain leaves
+	// it uncertain; the capability's rejection refuses it for good.
+	dispatch  error
+	messages  []api.ThreadMessageParams
+	answers   []api.InputAnswerParams
+	decisions []api.ApprovalDecisionParams
+	stops     []api.ThreadStopParams
 }
 
-func (f *fakeStarter) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
+func (f *fakeCoordinator) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, params)
 	block, fail, recordedErr := f.block, f.fail, f.recorded
@@ -129,27 +141,159 @@ func (f *fakeStarter) StartThread(ctx context.Context, params api.ThreadCreatePa
 	return f.threads.Get(id)
 }
 
-func (f *fakeStarter) count() int {
+// outcome is the program's answer to a dispatch.
+func (f *fakeCoordinator) outcome() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dispatch
+}
+
+func (f *fakeCoordinator) SendMessage(ctx context.Context, threadID string, params api.ThreadMessageParams) (api.ThreadMessage, error) {
+	f.mu.Lock()
+	f.messages = append(f.messages, params)
+	f.mu.Unlock()
+	if _, _, err := f.threads.Identity(threadID); err != nil {
+		return api.ThreadMessage{}, err
+	}
+	if params.Key != "" {
+		recorded, err := f.threads.MessageByKey(ctx, threadID, params.Key)
+		switch {
+		case err == nil && recorded.Delivery == api.MessageAccepted:
+			return recorded, nil
+		case err != nil && !errors.Is(err, threads.ErrNotFound):
+			return api.ThreadMessage{}, err
+		}
+	}
+	outcome := f.outcome()
+	if errors.Is(outcome, integrations.ErrNotConnected) {
+		return api.ThreadMessage{}, outcome
+	}
+	message, err := f.threads.SubmitMessage(ctx, threadID, threads.Submission{Text: params.Text, Key: params.Key})
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	if message.Delivery == api.MessageAccepted {
+		return message, nil
+	}
+	switch {
+	case outcome == nil:
+		return f.threads.MessageDelivered(ctx, threadID, message.ID)
+	case errors.Is(outcome, integrations.ErrMessageRejected):
+		_ = f.threads.MessageRejected(ctx, threadID, message.ID, outcome.Error())
+		return api.ThreadMessage{}, outcome
+	default:
+		return message, nil
+	}
+}
+
+func (f *fakeCoordinator) DecideApproval(ctx context.Context, threadID, approvalID string, params api.ApprovalDecisionParams) (api.ThreadApproval, error) {
+	f.mu.Lock()
+	f.decisions = append(f.decisions, params)
+	f.mu.Unlock()
+	req, err := f.threads.BeginDecision(threadID, approvalID, params.Decision)
+	if err != nil {
+		return api.ThreadApproval{}, err
+	}
+	_ = req
+	outcome := f.outcome()
+	switch {
+	case outcome == nil:
+		return f.threads.ResolveDecision(threadID, approvalID)
+	case errors.Is(outcome, integrations.ErrDecisionRejected), errors.Is(outcome, integrations.ErrNotConnected):
+		f.threads.AbandonDecision(threadID, approvalID)
+		return api.ThreadApproval{}, outcome
+	default:
+		return api.ThreadApproval{}, outcome
+	}
+}
+
+func (f *fakeCoordinator) AnswerInput(ctx context.Context, threadID, requestID string, params api.InputAnswerParams) (api.ThreadInputRequest, error) {
+	f.mu.Lock()
+	f.answers = append(f.answers, params)
+	f.mu.Unlock()
+	outcome := f.outcome()
+	if errors.Is(outcome, integrations.ErrNotConnected) {
+		if recovered, found, err := f.threads.RecoverAnswer(threadID, requestID, params); err == nil && found && !recovered.Dispatch {
+			return f.threads.InputRequest(threadID, requestID)
+		}
+		return api.ThreadInputRequest{}, outcome
+	}
+	req, err := f.threads.BeginAnswer(ctx, threadID, requestID, params)
+	if err != nil {
+		return api.ThreadInputRequest{}, err
+	}
+	if !req.Dispatch {
+		return f.threads.InputRequest(threadID, requestID)
+	}
+	switch {
+	case outcome == nil:
+		return f.threads.AnswerDelivered(ctx, threadID, req.AnswerID)
+	case errors.Is(outcome, integrations.ErrAnswerRejected):
+		_ = f.threads.AnswerFailed(ctx, threadID, req.AnswerID, outcome.Error())
+		return api.ThreadInputRequest{}, outcome
+	default:
+		return f.threads.InputRequest(threadID, requestID)
+	}
+}
+
+func (f *fakeCoordinator) StopThread(ctx context.Context, threadID string, params api.ThreadStopParams) (api.ThreadStop, error) {
+	f.mu.Lock()
+	f.stops = append(f.stops, params)
+	f.mu.Unlock()
+	outcome := f.outcome()
+	if errors.Is(outcome, integrations.ErrNotConnected) {
+		if recovered, stop, found, err := f.threads.RecoverStop(threadID, params.Key); err == nil && found && !recovered.Dispatch {
+			return stop, nil
+		}
+		return api.ThreadStop{}, outcome
+	}
+	req, stop, err := f.threads.BeginStop(ctx, threadID, params.Key)
+	if err != nil {
+		return api.ThreadStop{}, err
+	}
+	if !req.Dispatch {
+		return stop, nil
+	}
+	switch {
+	case outcome == nil:
+		return f.threads.StopDelivered(ctx, threadID, req.StopID)
+	case errors.Is(outcome, integrations.ErrStopRejected):
+		_, _ = f.threads.StopFailed(ctx, threadID, req.StopID, outcome.Error())
+		return api.ThreadStop{}, outcome
+	default:
+		return stop, nil
+	}
+}
+
+func (f *fakeCoordinator) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
 }
 
 // params copies the create parameters seen so far.
-func (f *fakeStarter) params() []api.ThreadCreateParams {
+func (f *fakeCoordinator) params() []api.ThreadCreateParams {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]api.ThreadCreateParams(nil), f.calls...)
 }
 
-func (f *fakeStarter) set(change func(*fakeStarter)) {
+func (f *fakeCoordinator) set(change func(*fakeCoordinator)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	change(f)
 }
 
+// sent copies the dispatches seen so far.
+func (f *fakeCoordinator) sent() (messages []api.ThreadMessageParams, answers []api.InputAnswerParams, decisions []api.ApprovalDecisionParams, stops []api.ThreadStopParams) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]api.ThreadMessageParams(nil), f.messages...), append([]api.InputAnswerParams(nil), f.answers...),
+		append([]api.ApprovalDecisionParams(nil), f.decisions...), append([]api.ThreadStopParams(nil), f.stops...)
+}
+
 // providerOf is the provider id of a created thread.
-func (f *fakeStarter) providerOf(threadID string) string {
+func (f *fakeCoordinator) providerOf(threadID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.created[threadID]
@@ -163,13 +307,16 @@ type fixture struct {
 	hub       *events.Hub
 	threads   *threads.Service
 	linear    *fakeLinear
-	starter   *fakeStarter
+	starter   *fakeCoordinator
 	clock     *fakeClock
 	setupPath string
 	dir       string
 	service   *Service
 	cancel    context.CancelFunc
 	done      chan struct{}
+	// retryBase and retryMax pace the service's retries: fast by default;
+	// a test about deferred work slows them and drives the clock.
+	retryBase, retryMax time.Duration
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -195,8 +342,9 @@ func newFixture(t *testing.T) *fixture {
 	})
 	f := &fixture{
 		t: t, store: db, hub: hub, threads: threadService, linear: newFakeLinear(t), clock: clock,
-		starter:   &fakeStarter{threads: threadService, dir: dir, created: map[string]string{}},
+		starter:   &fakeCoordinator{threads: threadService, dir: dir, created: map[string]string{}},
 		setupPath: filepath.Join(t.TempDir(), "linear.json"), dir: dir,
+		retryBase: testPollFast, retryMax: 100 * time.Millisecond,
 	}
 	f.writeSetup(Setup{
 		OrganizationID: testOrg, ClientID: testClient, ClientSecret: "secret-1", WebhookSigningSecret: testSecret,
@@ -229,8 +377,12 @@ func (f *fixture) readSetup() Setup {
 // the test's end.
 func (f *fixture) start() *Service {
 	f.t.Helper()
+	var logger *slog.Logger
+	if os.Getenv("LINEAR_DEBUG") != "" {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
 	f.service = New(Options{
-		SetupPath: f.setupPath, Repository: f.store.Linear(), Starter: f.starter, Threads: f.threads, Hub: f.hub,
+		SetupPath: f.setupPath, Repository: f.store.Linear(), Coordinator: f.starter, Threads: f.threads, Hub: f.hub, Logger: logger,
 		Now: f.clock.Now, APIURL: f.linear.srv.URL, HTTPClient: &http.Client{Timeout: time.Second},
 		Ingress: func(context.Context) api.Webhooks {
 			return api.Webhooks{State: api.WebhooksReady, URL: "https://node.ts.net"}
@@ -240,8 +392,8 @@ func (f *fixture) start() *Service {
 	f.service.probeInterval = 0 // the fake clock barely moves; probe on every tick
 	f.service.sendPoll = testPollFast
 	f.service.sessionPoll = testPollFast
-	f.service.retryBase = testPollFast
-	f.service.retryMax = 100 * time.Millisecond
+	f.service.retryBase = f.retryBase
+	f.service.retryMax = f.retryMax
 	f.service.authRetry = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
@@ -316,7 +468,7 @@ func (f *fixture) waitActivities(sessionID string, n int) []recordedActivity {
 // thread id and provider id.
 func (f *fixture) startedThread(sessionID string) (threadID, providerID string) {
 	f.t.Helper()
-	session := f.waitSession(sessionID, "session started", func(s store.LinearSession) bool { return s.State == stateStarted })
+	session := f.waitSession(sessionID, "session bound", func(s store.LinearSession) bool { return s.State == stateBound })
 	return session.ThreadID, f.starter.providerOf(session.ThreadID)
 }
 
@@ -394,8 +546,13 @@ func createdEvent(sessionID string, at time.Time, opts ...eventOpt) []byte {
 
 // promptedEvent is a `prompted` AgentSessionEvent: a user message, or a
 // stop signal when signal is "stop".
-func promptedEvent(sessionID string, at time.Time, text, signal string) []byte {
-	activity := map[string]any{"id": "act-1", "agentSessionId": sessionID, "content": map[string]any{"type": "prompt", "body": text}}
+func promptedEvent(sessionID string, at time.Time, text, signal string, opts ...eventOpt) []byte {
+	activity := map[string]any{"id": "act-" + itoa(int64(len(text))) + "-" + strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, strings.ToLower(text+signal)), "agentSessionId": sessionID, "content": map[string]any{"type": "prompt", "body": text}}
 	if signal != "" {
 		activity["signal"] = signal
 	}
@@ -406,8 +563,88 @@ func promptedEvent(sessionID string, at time.Time, text, signal string) []byte {
 		"agentSession":  map[string]any{"id": sessionID, "status": "active", "type": "commentThread", "appUserId": "app-user-1", "organizationId": testOrg},
 		"agentActivity": activity,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
 	body, _ := json.Marshal(m)
 	return body
+}
+
+// withActivityID names the prompt activity.
+func withActivityID(id string) eventOpt {
+	return func(m map[string]any) { m["agentActivity"].(map[string]any)["id"] = id }
+}
+
+// prompt is one prompted delivery: the same text under the same
+// activity id, so a repeat is a redelivery.
+func (f *fixture) prompt(t *testing.T, deliveryID, sessionID, text string) {
+	t.Helper()
+	f.process(t, deliveryID, promptedEvent(sessionID, f.clock.Now(), text, "", withActivityID("act-"+deliveryID)))
+}
+
+// stopSignal is one prompted delivery carrying Linear's stop signal.
+func (f *fixture) stopSignal(t *testing.T, deliveryID, sessionID string) {
+	t.Helper()
+	f.process(t, deliveryID, promptedEvent(sessionID, f.clock.Now(), "", "stop", withActivityID("act-"+deliveryID)))
+}
+
+// submissions lists a session's submissions.
+func (f *fixture) submissions(sessionID string) []store.LinearSubmission {
+	f.t.Helper()
+	subs, err := f.store.Linear().Submissions(context.Background(), sessionID, false)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return subs
+}
+
+// waitSubmission waits until a submission satisfies cond and returns it.
+func (f *fixture) waitSubmission(sessionID, id, what string, cond func(store.LinearSubmission) bool) store.LinearSubmission {
+	f.t.Helper()
+	var found store.LinearSubmission
+	waitFor(f.t, what, func() bool {
+		for _, sub := range f.submissions(sessionID) {
+			if sub.ID == id && cond(sub) {
+				found = sub
+				return true
+			}
+		}
+		return false
+	})
+	return found
+}
+
+// ask has T3 report the thread blocked on one two-question request.
+func (f *fixture) ask(providerID, requestID string) {
+	f.t.Helper()
+	f.report(providerID, api.ThreadWaitingForInput, &threads.TurnObservation{ProviderID: "t3-turn-1", State: api.TurnRunning})
+	if _, err := f.threads.ObserveInputs(context.Background(), providerT3, providerID, []threads.InputObservation{{RequestID: requestID, RequestedAt: f.clock.Now(), Questions: []threads.QuestionObservation{
+		{ProviderID: "color", Header: "Color", Text: "Which color?", Options: []api.InputOption{{Value: "Red", Label: "Red", Description: "warm"}, {Value: "Blue", Label: "Blue"}}, AllowsCustom: true},
+		{ProviderID: "tools", Header: "Tools", Text: "Which tools?", Options: []api.InputOption{{Value: "go", Label: "Go"}, {Value: "make", Label: "Make"}}, AllowsCustom: true, AllowsMultiple: true},
+	}}}, nil); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// resolveInput has T3 report the request resolved with the answers.
+func (f *fixture) resolveInput(providerID, requestID string, answers []threads.ProviderAnswer) {
+	f.t.Helper()
+	if _, err := f.threads.ObserveInputs(context.Background(), providerT3, providerID, nil, []threads.InputResolution{{RequestID: requestID, Answers: answers, At: f.clock.Now()}}); err != nil {
+		f.t.Fatal(err)
+	}
+	f.report(providerID, api.ThreadWorking, &threads.TurnObservation{ProviderID: "t3-turn-1", State: api.TurnRunning})
+}
+
+// approve has T3 report the thread blocked on one approval request.
+func (f *fixture) approve(providerID, requestID string) {
+	f.t.Helper()
+	f.report(providerID, api.ThreadWaitingForPermission, &threads.TurnObservation{ProviderID: "t3-turn-1", State: api.TurnRunning})
+	if err := f.threads.ObserveApprovals(context.Background(), providerT3, providerID, []threads.ApprovalObservation{{
+		RequestID: requestID, Kind: api.ApprovalCommand, Summary: "Run go test ./...", Detail: "go test ./...", RequestedAt: f.clock.Now(),
+		Options: []api.ApprovalOption{{Decision: api.DecisionApprove, Label: "Approve"}, {Decision: api.DecisionDeny, Label: "Decline"}},
+	}}); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func sign(body []byte, secret string) string {

@@ -10,29 +10,69 @@ import (
 	"github.com/jeremytondo/atc/internal/store/gen"
 )
 
-// LinearSession is one linear_sessions row in domain terms (ATC-302): a
-// Linear Agent Session and what the Integration owes or watches for it.
+// LinearSession is one linear_sessions row in domain terms (ATC-302,
+// ATC-309): a Linear Agent Session and the ATC Thread it is bound to.
 // The Linear Integration owns the state vocabulary; this package stores
 // it.
 type LinearSession struct {
 	// ID is Linear's Agent Session id.
-	ID string
-	// Prompt is the text the Thread is started with; empty (stored NULL)
-	// once the start is over.
-	Prompt string
-	State  string
-	// ThreadID and TurnID bind the session to the exact ATC Thread and
-	// Turn it started; empty until the record exists.
-	ThreadID string
-	TurnID   string
-	// NoticedStatus is the waiting status last announced in Linear.
-	NoticedStatus string
-	// CompletedSeenAt is when the Turn was first seen completed without a
-	// response; nil otherwise.
+	ID    string
+	State string
+	// ThreadID binds the session to the exact ATC Thread; empty until
+	// the record exists.
+	ThreadID  string
+	Outcome   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// LinearSubmission is one linear_submissions row: a Linear input ATC
+// acts on, what it targets, the ATC operation it became, and how it
+// stands.
+type LinearSubmission struct {
+	// ID is Linear's activity id, or the session's start key.
+	ID        string
+	SessionID string
+	Kind      string
+	// Text is the user's text, verbatim; for a start, the first prompt
+	// until the start is over.
+	Text string
+	// RequestID, QuestionID, and Value name the exact ATC request and
+	// choice a selection targets; empty otherwise.
+	RequestID  string
+	QuestionID string
+	Value      string
+	State      string
+	// Delivery is "" until dispatched, then accepted or uncertain.
+	Delivery string
+	// OperationID is the ATC operation the submission became (message,
+	// answer, stop id); TurnID the execution it watches.
+	OperationID string
+	TurnID      string
+	// Attempts counts dispatches that could not reach the program;
+	// NextAttemptAt is when the next may run.
+	Attempts      int
+	NextAttemptAt time.Time
+	// CompletedSeenAt is when the watched turn was first seen completed
+	// without a response; nil otherwise.
 	CompletedSeenAt *time.Time
 	Outcome         string
+	Detail          string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+// LinearRequest is one linear_requests row: a request presented to a
+// session with the options offered (JSON the Integration encodes).
+type LinearRequest struct {
+	// ID is the ATC request id (aprv-…, inpt-…).
+	ID        string
+	SessionID string
+	Kind      string
+	Options   string
+	State     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // LinearOutboxRow is one owed Linear API call.
@@ -51,13 +91,32 @@ type LinearOutboxRow struct {
 	CreatedAt     time.Time
 }
 
+// LinearChange is one transactional write of the Integration's state:
+// a session to update, submissions and requests to insert (a known id
+// inserts nothing) or update (an unknown id fails the write), and the
+// calls owed for the change (a known key is left as it is). Everything
+// commits together, so a state is never recorded without the rows that
+// report it, and never the reverse.
+type LinearChange struct {
+	Session        *LinearSession
+	NewSubmissions []LinearSubmission
+	Submissions    []LinearSubmission
+	NewRequests    []LinearRequest
+	Requests       []LinearRequest
+	Rows           []LinearOutboxRow
+}
+
 // ErrLinearSessionNotFound reports a session id with no row.
 var ErrLinearSessionNotFound = errors.New("linear session not found")
 
-// Linear is the Linear Integration's repository: sessions and the outbox.
-// Reads go to the read pool, mutations to the single-writer pool; db is
-// that pool's handle, for the writes that move a session and the calls
-// it owes together.
+// ErrLinearRowGone reports an update to a submission or request whose
+// row does not exist.
+var ErrLinearRowGone = errors.New("linear row not found")
+
+// Linear is the Linear Integration's repository: sessions, their
+// submissions and presented requests, and the outbox. Reads go to the
+// read pool, mutations to the single-writer pool; db is that pool's
+// handle, for the writes that move several rows together.
 type Linear struct {
 	reads  *gen.Queries
 	writes *gen.Queries
@@ -69,12 +128,13 @@ func (s *Store) Linear() *Linear {
 	return &Linear{reads: gen.New(s.reads), writes: gen.New(s.writes), db: s.writes}
 }
 
-// InsertSession stores a new session together with the calls it owes, in
-// one transaction, and reports whether the session was new. A known
-// session id inserts nothing for the session; the rows are still added
-// under their keys where absent — an earlier attempt may have died
-// between the two — so a repeated delivery leaves exactly one of each.
-func (l *Linear) InsertSession(ctx context.Context, record LinearSession, rows ...LinearOutboxRow) (bool, error) {
+// InsertSession stores a new session together with its first
+// submissions and the calls it owes, in one transaction, and reports
+// whether the session was new. A known session id inserts nothing at
+// all — the session and everything it came with were one transaction —
+// so a repeated delivery changes nothing, however long ago the first
+// was recorded.
+func (l *Linear) InsertSession(ctx context.Context, record LinearSession, submissions []LinearSubmission, rows ...LinearOutboxRow) (bool, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -82,48 +142,12 @@ func (l *Linear) InsertSession(ctx context.Context, record LinearSession, rows .
 	defer func() { _ = tx.Rollback() }()
 	queries := gen.New(tx)
 	n, err := queries.InsertLinearSession(ctx, gen.InsertLinearSessionParams{
-		ID:              record.ID,
-		Prompt:          nullString(record.Prompt),
-		State:           record.State,
-		ThreadID:        nullString(record.ThreadID),
-		TurnID:          nullString(record.TurnID),
-		NoticedStatus:   nullString(record.NoticedStatus),
-		CompletedSeenAt: nullTime(record.CompletedSeenAt),
-		Outcome:         nullString(record.Outcome),
-		CreatedAt:       formatTime(record.CreatedAt),
-		UpdatedAt:       formatTime(record.UpdatedAt),
-	})
-	if err != nil {
-		return false, err
-	}
-	if err := enqueueAll(ctx, queries, rows); err != nil {
-		return false, err
-	}
-	return n > 0, tx.Commit()
-}
-
-// UpdateSession writes every mutable column of a session together with
-// the calls the change owes, in one transaction, so a state is never
-// recorded without the rows that report it; false means no such session,
-// and nothing was written. Rows under keys already present are left as
-// they are.
-func (l *Linear) UpdateSession(ctx context.Context, record LinearSession, rows ...LinearOutboxRow) (bool, error) {
-	tx, err := l.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	queries := gen.New(tx)
-	n, err := queries.UpdateLinearSession(ctx, gen.UpdateLinearSessionParams{
-		Prompt:          nullString(record.Prompt),
-		State:           record.State,
-		ThreadID:        nullString(record.ThreadID),
-		TurnID:          nullString(record.TurnID),
-		NoticedStatus:   nullString(record.NoticedStatus),
-		CompletedSeenAt: nullTime(record.CompletedSeenAt),
-		Outcome:         nullString(record.Outcome),
-		UpdatedAt:       formatTime(record.UpdatedAt),
-		ID:              record.ID,
+		ID:        record.ID,
+		State:     record.State,
+		ThreadID:  nullString(record.ThreadID),
+		Outcome:   nullString(record.Outcome),
+		CreatedAt: formatTime(record.CreatedAt),
+		UpdatedAt: formatTime(record.UpdatedAt),
 	})
 	if err != nil {
 		return false, err
@@ -131,14 +155,87 @@ func (l *Linear) UpdateSession(ctx context.Context, record LinearSession, rows .
 	if n == 0 {
 		return false, tx.Rollback()
 	}
-	if err := enqueueAll(ctx, queries, rows); err != nil {
+	if err := apply(ctx, queries, LinearChange{NewSubmissions: submissions, Rows: rows}); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
 }
 
-func enqueueAll(ctx context.Context, queries *gen.Queries, rows []LinearOutboxRow) error {
-	for _, row := range rows {
+// Record commits one change. ErrLinearSessionNotFound when the session
+// to update is gone, ErrLinearRowGone when a submission or request to
+// update is; nothing is written then.
+func (l *Linear) Record(ctx context.Context, change LinearChange) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	queries := gen.New(tx)
+	if session := change.Session; session != nil {
+		n, err := queries.UpdateLinearSession(ctx, gen.UpdateLinearSessionParams{
+			State:     session.State,
+			ThreadID:  nullString(session.ThreadID),
+			Outcome:   nullString(session.Outcome),
+			UpdatedAt: formatTime(session.UpdatedAt),
+			ID:        session.ID,
+		})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: %s", ErrLinearSessionNotFound, session.ID)
+		}
+	}
+	if err := apply(ctx, queries, change); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// apply writes a change's submissions, requests, and rows.
+func apply(ctx context.Context, queries *gen.Queries, change LinearChange) error {
+	for _, sub := range change.NewSubmissions {
+		if _, err := queries.InsertLinearSubmission(ctx, gen.InsertLinearSubmissionParams{
+			ID: sub.ID, SessionID: sub.SessionID, Kind: sub.Kind, Text: nullString(sub.Text),
+			RequestID: nullString(sub.RequestID), QuestionID: nullString(sub.QuestionID), Value: nullString(sub.Value),
+			State: sub.State, Delivery: sub.Delivery, OperationID: nullString(sub.OperationID), TurnID: nullString(sub.TurnID),
+			Attempts: int64(sub.Attempts), NextAttemptAt: formatTime(sub.NextAttemptAt), CompletedSeenAt: nullTime(sub.CompletedSeenAt),
+			Outcome: nullString(sub.Outcome), Detail: nullString(sub.Detail), CreatedAt: formatTime(sub.CreatedAt), UpdatedAt: formatTime(sub.UpdatedAt),
+		}); err != nil {
+			return err
+		}
+	}
+	for _, sub := range change.Submissions {
+		n, err := queries.UpdateLinearSubmission(ctx, gen.UpdateLinearSubmissionParams{
+			Text: nullString(sub.Text), State: sub.State, Delivery: sub.Delivery, OperationID: nullString(sub.OperationID), TurnID: nullString(sub.TurnID),
+			Attempts: int64(sub.Attempts), NextAttemptAt: formatTime(sub.NextAttemptAt), CompletedSeenAt: nullTime(sub.CompletedSeenAt),
+			Outcome: nullString(sub.Outcome), Detail: nullString(sub.Detail), UpdatedAt: formatTime(sub.UpdatedAt), ID: sub.ID,
+		})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: submission %s", ErrLinearRowGone, sub.ID)
+		}
+	}
+	for _, request := range change.NewRequests {
+		if _, err := queries.InsertLinearRequest(ctx, gen.InsertLinearRequestParams{
+			ID: request.ID, SessionID: request.SessionID, Kind: request.Kind, Options: request.Options, State: request.State,
+			CreatedAt: formatTime(request.CreatedAt), UpdatedAt: formatTime(request.UpdatedAt),
+		}); err != nil {
+			return err
+		}
+	}
+	for _, request := range change.Requests {
+		n, err := queries.UpdateLinearRequest(ctx, gen.UpdateLinearRequestParams{State: request.State, UpdatedAt: formatTime(request.UpdatedAt), ID: request.ID})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: request %s", ErrLinearRowGone, request.ID)
+		}
+	}
+	for _, row := range change.Rows {
 		if _, err := queries.InsertLinearOutbox(ctx, insertOutboxParams(row)); err != nil {
 			return err
 		}
@@ -195,6 +292,53 @@ func (l *Linear) CountSessions(ctx context.Context) (open, total int, err error)
 	return int(row.Open), int(row.Total), nil
 }
 
+// Submissions lists a session's submissions in creation order: every
+// one, or only those not yet done.
+func (l *Linear) Submissions(ctx context.Context, sessionID string, activeOnly bool) ([]LinearSubmission, error) {
+	var rows []gen.LinearSubmission
+	var err error
+	if activeOnly {
+		rows, err = l.reads.ListActiveLinearSubmissions(ctx, sessionID)
+	} else {
+		rows, err = l.reads.ListLinearSubmissions(ctx, sessionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	records := make([]LinearSubmission, 0, len(rows))
+	for _, row := range rows {
+		record, err := linearSubmissionFrom(row)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+// PendingSubmissions counts submissions not yet done, across sessions.
+func (l *Linear) PendingSubmissions(ctx context.Context) (int, error) {
+	n, err := l.reads.CountPendingLinearSubmissions(ctx)
+	return int(n), err
+}
+
+// Requests lists a session's presented requests in creation order.
+func (l *Linear) Requests(ctx context.Context, sessionID string) ([]LinearRequest, error) {
+	rows, err := l.reads.ListLinearRequests(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]LinearRequest, 0, len(rows))
+	for _, row := range rows {
+		record, err := linearRequestFrom(row)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
 // Enqueue stores an owed call and reports true; false means the key is
 // already there — sent, failed, or pending — and nothing was added.
 func (l *Linear) Enqueue(ctx context.Context, row LinearOutboxRow) (bool, error) {
@@ -202,7 +346,9 @@ func (l *Linear) Enqueue(ctx context.Context, row LinearOutboxRow) (bool, error)
 	return n > 0, err
 }
 
-// Due lists unsent, unfailed rows whose next attempt is at or before now.
+// Due lists the rows due now — each session's oldest outstanding row,
+// when its next attempt is at or before now — so a session's calls go
+// out in order and a row backing off holds the rows behind it.
 func (l *Linear) Due(ctx context.Context, now time.Time, limit int) ([]LinearOutboxRow, error) {
 	rows, err := l.reads.ListDueLinearOutbox(ctx, gen.ListDueLinearOutboxParams{NextAttemptAt: formatTime(now), Limit: int64(limit)})
 	if err != nil {
@@ -251,23 +397,52 @@ func (l *Linear) Prune(ctx context.Context, cutoff time.Time) error {
 
 func linearSessionFrom(row gen.LinearSession) (LinearSession, error) {
 	record := LinearSession{
-		ID:            row.ID,
-		Prompt:        row.Prompt.String,
-		State:         row.State,
-		ThreadID:      row.ThreadID.String,
-		TurnID:        row.TurnID.String,
-		NoticedStatus: row.NoticedStatus.String,
-		Outcome:       row.Outcome.String,
+		ID:       row.ID,
+		State:    row.State,
+		ThreadID: row.ThreadID.String,
+		Outcome:  row.Outcome.String,
 	}
 	var err error
-	if record.CompletedSeenAt, err = parseNullTime(row.CompletedSeenAt); err != nil {
-		return LinearSession{}, fmt.Errorf("linear session %s completed_seen_at: %w", row.ID, err)
-	}
 	if record.CreatedAt, err = parseTime(row.CreatedAt); err != nil {
 		return LinearSession{}, fmt.Errorf("linear session %s created_at: %w", row.ID, err)
 	}
 	if record.UpdatedAt, err = parseTime(row.UpdatedAt); err != nil {
 		return LinearSession{}, fmt.Errorf("linear session %s updated_at: %w", row.ID, err)
+	}
+	return record, nil
+}
+
+func linearSubmissionFrom(row gen.LinearSubmission) (LinearSubmission, error) {
+	record := LinearSubmission{
+		ID: row.ID, SessionID: row.SessionID, Kind: row.Kind, Text: row.Text.String,
+		RequestID: row.RequestID.String, QuestionID: row.QuestionID.String, Value: row.Value.String,
+		State: row.State, Delivery: row.Delivery, OperationID: row.OperationID.String, TurnID: row.TurnID.String,
+		Attempts: int(row.Attempts), Outcome: row.Outcome.String, Detail: row.Detail.String,
+	}
+	var err error
+	if record.NextAttemptAt, err = parseTime(row.NextAttemptAt); err != nil {
+		return LinearSubmission{}, fmt.Errorf("linear submission %s next_attempt_at: %w", row.ID, err)
+	}
+	if record.CompletedSeenAt, err = parseNullTime(row.CompletedSeenAt); err != nil {
+		return LinearSubmission{}, fmt.Errorf("linear submission %s completed_seen_at: %w", row.ID, err)
+	}
+	if record.CreatedAt, err = parseTime(row.CreatedAt); err != nil {
+		return LinearSubmission{}, fmt.Errorf("linear submission %s created_at: %w", row.ID, err)
+	}
+	if record.UpdatedAt, err = parseTime(row.UpdatedAt); err != nil {
+		return LinearSubmission{}, fmt.Errorf("linear submission %s updated_at: %w", row.ID, err)
+	}
+	return record, nil
+}
+
+func linearRequestFrom(row gen.LinearRequest) (LinearRequest, error) {
+	record := LinearRequest{ID: row.ID, SessionID: row.SessionID, Kind: row.Kind, Options: row.Options, State: row.State}
+	var err error
+	if record.CreatedAt, err = parseTime(row.CreatedAt); err != nil {
+		return LinearRequest{}, fmt.Errorf("linear request %s created_at: %w", row.ID, err)
+	}
+	if record.UpdatedAt, err = parseTime(row.UpdatedAt); err != nil {
+		return LinearRequest{}, fmt.Errorf("linear request %s updated_at: %w", row.ID, err)
 	}
 	return record, nil
 }

@@ -2,32 +2,73 @@ package linear
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
-	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/store"
-	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// Session states and outcomes, as stored.
+// Session states and outcomes, as stored. A session is accepted while
+// its start is owed, starting while an attempt is recorded, bound once
+// its Thread is known — for the rest of the conversation — and done only
+// when nothing more can happen here: refused, a start that failed, a
+// start stopped before it happened, or a Thread ATC lost.
 const (
 	stateAccepted = "accepted"
 	stateStarting = "starting"
-	stateStarted  = "started"
+	stateBound    = "bound"
 	stateDone     = "done"
 
-	outcomeResponded     = "responded"
 	outcomeFailed        = "failed"
-	outcomeInterrupted   = "interrupted"
 	outcomeRefused       = "refused"
+	outcomeCancelled     = "cancelled"
 	outcomeUnrecoverable = "unrecoverable"
+)
+
+// Submission kinds, states, and outcomes, as stored. A submission is
+// pending until dispatched, sent while its outcome is watched for, and
+// done once reported. Outcomes: for a start or a message, how the turn
+// it directed ended — responded, failed, interrupted, unrecoverable; for
+// a reply or a choice, resolved, superseded, or failed; for a decision,
+// delivered; for a stop, stopped, finished, or failed; for any kind,
+// refused when the shared capability would not take it, and cancelled
+// when a stop ended it before it was sent.
+const (
+	kindStart    = "start"
+	kindMessage  = "message"
+	kindReply    = "reply"
+	kindChoice   = "choice"
+	kindDecision = "decision"
+	kindStop     = "stop"
+
+	subPending = "pending"
+	subSent    = "sent"
+	subDone    = "done"
+
+	outcomeResponded   = "responded"
+	outcomeInterrupted = "interrupted"
+	outcomeResolved    = "resolved"
+	outcomeSuperseded  = "superseded"
+	outcomeDelivered   = "delivered"
+	outcomeStopped     = "stopped"
+	outcomeFinished    = "finished"
+)
+
+// Request kinds and states, as stored. A notice is an input request ATC
+// cannot relay an answer to: shown once with its reason, never open to
+// a choice or a reply, and closed without a word.
+const (
+	kindApproval = "approval"
+	kindInput    = "input"
+	kindNotice   = "notice"
+	requestOpen  = "open"
+	requestShut  = "closed"
 )
 
 const (
@@ -41,9 +82,10 @@ const (
 	// periodic refetch that a lost or dropped event stream needs.
 	sendPoll    = 5 * time.Second
 	sessionPoll = 15 * time.Second
-	// Outbox retries: retryBase doubling to retryMax for transient
-	// failures; authRetry after an authentication failure, which only an
-	// operator (or a renewed token) can end.
+	// Retries: retryBase doubling to retryMax for transient failures —
+	// outbox calls, and dispatches the program could not take yet;
+	// authRetry after an authentication failure, which only an operator
+	// (or a renewed token) can end.
 	retryBase = 2 * time.Second
 	retryMax  = 5 * time.Minute
 	authRetry = 5 * time.Minute
@@ -63,27 +105,34 @@ const (
 	resource = "integration"
 )
 
-// ThreadStarter is the application coordinator's creation seam as this
-// Integration uses it: start one Thread with its first prompt, telling
-// the caller the ids before anything is dispatched.
-type ThreadStarter interface {
+// Coordinator is the application coordinator as this Integration uses
+// it: start one Thread with its first prompt, telling the caller the ids
+// before anything is dispatched, and the four shared Thread capabilities
+// a submission goes through.
+type Coordinator interface {
 	StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error)
+	SendMessage(ctx context.Context, threadID string, params api.ThreadMessageParams) (api.ThreadMessage, error)
+	DecideApproval(ctx context.Context, threadID, approvalID string, params api.ApprovalDecisionParams) (api.ThreadApproval, error)
+	AnswerInput(ctx context.Context, threadID, requestID string, params api.InputAnswerParams) (api.ThreadInputRequest, error)
+	StopThread(ctx context.Context, threadID string, params api.ThreadStopParams) (api.ThreadStop, error)
 }
 
-// ThreadReader reads the normalized Thread (threads.Service in
-// production).
+// ThreadReader reads the normalized Thread and its operations
+// (threads.Service in production).
 type ThreadReader interface {
 	Get(id string) (api.Thread, error)
+	InputRequest(threadID, requestID string) (api.ThreadInputRequest, error)
+	Stop(threadID, stopID string) (api.ThreadStop, error)
 }
 
 // Options wires a Service.
 type Options struct {
 	// SetupPath is the setup file (paths.LinearSetupFile).
-	SetupPath  string
-	Repository *store.Linear
-	Starter    ThreadStarter
-	Threads    ThreadReader
-	Hub        *events.Hub
+	SetupPath   string
+	Repository  *store.Linear
+	Coordinator Coordinator
+	Threads     ThreadReader
+	Hub         *events.Hub
 	// Ingress reports the webhook ingress state for the connection detail
 	// (webhooks.Service.Status in production); nil reports nothing.
 	Ingress func(ctx context.Context) api.Webhooks
@@ -96,28 +145,32 @@ type Options struct {
 }
 
 // Service is the Integration: the webhook handler (verify.go,
-// process.go), the session loop that starts and watches Threads, the
-// outbox sender, and the credential probe behind the connection report.
-// Construct with New; Run drives the loops.
+// process.go), the session loop that drives and watches sessions
+// (session.go, observe.go), the outbox sender, and the credential probe
+// behind the connection report. Construct with New; Run drives the
+// loops.
 type Service struct {
-	setupPath string
-	repo      *store.Linear
-	starter   ThreadStarter
-	threads   ThreadReader
-	hub       *events.Hub
-	ingress   func(ctx context.Context) api.Webhooks
-	logger    *slog.Logger
-	now       func() time.Time
-	http      *http.Client
-	apiURL    string
+	setupPath   string
+	repo        *store.Linear
+	coordinator Coordinator
+	threads     ThreadReader
+	hub         *events.Hub
+	ingress     func(ctx context.Context) api.Webhooks
+	logger      *slog.Logger
+	now         func() time.Time
+	http        *http.Client
+	apiURL      string
 
 	// Production cadences; tests shrink them.
 	probeRetry, probeInterval, sendPoll, sessionPoll, retryBase, retryMax, authRetry, responseGrace time.Duration
 
 	sendKick    chan struct{}
 	sessionKick chan struct{}
-	// starts tracks the in-flight start goroutines; Run joins them.
-	starts sync.WaitGroup
+	// force makes the next reconcile ignore retry backoffs: the program
+	// came back, which is what a deferred start or dispatch waits for.
+	force atomic.Bool
+	// workers tracks the in-flight session workers; Run joins them.
+	workers sync.WaitGroup
 
 	// renewMu serializes token renewals: the probe and the sender can
 	// both meet an expired token, and one refresh must serve both.
@@ -128,15 +181,15 @@ type Service struct {
 	connection api.IntegrationConnection
 	// lastFailure summarizes the most recent outbox failure for status.
 	lastFailure string
-	// starting holds the sessions this process has a start in flight for.
-	starting map[string]bool
+	// working holds the sessions this process has a worker in flight for.
+	working map[string]bool
 }
 
 // New wires the Service. It loads the setup file once so the connection
 // report is honest before Run starts.
 func New(opts Options) *Service {
-	if opts.Repository == nil || opts.Starter == nil || opts.Threads == nil || opts.Hub == nil {
-		panic("linear.New: Repository, Starter, Threads, and Hub must not be nil")
+	if opts.Repository == nil || opts.Coordinator == nil || opts.Threads == nil || opts.Hub == nil {
+		panic("linear.New: Repository, Coordinator, Threads, and Hub must not be nil")
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -153,7 +206,7 @@ func New(opts Options) *Service {
 	s := &Service{
 		setupPath:     opts.SetupPath,
 		repo:          opts.Repository,
-		starter:       opts.Starter,
+		coordinator:   opts.Coordinator,
 		threads:       opts.Threads,
 		hub:           opts.Hub,
 		ingress:       opts.Ingress,
@@ -171,7 +224,7 @@ func New(opts Options) *Service {
 		responseGrace: responseGrace,
 		sendKick:      make(chan struct{}, 1),
 		sessionKick:   make(chan struct{}, 1),
-		starting:      map[string]bool{},
+		working:       map[string]bool{},
 	}
 	s.connection = api.IntegrationConnection{State: api.IntegrationConnecting, Since: s.now(), Detail: "starting"}
 	s.reloadSetup()
@@ -247,7 +300,8 @@ func (s *Service) Connection() api.IntegrationConnection {
 	detail := connection.Detail
 	if open, total, err := s.repo.CountSessions(ctx); err == nil {
 		pending, _ := s.repo.Pending(ctx)
-		detail += fmt.Sprintf("; %d of %d sessions open, %d Linear updates owed", open, total, pending)
+		inFlight, _ := s.repo.PendingSubmissions(ctx)
+		detail += fmt.Sprintf("; %d of %d sessions open, %d submissions in flight, %d Linear updates owed", open, total, inFlight, pending)
 	}
 	if failure != "" {
 		detail += "; last Linear failure: " + failure
@@ -268,14 +322,14 @@ func (s *Service) Connection() api.IntegrationConnection {
 }
 
 // Run drives the credential probe, the outbox sender, and the session
-// loop until ctx is cancelled, then joins every start still in flight.
+// loop until ctx is cancelled, then joins every worker still in flight.
 func (s *Service) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	wg.Go(func() { s.probeLoop(ctx) })
 	wg.Go(func() { s.sendLoop(ctx) })
 	s.sessionLoop(ctx)
 	wg.Wait()
-	s.starts.Wait()
+	s.workers.Wait()
 }
 
 // wake kicks a loop without blocking.
@@ -393,11 +447,15 @@ func (s *Service) renew(ctx context.Context, seen string) error {
 	return nil
 }
 
-// sessionLoop starts accepted sessions, resumes recorded ones, and
-// watches started ones. It wakes on a thread change event for a watched
-// Thread (a reason to refetch, never the state itself), on a kick from
-// Process, and on the poll — so a dropped event stream, a lost backlog,
-// or a provider reconnect all converge on the next tick at the latest.
+// sessionLoop drives every open session: starts the accepted ones,
+// resumes the recorded ones, dispatches the bound ones' submissions, and
+// watches their Threads. It wakes on a thread change event for a
+// watched Thread (a reason to refetch, never the state itself), on an
+// Integration's connection change (the program coming back is what a
+// deferred start or dispatch waits for, so backoffs are skipped once),
+// on a kick from Process, and on the poll — so a dropped event stream, a
+// lost backlog, or a provider reconnect all converge on the next tick at
+// the latest.
 func (s *Service) sessionLoop(ctx context.Context) {
 	sub := s.hub.Subscribe(0, false)
 	defer func() { sub.Close() }()
@@ -419,10 +477,11 @@ func (s *Service) sessionLoop(ctx context.Context) {
 					sub = s.hub.Subscribe(0, false)
 					break inner
 				}
-				if change.Resource == "thread" && watched[change.ID] || change.Resource == resource {
-					// A watched Thread changed, or an Integration's
-					// connection did — T3 coming back is what an owed
-					// start waits for.
+				if change.Resource == resource && change.ID == profileIntegration {
+					s.force.Store(true)
+					break inner
+				}
+				if change.Resource == "thread" && watched[change.ID] {
 					break inner
 				}
 			case <-timer.C:
@@ -436,21 +495,32 @@ func (s *Service) sessionLoop(ctx context.Context) {
 // reconcile acts on every open session and returns the Threads being
 // watched. Reads that fail leave the previous set standing.
 func (s *Service) reconcile(ctx context.Context, previous map[string]bool) map[string]bool {
+	force := s.force.Swap(false)
 	sessions, err := s.repo.OpenSessions(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.logger.Error("linear: reading open sessions", "error", err)
 		}
+		if force {
+			s.force.Store(true)
+		}
 		return previous
+	}
+	// A session whose worker is still in flight cannot take the force
+	// now; it stays set for the reconcile that worker's exit wakes.
+	work := func(sessionID string) {
+		if !s.work(ctx, sessionID, force) && force {
+			s.force.Store(true)
+		}
 	}
 	watched := make(map[string]bool, len(sessions))
 	for _, session := range sessions {
 		switch session.State {
 		case stateAccepted:
-			s.launch(ctx, session)
+			work(session.ID)
 		case stateStarting:
 			s.mu.Lock()
-			inflight := s.starting[session.ID]
+			inflight := s.working[session.ID]
 			s.mu.Unlock()
 			if inflight {
 				continue
@@ -460,9 +530,10 @@ func (s *Service) reconcile(ctx context.Context, previous map[string]bool) map[s
 			// says whether anything is owed.
 			fresh, err := s.repo.GetSession(ctx, session.ID)
 			if err != nil || fresh.State != stateStarting {
-				if err == nil && fresh.State == stateStarted {
+				if err == nil && fresh.State == stateBound {
 					watched[fresh.ThreadID] = true
 					s.observe(ctx, fresh)
+					work(fresh.ID)
 				}
 				continue
 			}
@@ -473,241 +544,58 @@ func (s *Service) reconcile(ctx context.Context, previous map[string]bool) map[s
 			// hold the conversation — never start another, say so, and
 			// watch what was recorded.
 			if session.ThreadID == "" {
-				s.launch(ctx, session)
+				work(session.ID)
 				continue
 			}
-			session.State = stateStarted
-			session.Prompt = ""
+			session.State = stateBound
 			session.UpdatedAt = s.now()
-			if _, err := s.repo.UpdateSession(ctx, session, s.activity(session.ID, "uncertain", contentThought, uncertain())); err != nil {
+			if err := s.repo.Record(ctx, store.LinearChange{Session: &session, Rows: []store.LinearOutboxRow{s.activity(session.ID, "uncertain", contentThought, uncertain())}}); err != nil {
 				s.logger.Error("linear: resuming a recorded start", "session", session.ID, "error", err)
 				continue
 			}
 			s.wake(s.sendKick)
 			watched[session.ThreadID] = true
 			s.observe(ctx, session)
-		case stateStarted:
+			work(session.ID)
+		case stateBound:
 			watched[session.ThreadID] = true
 			s.observe(ctx, session)
+			work(session.ID)
 		}
 	}
 	return watched
 }
 
-// launch starts a session's Thread on its own goroutine — a slow T3 must
-// not hold up the acknowledgement or the watch of any other session — at
-// most once per session per process.
-func (s *Service) launch(ctx context.Context, session store.LinearSession) {
+// work drives a session on its own goroutine — a slow T3 must not hold
+// up the acknowledgement or the watch of any other session — at most
+// once per session per process; false reports a worker already in
+// flight. The worker starts the Thread if owed and dispatches the
+// submissions in order (session.go), then returns when nothing is due.
+// A worker that did something wakes the loop, so what it changed is
+// observed at once; one that found nothing due leaves the loop to its
+// events and poll.
+func (s *Service) work(ctx context.Context, sessionID string, force bool) bool {
 	s.mu.Lock()
-	if s.starting[session.ID] {
+	if s.working[sessionID] {
 		s.mu.Unlock()
-		return
+		return false
 	}
-	s.starting[session.ID] = true
+	s.working[sessionID] = true
 	s.mu.Unlock()
-	s.starts.Go(func() {
-		defer func() {
-			s.mu.Lock()
-			delete(s.starting, session.ID)
-			s.mu.Unlock()
+	s.workers.Go(func() {
+		progressed := s.drive(ctx, sessionID, force)
+		s.mu.Lock()
+		delete(s.working, sessionID)
+		s.mu.Unlock()
+		if progressed {
 			s.wake(s.sessionKick)
-		}()
-		s.start(ctx, session)
+		}
 	})
+	return true
 }
 
-// start records the attempt, asks the coordinator for the Thread with
-// the fixed profile, and records how it went: started (owed the links),
-// or done — refused for a definite reason, or uncertain when T3 may have
-// the conversation. The ids are persisted before dispatch, so a crash in
-// between is recognized at the next boot as a start that may have been
-// submitted.
-func (s *Service) start(ctx context.Context, session store.LinearSession) {
-	setup, ok := s.currentSetup()
-	if !ok {
-		// Nothing to start against; the row stays accepted until the
-		// operator finishes setup.
-		return
-	}
-	// The row the loop read may predate a start that has since finished;
-	// with this session's flag held, the fresh row is the truth about
-	// whether a start is still owed.
-	fresh, err := s.repo.GetSession(ctx, session.ID)
-	if err != nil {
-		if ctx.Err() == nil {
-			s.logger.Error("linear: reading a session before starting it", "session", session.ID, "error", err)
-		}
-		return
-	}
-	if fresh.State != stateAccepted && (fresh.State != stateStarting || fresh.ThreadID != "") {
-		return
-	}
-	session = fresh
-	session.State = stateStarting
-	session.ThreadID, session.TurnID = "", ""
-	session.UpdatedAt = s.now()
-	if ok, err := s.repo.UpdateSession(ctx, session); err != nil || !ok {
-		s.logger.Error("linear: recording a start attempt", "session", session.ID, "error", err)
-		return
-	}
-	params := api.ThreadCreateParams{
-		IntegrationID: profileIntegration,
-		Agent:         profileAgent,
-		ProjectID:     setup.ProjectID,
-		Prompt:        session.Prompt,
-		Model:         profileModel,
-		Options:       []api.ThreadOption{{ID: "reasoningEffort", Value: profileEffort}},
-	}
-	thread, err := s.starter.StartThread(ctx, params, func(threadID, turnID string) error {
-		session.ThreadID, session.TurnID = threadID, turnID
-		session.UpdatedAt = s.now()
-		updated, err := s.repo.UpdateSession(ctx, session)
-		if err != nil {
-			return err
-		}
-		if !updated {
-			return errors.New("the session row is gone")
-		}
-		return nil
-	})
-	if err != nil && ctx.Err() != nil {
-		// Shutdown mid-start: no outcome is known. The row stays as
-		// recorded — owed again if nothing was dispatched, uncertain if
-		// the thread was — for the next boot to pick up.
-		return
-	}
-	session.UpdatedAt = s.now()
-	var owed []store.LinearOutboxRow
-	switch {
-	case err == nil:
-		session.State, session.Prompt = stateStarted, ""
-		owed = append(owed, s.activity(session.ID, "started", contentThought, started(thread.Links)))
-		if thread.Links != nil {
-			owed = append(owed, s.links(session.ID, *thread.Links))
-		}
-		s.logger.Info("linear: thread started", "session", session.ID, "thread", thread.ID, "turn", session.TurnID)
-	case errors.Is(err, integrations.ErrThreadCreationUncertain):
-		// T3 may hold the conversation; the coordinator kept the record,
-		// and T3's report of the thread will find it. Watch it, and say
-		// what is known.
-		session.State, session.Prompt = stateStarted, ""
-		owed = append(owed, s.activity(session.ID, "uncertain", contentThought, uncertain()))
-		s.logger.Warn("linear: thread start uncertain", "session", session.ID, "thread", session.ThreadID, "error", err)
-	case errors.Is(err, integrations.ErrNotConnected):
-		// Nothing was dispatched: the start is owed again once T3 is
-		// back, and the user hears why nothing has happened yet, once.
-		session.State, session.ThreadID, session.TurnID = stateAccepted, "", ""
-		owed = append(owed, s.activity(session.ID, "waiting-t3", contentThought, waitingForT3()))
-		s.logger.Info("linear: thread start waits for T3 Code", "session", session.ID, "error", err)
-	default:
-		session.State, session.Prompt, session.Outcome = stateDone, "", outcomeFailed
-		owed = append(owed, s.activity(session.ID, "failed", contentError, startFailed(err)))
-		s.logger.Warn("linear: thread start failed", "session", session.ID, "error", err)
-	}
-	if _, err := s.repo.UpdateSession(ctx, session, owed...); err != nil {
-		s.logger.Error("linear: recording a start outcome", "session", session.ID, "error", err)
-	}
-	s.wake(s.sendKick)
-}
-
-// observe refetches a watched Thread and applies what it shows.
-func (s *Service) observe(ctx context.Context, session store.LinearSession) {
-	thread, err := s.threads.Get(session.ThreadID)
-	if err != nil && !errors.Is(err, threads.ErrNotFound) {
-		s.logger.Warn("linear: reading a watched thread", "session", session.ID, "thread", session.ThreadID, "error", err)
-		return
-	}
-	updated, owed, changed := evaluate(session, thread, err, s.now(), s.responseGrace)
-	if !changed {
-		return
-	}
-	rows := make([]store.LinearOutboxRow, 0, len(owed))
-	for _, notice := range owed {
-		rows = append(rows, s.activity(session.ID, notice.purpose, notice.kind, notice.body))
-	}
-	if _, err := s.repo.UpdateSession(ctx, updated, rows...); err != nil {
-		s.logger.Error("linear: recording an observation", "session", session.ID, "error", err)
-		return
-	}
-	if len(rows) > 0 {
-		s.wake(s.sendKick)
-	}
-}
-
-// notice is one activity an observation owes.
-type notice struct {
-	purpose string
-	kind    string
-	body    string
-}
-
-// evaluate decides what one reading of the Thread means for the session:
-// the outcome to report, a waiting state to announce once, or nothing
-// yet. Only the exact Turn counts — a newer one replacing it, the Thread
-// vanishing, or T3 dropping the Thread are established limitations, never
-// substitutes. A Thread at rest or unknown says nothing about the Turn's
-// end; a completed Turn without its response is waited on for grace
-// before the recovery is given up. Pure, for tests.
-func evaluate(session store.LinearSession, thread api.Thread, readErr error, now time.Time, grace time.Duration) (store.LinearSession, []notice, bool) {
-	finish := func(outcome string, kind string, body string) (store.LinearSession, []notice, bool) {
-		session.State, session.Outcome = stateDone, outcome
-		session.UpdatedAt = now
-		return session, []notice{{purpose: "result", kind: kind, body: body}}, true
-	}
-	if errors.Is(readErr, threads.ErrNotFound) {
-		return finish(outcomeUnrecoverable, contentError, threadGone())
-	}
-	links := thread.Links
-	if pending := thread.PendingTurn; pending != nil && pending.ID == session.TurnID {
-		// T3 has not started the Turn yet. A Thread T3 no longer reports
-		// never will; otherwise there is nothing to say.
-		if thread.Archived {
-			return finish(outcomeUnrecoverable, contentError, threadDropped(links))
-		}
-		return session, nil, false
-	}
-	turn := thread.LatestTurn
-	if turn == nil || turn.ID != session.TurnID {
-		return finish(outcomeUnrecoverable, contentError, turnReplaced(links))
-	}
-	switch turn.State {
-	case api.TurnCompleted:
-		if turn.Response != "" {
-			return finish(outcomeResponded, contentResponse, turn.Response)
-		}
-		if session.CompletedSeenAt == nil {
-			seen := now
-			session.CompletedSeenAt = &seen
-			session.UpdatedAt = now
-			return session, nil, true
-		}
-		if now.Sub(*session.CompletedSeenAt) >= grace {
-			return finish(outcomeUnrecoverable, contentError, responseMissing(links))
-		}
-		return session, nil, false
-	case api.TurnFailed:
-		return finish(outcomeFailed, contentError, turnFailed(turn.Error, links))
-	case api.TurnInterrupted:
-		return finish(outcomeInterrupted, contentError, turnInterrupted(links))
-	}
-	// Running or unknown: the Turn is not over. A Thread T3 no longer
-	// reports cannot finish one.
-	if thread.Archived {
-		return finish(outcomeUnrecoverable, contentError, threadDropped(links))
-	}
-	switch status := thread.Status; status {
-	case api.ThreadWaitingForInput, api.ThreadWaitingForPermission:
-		if session.NoticedStatus == string(status) {
-			return session, nil, false
-		}
-		session.NoticedStatus = string(status)
-		session.UpdatedAt = now
-		return session, []notice{{purpose: "notice/" + string(status), kind: contentThought, body: waiting(status, links)}}, true
-	}
-	return session, nil, false
-}
-
-// sessionLinks reads the links of the Thread a session started, if any.
+// sessionLinks reads the links of the Thread a session is bound to, if
+// any.
 func (s *Service) sessionLinks(ctx context.Context, sessionID string) *api.ThreadLinks {
 	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil || session.ThreadID == "" {
@@ -718,6 +606,16 @@ func (s *Service) sessionLinks(ctx context.Context, sessionID string) *api.Threa
 		return nil
 	}
 	return thread.Links
+}
+
+// backoff is the delay before the next attempt: retryBase doubling per
+// failed attempt, capped at retryMax.
+func (s *Service) backoff(attempts int) time.Duration {
+	delay := s.retryBase
+	for i := 1; i < attempts && delay < s.retryMax; i++ {
+		delay *= 2
+	}
+	return min(delay, s.retryMax)
 }
 
 func wait(ctx context.Context, d time.Duration) bool {

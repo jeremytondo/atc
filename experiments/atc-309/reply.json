@@ -1,0 +1,39 @@
+{
+  "case": "reply",
+  "questions": [
+    {
+      "id": "color",
+      "options": [
+        "Red (Recommended)",
+        "Blue"
+      ],
+      "isOther": true
+    },
+    {
+      "id": "tool",
+      "options": [
+        "go (Recommended)",
+        "make"
+      ],
+      "isOther": true
+    },
+    {
+      "id": "tests",
+      "options": [
+        "Yes (Recommended)",
+        "No"
+      ],
+      "isOther": true
+    }
+  ],
+  "answers_sent": {
+    "color": {
+      "answers": [
+        "Blue is fine. Actually, forget the tooling question - and please skip the tests entirely; instead tell me in one sentence what you would do first."
+      ]
+    }
+  },
+  "agent_final": [
+    "ANSWERED: color\nTEXT: Blue is fine. Actually, forget the tooling question - and please skip the tests entirely; instead tell me in one sentence what you would do first.\nPLAN: I would first update the badge color to blue, without choosing a build tool or running tests."
+  ]
+}

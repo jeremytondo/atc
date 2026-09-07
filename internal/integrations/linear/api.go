@@ -284,6 +284,20 @@ type activityInput struct {
 	ID             string          `json:"id"`
 	AgentSessionID string          `json:"agentSessionId"`
 	Content        activityContent `json:"content"`
+	// Signal and SignalMetadata carry Linear's select signal on an
+	// elicitation: the options a user may pick, each with the label shown
+	// and the value Linear hands back (ATC-309).
+	Signal         string          `json:"signal,omitempty"`
+	SignalMetadata *signalMetadata `json:"signalMetadata,omitempty"`
+}
+
+type signalMetadata struct {
+	Options []selectOption `json:"options"`
+}
+
+type selectOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
 }
 
 type activityContent struct {

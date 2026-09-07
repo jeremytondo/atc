@@ -13,18 +13,29 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// Structured requests (ATC-308). T3 reports an agent's questions as one
-// user-input.requested activity carrying a request id and a set of
-// questions, each with options and two allowances — a custom text
-// answer, allowed unless the question says otherwise (T3's own surfaces
-// read it the same way), and several selections when the question says
-// so. An answer is one thread.user-input.respond command with one
-// answer map against the request id: the option's value (its label
-// when it names none) or the custom text, as a string for a
+// Structured requests (ATC-308, ATC-309). T3 reports an agent's
+// questions as one user-input.requested activity carrying a request id
+// and a set of questions, each with options and two allowances — a
+// custom text answer, allowed unless the question says otherwise (T3's
+// own surfaces read it the same way), and several selections when the
+// question says so. An answer is one thread.user-input.respond command
+// with one answer map against the request id: the option's value (its
+// label when it names none) or the custom text, as a string for a
 // single-selection question and a list for a multi-selection one,
-// exactly as T3's surfaces submit. Evidence comes from the same
-// activities: user-input.resolved names the answers the provider took
-// (an abandoned question resolves with none), and
+// exactly as T3's surfaces submit. The map need not name every
+// question: T3 forwards the entries it is given without checking
+// completeness, and Codex's request_user_input tool hands the map to
+// the model verbatim as the tool's result — the model reads which
+// questions were answered and with what, and an absent one is absent
+// (codex-rs core/src/tools/handlers/request_user_input.rs; T3
+// CodexSessionRuntime.respondToUserInput). Only T3's own form insists
+// on completeness. A conversational reply is therefore the user's text
+// as the custom answer to the request's first question: for the single
+// question Codex prefers this is exactly T3's custom text path, and for
+// several it is a partial map the model reads as prose against its
+// questions, never duplicated across them. Evidence comes from the
+// same activities: user-input.resolved names the answers the provider
+// took (an abandoned question resolves with none), and
 // provider.user-input.respond.failed carries T3's detail — stale wording
 // resolves the request, as in T3's own projection. Content ATC cannot
 // answer faithfully is reported with the reason rather than trimmed.

@@ -20,15 +20,42 @@ type LinearOutbox struct {
 	CreatedAt     string
 }
 
+type LinearRequest struct {
+	ID        string
+	SessionID string
+	Kind      string
+	Options   string
+	State     string
+	CreatedAt string
+	UpdatedAt string
+}
+
 type LinearSession struct {
+	ID        string
+	State     string
+	ThreadID  sql.NullString
+	Outcome   sql.NullString
+	CreatedAt string
+	UpdatedAt string
+}
+
+type LinearSubmission struct {
 	ID              string
-	Prompt          sql.NullString
+	SessionID       string
+	Kind            string
+	Text            sql.NullString
+	RequestID       sql.NullString
+	QuestionID      sql.NullString
+	Value           sql.NullString
 	State           string
-	ThreadID        sql.NullString
+	Delivery        string
+	OperationID     sql.NullString
 	TurnID          sql.NullString
-	NoticedStatus   sql.NullString
+	Attempts        int64
+	NextAttemptAt   string
 	CompletedSeenAt sql.NullString
 	Outcome         sql.NullString
+	Detail          sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
 }
@@ -110,6 +137,7 @@ type ThreadAnswer struct {
 	Detail            sql.NullString
 	CreatedAt         string
 	UpdatedAt         string
+	Reply             sql.NullString
 }
 
 type ThreadIdentity struct {

@@ -116,7 +116,7 @@ func TestAnswerInputOverT3(t *testing.T) {
 	}
 
 	answers := []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Blue"}}, {QuestionID: "q2", Choices: []string{"go", "make"}}}
-	req, err := f.threads.BeginAnswer(ctx, thread.ID, request.ID, answers)
+	req, err := f.threads.BeginAnswer(ctx, thread.ID, request.ID, api.InputAnswerParams{Answers: answers})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +148,16 @@ func TestAnswerInputOverT3(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("command (-want +got):\n%s", diff)
 	}
+	// A partial set names only what was answered; a reply arrives from
+	// the domain as the first question's custom answer.
+	reply := answerCommand("t1", integrations.InputAnswer{RequestID: "req-1", Answers: []integrations.ProviderAnswer{{QuestionID: "color", Values: []string{"Blue, and whatever tools you like"}}}, Key: "ans-r"})
+	if diff := cmp.Diff(map[string]any{"color": "Blue, and whatever tools you like"}, reply["answers"]); diff != "" {
+		t.Errorf("reply command answers (-want +got):\n%s", diff)
+	}
+	partial := answerCommand("t1", integrations.InputAnswer{RequestID: "req-1", Answers: []integrations.ProviderAnswer{{QuestionID: "tools", Values: []string{"go"}, Multiple: true}}, Key: "ans-p"})
+	if diff := cmp.Diff(map[string]any{"tools": []string{"go"}}, partial["answers"]); diff != "" {
+		t.Errorf("partial command answers (-want +got):\n%s", diff)
+	}
 	if _, err := f.threads.AnswerDelivered(ctx, thread.ID, req.AnswerID); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +188,7 @@ func TestAnswerInputOverT3(t *testing.T) {
 		return len(thread.InputRequests) == 1 && thread.InputRequests[0].ID != request.ID
 	})
 	next := thread.InputRequests[0]
-	req, err = f.threads.BeginAnswer(ctx, thread.ID, next.ID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Yes"}}})
+	req, err = f.threads.BeginAnswer(ctx, thread.ID, next.ID, api.InputAnswerParams{Answers: []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Yes"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +250,7 @@ func TestAnswerWatchedAfterReconnect(t *testing.T) {
 	f.server.Push(asking(2, true))
 	thread := f.waitStatus("t1", api.ThreadWaitingForInput)
 	waitFor(t, "the request", func() bool { thread, _ = f.threads.Get(thread.ID); return len(thread.InputRequests) == 1 })
-	req, err := f.threads.BeginAnswer(ctx, thread.ID, thread.InputRequests[0].ID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Yes"}}})
+	req, err := f.threads.BeginAnswer(ctx, thread.ID, thread.InputRequests[0].ID, api.InputAnswerParams{Answers: []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Yes"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

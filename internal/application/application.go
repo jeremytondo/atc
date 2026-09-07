@@ -492,8 +492,9 @@ func (c *Coordinator) DecideApproval(ctx context.Context, threadID, approvalID s
 }
 
 // AnswerInput answers one pending structured request on a thread
-// (ATC-308) with one complete answer set. The domain validates the set
-// against the request and records the answer durably; the thread's
+// (ATC-308, ATC-309) with structured answers or a conversational reply.
+// The domain validates the answer against the request and records it
+// durably; the thread's
 // Integration dispatches it; and the outcome of the dispatch is
 // recorded: committed is delivery accepted — the request's resolution
 // is still the Integration's evidence to report — refused fails the
@@ -520,12 +521,12 @@ func (c *Coordinator) AnswerInput(ctx context.Context, threadID, requestID strin
 	defer unlock()
 	dispatch, err := answerer.PrepareAnswer(ctx, providerID)
 	if err != nil {
-		if recovered, found, recoverErr := c.threads.RecoverAnswer(threadID, requestID, params.Answers); recoverErr == nil && found && !recovered.Dispatch {
+		if recovered, found, recoverErr := c.threads.RecoverAnswer(threadID, requestID, params); recoverErr == nil && found && !recovered.Dispatch {
 			return c.threads.InputRequest(threadID, requestID)
 		}
 		return api.ThreadInputRequest{}, err
 	}
-	req, err := c.threads.BeginAnswer(ctx, threadID, requestID, params.Answers)
+	req, err := c.threads.BeginAnswer(ctx, threadID, requestID, params)
 	if err != nil {
 		return api.ThreadInputRequest{}, err
 	}

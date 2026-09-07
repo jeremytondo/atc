@@ -143,7 +143,8 @@ func TestThreadAnswerRefusals(t *testing.T) {
 		{"unknown thread", "/v1/threads/thrd-nope/input-requests/" + request.ID, `{"answers":[]}`, http.StatusNotFound, api.CodeThreadNotFound},
 		{"unknown request", "/v1/threads/" + thread.ID + "/input-requests/inpt-nope", `{"answers":[]}`, http.StatusNotFound, api.CodeInputRequestNotFound},
 		{"integration cannot answer", "/v1/threads/" + claude + "/input-requests/" + request.ID, `{"answers":[]}`, http.StatusBadRequest, api.CodeThreadAnswerUnsupported},
-		{"incomplete", path, `{"answers":[{"questionId":"q1","choices":["Red"]}]}`, http.StatusBadRequest, api.CodeInputAnswerInvalid},
+		{"nothing answered", path, `{"answers":[]}`, http.StatusBadRequest, api.CodeInputAnswerInvalid},
+		{"reply with answers", path, `{"reply":"Red","answers":[{"questionId":"q2","choices":["go"]}]}`, http.StatusBadRequest, api.CodeInputAnswerInvalid},
 		{"custom text refused", path, `{"answers":[{"questionId":"q1","text":"Green"},{"questionId":"q2","choices":["go"]}]}`, http.StatusBadRequest, api.CodeInputAnswerInvalid},
 		{"choice not offered", path, `{"answers":[{"questionId":"q1","choices":["Green"]},{"questionId":"q2","choices":["go"]}]}`, http.StatusBadRequest, api.CodeInputAnswerInvalid},
 	}

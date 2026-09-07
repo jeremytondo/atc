@@ -6,7 +6,6 @@ import (
 
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/projects"
-	"github.com/jeremytondo/atc/internal/threads"
 )
 
 var (
@@ -14,5 +13,3 @@ var (
 	errProjectUnknown = projects.ErrNotFound
 	errNotConnected   = fmt.Errorf("%w: T3 Code is unavailable: not running", integrations.ErrNotConnected)
 )
-
-var errNotFound = threads.ErrNotFound

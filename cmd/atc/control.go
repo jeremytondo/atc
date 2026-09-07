@@ -30,18 +30,23 @@ import (
 
 func newThreadAnswerCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "answer <id> <request-id> --answer <question>=<value> [--answer ...]",
+		Use:   "answer <id> <request-id> (--answer <question>=<value> [--answer ...] | --reply <text>)",
 		Short: "Answer a pending structured request and wait for it to resolve",
-		Long: `Answer one structured request the conversation's agent is blocked on with
-one complete answer set: every question of the request, answered once. The
-requests, their question ids, and the choices each offers are shown by
+		Long: `Answer one structured request the conversation's agent is blocked on: with
+answers to its questions, or with a reply in your own words. The requests,
+their question ids, and the choices each offers are shown by
 ` + "`atc thread get`" + `.
 
 Each --answer names a question and a value. A value that is one of the
 question's choices selects it; repeat the flag for a question that allows
 several choices. A value that is not a choice is sent as a custom text answer
-where the question allows one, and refused otherwise. The server validates the
+where the question allows one, and refused otherwise. Not every question has
+to be answered: the agent reads what it received. The server validates the
 whole set before anything reaches the provider.
+
+--reply sends the text as it is, for the agent to read against its questions:
+an answer in prose, a partial answer, or a change of direction. It cannot be
+combined with --answer.
 
 The command waits for the provider to resolve the request, then exits: 0 when
 it was resolved with these answers, non-zero when the answer failed or the
@@ -54,19 +59,32 @@ Submitting the same answers again recovers the answer already sent.`,
 			if err != nil {
 				return err
 			}
-			request, err := client.ThreadInputRequest(cmd.Context(), args[0], args[1])
+			reply, err := cmd.Flags().GetString("reply")
 			if err != nil {
 				return err
 			}
-			params, err := answerParams(request, values)
-			if err != nil {
-				return err
+			var params api.InputAnswerParams
+			switch {
+			case strings.TrimSpace(reply) != "" && len(values) > 0:
+				return errors.New("--reply and --answer cannot be combined")
+			case strings.TrimSpace(reply) != "":
+				params.Reply = reply
+			case len(values) == 0:
+				return errors.New("an answer is required: --answer question=value, or --reply text")
+			default:
+				request, err := client.ThreadInputRequest(cmd.Context(), args[0], args[1])
+				if err != nil {
+					return err
+				}
+				if params, err = answerParams(request, values); err != nil {
+					return err
+				}
 			}
 			return answerAndWait(cmd.Context(), client, args[0], args[1], params, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		}),
 	}
 	cmd.Flags().StringArray("answer", nil, "question=value; a choice's value, or a custom text where allowed (repeatable)")
-	_ = cmd.MarkFlagRequired("answer")
+	cmd.Flags().String("reply", "", "a reply in your own words, sent as it is")
 	return cmd
 }
 
@@ -389,6 +407,9 @@ func printInputRequest(out io.Writer, request api.ThreadInputRequest) {
 	writeQuestions(w, "", request)
 	if answer := request.Answer; answer != nil {
 		_, _ = fmt.Fprintf(w, "answer\t%s (%s)\n", answer.State, answer.Delivery)
+		if answer.Reply != "" {
+			_, _ = fmt.Fprintf(w, "  reply\t%q\n", answer.Reply)
+		}
 		for _, a := range answer.Answers {
 			if a.Text != "" {
 				_, _ = fmt.Fprintf(w, "  %s\t%q\n", a.QuestionID, a.Text)

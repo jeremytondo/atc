@@ -18,10 +18,11 @@ import (
 // ThreadAnswerRecord is one answer submitted through ATC to a structured
 // request. Questions, Answers, and ProviderAnswers are opaque JSON the
 // threads domain encodes: the request's questions as they stood, the
-// answers in ATC's wire form, and the answers in the provider's form (what
-// a retry re-presents). Delivery is accepted or uncertain; State is
-// sent, resolved, failed, or superseded; Detail explains a failure or a
-// supersession.
+// answers in ATC's wire form, and the answers in the provider's form
+// (what a retry re-presents). Reply is the conversational reply when the
+// answer was one (ATC-309), empty otherwise. Delivery is accepted or
+// uncertain; State is sent, resolved, failed, or superseded; Detail
+// explains a failure or a supersession.
 type ThreadAnswerRecord struct {
 	ID                string
 	ThreadID          string
@@ -30,6 +31,7 @@ type ThreadAnswerRecord struct {
 	Questions         string
 	Answers           string
 	ProviderAnswers   string
+	Reply             string
 	Delivery          string
 	State             string
 	Detail            string
@@ -70,7 +72,7 @@ func (t *Threads) SubmitAnswer(ctx context.Context, answer ThreadAnswerRecord, k
 	queries := gen.New(tx)
 	n, err := queries.InsertThreadAnswer(ctx, gen.InsertThreadAnswerParams{
 		ID: answer.ID, ThreadID: answer.ThreadID, RequestID: answer.RequestID, ProviderRequestID: answer.ProviderRequestID,
-		Questions: answer.Questions, Answers: answer.Answers, ProviderAnswers: answer.ProviderAnswers,
+		Questions: answer.Questions, Answers: answer.Answers, ProviderAnswers: answer.ProviderAnswers, Reply: nullString(answer.Reply),
 		Delivery: answer.Delivery, State: answer.State, Detail: nullString(answer.Detail),
 		CreatedAt: formatTime(answer.CreatedAt), UpdatedAt: formatTime(answer.UpdatedAt),
 	})
@@ -121,7 +123,7 @@ func (t *Threads) ListAnswers(ctx context.Context) ([]ThreadAnswerRecord, error)
 func answerFrom(row gen.ThreadAnswer) (ThreadAnswerRecord, error) {
 	answer := ThreadAnswerRecord{
 		ID: row.ID, ThreadID: row.ThreadID, RequestID: row.RequestID, ProviderRequestID: row.ProviderRequestID,
-		Questions: row.Questions, Answers: row.Answers, ProviderAnswers: row.ProviderAnswers,
+		Questions: row.Questions, Answers: row.Answers, ProviderAnswers: row.ProviderAnswers, Reply: row.Reply.String,
 		Delivery: row.Delivery, State: row.State, Detail: row.Detail.String,
 	}
 	var err error

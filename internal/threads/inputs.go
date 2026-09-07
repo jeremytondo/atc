@@ -14,9 +14,15 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 )
 
-// Input requests and answers (ATC-308): the structured questions an
-// agent is blocked on, as the producing Integration observes them, and
-// the one complete answer set ATC submits against a request. Requests
+// Input requests and answers (ATC-308, ATC-309): the structured
+// questions an agent is blocked on, as the producing Integration
+// observes them, and the answer ATC submits against a request — a
+// structured set covering the questions the client answered, each in a
+// form it allows, or a conversational reply passed to the agent
+// verbatim to interpret against its questions. A set need not be
+// complete: the provider forwards whatever is answered and the agent
+// reads what it received, so completeness is a surface's own rule, not
+// ATC's (the T3 Code evidence is in internal/integrations/t3code). Requests
 // are evidence held like approvals — a report replaces the pending set,
 // ids derive from the private request identity, a resolved request is
 // remembered for a while — with positional question ids (q1, q2, …) so
@@ -50,9 +56,10 @@ var ErrInputResolved = errors.New("input request already resolved")
 // layer maps it to 400.
 var ErrInputUnanswerable = errors.New("input request cannot be answered through ATC")
 
-// ErrAnswerInvalid refuses an answer set that does not answer the
-// request: a question missing or unknown, a choice not offered, a form
-// or count the question does not allow. The API layer maps it to 400.
+// ErrAnswerInvalid refuses an answer that does not answer the request:
+// nothing answered, a question unknown or answered twice, a choice not
+// offered, a form or count the question does not allow, or a reply and
+// structured answers together. The API layer maps it to 400.
 var ErrAnswerInvalid = errors.New("invalid answer")
 
 // ErrAnswerPending refuses a different answer while one already sent
@@ -410,32 +417,32 @@ func (s *Service) input(threadID, requestID string) (*inputEntry, error) {
 
 // RecoverAnswer finds the answer a submission recovers instead of
 // recording one: the newest answer submitted through ATC for the
-// request, when it is the same answer set and was not refused by the
+// request, when it is the same answer and was not refused by the
 // provider — sent, resolved, or superseded, its outcome on the record.
 // It reports whether there is one; the request says whether it still
-// needs dispatching. A different set while one is sent is refused
-// (ErrAnswerPending); a set that does not answer the request as the
+// needs dispatching. A different answer while one is sent is refused
+// (ErrAnswerPending); one that does not answer the request as the
 // record kept it is refused (ErrAnswerInvalid). Nothing is recorded.
-func (s *Service) RecoverAnswer(threadID, requestID string, answers []api.QuestionAnswer) (AnswerRequest, bool, error) {
+func (s *Service) RecoverAnswer(threadID, requestID string, params api.InputAnswerParams) (AnswerRequest, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.view[threadID]; !ok {
 		return AnswerRequest{}, false, ErrNotFound
 	}
-	return s.recoverAnswer(threadID, requestID, answers)
+	return s.recoverAnswer(threadID, requestID, params)
 }
 
 // recoverAnswer is RecoverAnswer under mu.
-func (s *Service) recoverAnswer(threadID, requestID string, answers []api.QuestionAnswer) (AnswerRequest, bool, error) {
+func (s *Service) recoverAnswer(threadID, requestID string, params api.InputAnswerParams) (AnswerRequest, bool, error) {
 	recorded := s.latestAnswer(threadID, requestID)
 	if recorded == nil || recorded.State == string(api.InputAnswerFailed) {
 		return AnswerRequest{}, false, nil
 	}
-	normalized, err := validateAnswers(decodeQuestions(recorded.Questions), answers)
+	normalized, reply, err := validateAnswers(decodeQuestions(recorded.Questions), params)
 	if err != nil {
 		return AnswerRequest{}, false, err
 	}
-	if !slices.EqualFunc(decodeAnswers(recorded.Answers), normalized, answerEqual) {
+	if reply != recorded.Reply || !slices.EqualFunc(decodeAnswers(recorded.Answers), normalized, answerEqual) {
 		if recorded.State == string(api.InputAnswerSent) {
 			return AnswerRequest{}, false, fmt.Errorf("%w: %s", ErrAnswerPending, requestID)
 		}
@@ -447,17 +454,17 @@ func (s *Service) recoverAnswer(threadID, requestID string, answers []api.Questi
 	}, true, nil
 }
 
-// BeginAnswer checks an answer set against the request — it must be
-// pending, answerable, and answered completely in the forms it allows,
-// on a thread no stop is being confirmed on — records the answer
-// durably, and returns what the Integration needs to dispatch it. The
-// same answer set begun again recovers the answer already recorded
+// BeginAnswer checks an answer against the request — it must be
+// pending and answerable, and the answer must address it in the forms
+// it allows, on a thread no stop is being confirmed on — records the
+// answer durably, and returns what the Integration needs to dispatch
+// it. The same answer begun again recovers the answer already recorded
 // (RecoverAnswer) — dispatched again only if its delivery was uncertain
 // — whatever the request's state now, and whether or not the
 // Integration has reported the request since a restart; a different
-// set is refused while one is sent. After a failed answer the request
-// takes another.
-func (s *Service) BeginAnswer(ctx context.Context, threadID, requestID string, answers []api.QuestionAnswer) (AnswerRequest, error) {
+// answer is refused while one is sent. After a failed answer the
+// request takes another.
+func (s *Service) BeginAnswer(ctx context.Context, threadID, requestID string, params api.InputAnswerParams) (AnswerRequest, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
@@ -469,7 +476,7 @@ func (s *Service) BeginAnswer(ctx context.Context, threadID, requestID string, a
 		s.mu.Unlock()
 		return AnswerRequest{}, fmt.Errorf("%w: %s", ErrThreadStopping, stop.ID)
 	}
-	if req, found, err := s.recoverAnswer(threadID, requestID, answers); err != nil || found {
+	if req, found, err := s.recoverAnswer(threadID, requestID, params); err != nil || found {
 		s.mu.Unlock()
 		return req, err
 	}
@@ -487,12 +494,12 @@ func (s *Service) BeginAnswer(ctx context.Context, threadID, requestID string, a
 		return AnswerRequest{}, fmt.Errorf("%w: %s", ErrInputUnanswerable, entry.request.Unanswerable)
 	}
 	questions := entry.request.Questions
-	normalized, err := validateAnswers(questions, answers)
+	normalized, reply, err := validateAnswers(questions, params)
 	if err != nil {
 		s.mu.Unlock()
 		return AnswerRequest{}, err
 	}
-	provider := providerAnswers(entry, normalized)
+	provider := providerAnswers(entry, normalized, reply)
 	requestIDPrivate := entry.requestID
 	s.mu.Unlock()
 	// Millisecond precision: the provider's evidence carries this instant
@@ -500,7 +507,7 @@ func (s *Service) BeginAnswer(ctx context.Context, threadID, requestID string, a
 	now := s.now().Truncate(time.Millisecond)
 	record := store.ThreadAnswerRecord{
 		ThreadID: threadID, RequestID: requestID, ProviderRequestID: requestIDPrivate,
-		Questions: encode(questions), Answers: encode(normalized), ProviderAnswers: encode(provider),
+		Questions: encode(questions), Answers: encode(normalized), ProviderAnswers: encode(provider), Reply: reply,
 		Delivery: string(api.MessageUncertain), State: string(api.InputAnswerSent), CreatedAt: now, UpdatedAt: now,
 	}
 	for {
@@ -539,62 +546,81 @@ func trimAnswers(answers []*store.ThreadAnswerRecord) []*store.ThreadAnswerRecor
 	return kept
 }
 
-// validateAnswers checks a set against the questions: every question
-// answered exactly once, in a form it allows, returning the set in
-// question order.
-func validateAnswers(questions []api.InputQuestion, answers []api.QuestionAnswer) ([]api.QuestionAnswer, error) {
-	byID := make(map[string]api.QuestionAnswer, len(answers))
-	for _, answer := range answers {
+// validateAnswers checks an answer against the questions: a reply
+// (non-blank, alone, and kept verbatim), or a structured set answering
+// at least one question, each at most once, in a form it allows —
+// returned in question order.
+func validateAnswers(questions []api.InputQuestion, params api.InputAnswerParams) ([]api.QuestionAnswer, string, error) {
+	reply := params.Reply
+	switch {
+	case reply != "" && len(params.Answers) > 0:
+		return nil, "", fmt.Errorf("%w: a reply and structured answers together", ErrAnswerInvalid)
+	case strings.TrimSpace(reply) != "":
+		return []api.QuestionAnswer{}, reply, nil
+	case len(params.Answers) == 0:
+		return nil, "", fmt.Errorf("%w: nothing answered", ErrAnswerInvalid)
+	}
+	byID := make(map[string]api.QuestionAnswer, len(params.Answers))
+	for _, answer := range params.Answers {
 		if _, dup := byID[answer.QuestionID]; dup {
-			return nil, fmt.Errorf("%w: question %q answered twice", ErrAnswerInvalid, answer.QuestionID)
+			return nil, "", fmt.Errorf("%w: question %q answered twice", ErrAnswerInvalid, answer.QuestionID)
 		}
 		byID[answer.QuestionID] = answer
 	}
-	normalized := make([]api.QuestionAnswer, 0, len(questions))
+	normalized := make([]api.QuestionAnswer, 0, len(params.Answers))
 	for _, question := range questions {
 		answer, ok := byID[question.ID]
 		if !ok {
-			return nil, fmt.Errorf("%w: question %s is not answered", ErrAnswerInvalid, question.ID)
+			continue
 		}
 		delete(byID, question.ID)
 		text := strings.TrimSpace(answer.Text)
 		switch {
 		case text != "" && len(answer.Choices) > 0:
-			return nil, fmt.Errorf("%w: question %s has both choices and text", ErrAnswerInvalid, question.ID)
+			return nil, "", fmt.Errorf("%w: question %s has both choices and text", ErrAnswerInvalid, question.ID)
 		case text != "" && !question.AllowsCustom:
-			return nil, fmt.Errorf("%w: question %s does not allow a custom text", ErrAnswerInvalid, question.ID)
+			return nil, "", fmt.Errorf("%w: question %s does not allow a custom text", ErrAnswerInvalid, question.ID)
 		case text != "":
 			normalized = append(normalized, api.QuestionAnswer{QuestionID: question.ID, Text: text})
 			continue
 		case len(answer.Choices) == 0:
-			return nil, fmt.Errorf("%w: question %s has no answer", ErrAnswerInvalid, question.ID)
+			return nil, "", fmt.Errorf("%w: question %s has no answer", ErrAnswerInvalid, question.ID)
 		case len(answer.Choices) > 1 && !question.AllowsMultiple:
-			return nil, fmt.Errorf("%w: question %s allows one choice", ErrAnswerInvalid, question.ID)
+			return nil, "", fmt.Errorf("%w: question %s allows one choice", ErrAnswerInvalid, question.ID)
 		}
 		seen := make(map[string]bool, len(answer.Choices))
 		for _, choice := range answer.Choices {
 			if seen[choice] {
-				return nil, fmt.Errorf("%w: question %s chooses %q twice", ErrAnswerInvalid, question.ID, choice)
+				return nil, "", fmt.Errorf("%w: question %s chooses %q twice", ErrAnswerInvalid, question.ID, choice)
 			}
 			seen[choice] = true
 			if !slices.ContainsFunc(question.Options, func(o api.InputOption) bool { return o.Value == choice }) {
-				return nil, fmt.Errorf("%w: question %s does not offer %q", ErrAnswerInvalid, question.ID, choice)
+				return nil, "", fmt.Errorf("%w: question %s does not offer %q", ErrAnswerInvalid, question.ID, choice)
 			}
 		}
 		normalized = append(normalized, api.QuestionAnswer{QuestionID: question.ID, Choices: slices.Clone(answer.Choices)})
 	}
 	for id := range byID {
-		return nil, fmt.Errorf("%w: unknown question %q", ErrAnswerInvalid, id)
+		return nil, "", fmt.Errorf("%w: unknown question %q", ErrAnswerInvalid, id)
 	}
-	return normalized, nil
+	return normalized, "", nil
 }
 
-// providerAnswers translates a validated set into the provider's terms:
-// a custom text is one value in the single form whatever the question
-// allows, as the provider's own surfaces submit it. Caller holds mu.
-func providerAnswers(entry *inputEntry, answers []api.QuestionAnswer) []ProviderAnswer {
+// providerAnswers translates a validated answer into the provider's
+// terms: a custom text is one value in the single form whatever the
+// question allows, as the provider's own surfaces submit it; a reply is
+// the text as the first question's custom answer and nothing for the
+// others — the one form the providers ATC answers through take a reply
+// to a structured request in (the T3 Code evidence is in
+// internal/integrations/t3code), never the text duplicated across
+// questions. Caller holds mu.
+func providerAnswers(entry *inputEntry, answers []api.QuestionAnswer, reply string) []ProviderAnswer {
+	if reply != "" {
+		return []ProviderAnswer{{QuestionID: entry.questionIDs[0], Values: []string{reply}}}
+	}
 	provider := make([]ProviderAnswer, 0, len(answers))
-	for i, answer := range answers {
+	for _, answer := range answers {
+		i := slices.IndexFunc(entry.request.Questions, func(q api.InputQuestion) bool { return q.ID == answer.QuestionID })
 		if answer.Text != "" {
 			provider = append(provider, ProviderAnswer{QuestionID: entry.questionIDs[i], Values: []string{answer.Text}})
 			continue
@@ -778,7 +804,7 @@ func (s *Service) requestFrom(entry *inputEntry) api.ThreadInputRequest {
 
 func answerFrom(record store.ThreadAnswerRecord) *api.InputAnswer {
 	return &api.InputAnswer{
-		Answers: decodeAnswers(record.Answers), Delivery: api.MessageDelivery(record.Delivery), State: api.InputAnswerState(record.State),
+		Answers: decodeAnswers(record.Answers), Reply: record.Reply, Delivery: api.MessageDelivery(record.Delivery), State: api.InputAnswerState(record.State),
 		Detail: record.Detail, SubmittedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
 }
@@ -793,6 +819,9 @@ func encode(v any) string {
 func decodeAnswers(data string) []api.QuestionAnswer {
 	var answers []api.QuestionAnswer
 	_ = json.Unmarshal([]byte(data), &answers)
+	if answers == nil {
+		answers = []api.QuestionAnswer{}
+	}
 	return answers
 }
 

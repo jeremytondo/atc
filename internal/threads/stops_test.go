@@ -99,7 +99,7 @@ func TestStopRunningConfirmedOnSessionClose(t *testing.T) {
 	thread, _ := f.service.Get(id)
 	approvalID, requestID := thread.Approvals[0].ID, thread.InputRequests[0].ID
 	answers := []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Choices: []string{"go"}}}
-	answer, err := f.service.BeginAnswer(ctx, id, requestID, answers)
+	answer, err := f.service.BeginAnswer(ctx, id, requestID, structured(answers...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestStopRunningConfirmedOnSessionClose(t *testing.T) {
 	if _, err := f.service.BeginDecision(id, approvalID, api.DecisionApprove); !errors.Is(err, ErrThreadStopping) {
 		t.Errorf("decision while stopping = %v", err)
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, requestID, answers); !errors.Is(err, ErrThreadStopping) {
+	if _, err := f.service.BeginAnswer(ctx, id, requestID, structured(answers...)); !errors.Is(err, ErrThreadStopping) {
 		t.Errorf("answer while stopping = %v", err)
 	}
 	// A session closed before the stop was accepted is old news; the turn
@@ -178,10 +178,10 @@ func TestStopRunningConfirmedOnSessionClose(t *testing.T) {
 	}
 	// The same answers again recover the superseded answer, its outcome
 	// on the record; other answers are refused: the request is closed.
-	if req, err := f.service.BeginAnswer(ctx, id, requestID, answers); err != nil || req.AnswerID != answer.AnswerID || req.Dispatch {
+	if req, err := f.service.BeginAnswer(ctx, id, requestID, structured(answers...)); err != nil || req.AnswerID != answer.AnswerID || req.Dispatch {
 		t.Errorf("same answers after the stop = %+v, %v", req, err)
 	}
-	if _, err := f.service.BeginAnswer(ctx, id, requestID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Blue"}}, {QuestionID: "q2", Choices: []string{"go"}}}); !errors.Is(err, ErrInputResolved) {
+	if _, err := f.service.BeginAnswer(ctx, id, requestID, structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Blue"}}, api.QuestionAnswer{QuestionID: "q2", Choices: []string{"go"}})); !errors.Is(err, ErrInputResolved) {
 		t.Errorf("other answers after the stop = %v", err)
 	}
 	// The program still presents the stale requests: they stay closed.
@@ -436,7 +436,7 @@ func TestArchiveResolvesStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread, _ = f.service.Get(other)
-	if _, err := f.service.BeginAnswer(ctx, other, thread.InputRequests[0].ID, []api.QuestionAnswer{{QuestionID: "q1", Choices: []string{"Red"}}, {QuestionID: "q2", Choices: []string{"go"}}}); err != nil {
+	if _, err := f.service.BeginAnswer(ctx, other, thread.InputRequests[0].ID, structured(api.QuestionAnswer{QuestionID: "q1", Choices: []string{"Red"}}, api.QuestionAnswer{QuestionID: "q2", Choices: []string{"go"}})); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.ArchiveExternalThread(ctx, "t3code", "t2"); err != nil {

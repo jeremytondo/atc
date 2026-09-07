@@ -136,8 +136,8 @@ WHERE thread_id = ? AND turn_id = ? AND delivery = 'uncertain';
 -- operation, read whole at boot (recent rows only) and updated as the
 -- provider's evidence settles them.
 -- name: InsertThreadAnswer :execrows
-INSERT INTO thread_answers (id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO thread_answers (id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, reply, delivery, state, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreadAnswers :many
@@ -214,11 +214,11 @@ WHERE state = 'done' AND id IN (
     ORDER BY completed_at DESC, id DESC LIMIT -1 OFFSET ?
 );
 
--- Linear sessions (ATC-302). Insertion is the duplicate-session check: a
--- second `created` delivery for one session inserts nothing.
+-- Linear sessions (ATC-302, ATC-309). Insertion is the duplicate-session
+-- check: a second `created` delivery for one session inserts nothing.
 -- name: InsertLinearSession :execrows
-INSERT INTO linear_sessions (id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO linear_sessions (id, state, thread_id, outcome, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: GetLinearSession :one
@@ -234,9 +234,43 @@ SELECT
 FROM linear_sessions;
 
 -- name: UpdateLinearSession :execrows
-UPDATE linear_sessions SET prompt = ?, state = ?, thread_id = ?, turn_id = ?, noticed_status = ?,
-    completed_seen_at = ?, outcome = ?, updated_at = ?
+UPDATE linear_sessions SET state = ?, thread_id = ?, outcome = ?, updated_at = ?
 WHERE id = ?;
+
+-- Linear submissions (ATC-309). Insertion is the duplicate-activity
+-- check: a repeated delivery of one prompt activity inserts nothing.
+-- name: InsertLinearSubmission :execrows
+INSERT INTO linear_submissions (id, session_id, kind, text, request_id, question_id, value, state, delivery, operation_id, turn_id,
+    attempts, next_attempt_at, completed_seen_at, outcome, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: UpdateLinearSubmission :execrows
+UPDATE linear_submissions SET text = ?, state = ?, delivery = ?, operation_id = ?, turn_id = ?, attempts = ?, next_attempt_at = ?,
+    completed_seen_at = ?, outcome = ?, detail = ?, updated_at = ?
+WHERE id = ?;
+
+-- name: ListLinearSubmissions :many
+SELECT * FROM linear_submissions WHERE session_id = ? ORDER BY created_at, id;
+
+-- name: ListActiveLinearSubmissions :many
+SELECT * FROM linear_submissions WHERE session_id = ? AND state != 'done' ORDER BY created_at, id;
+
+-- name: CountPendingLinearSubmissions :one
+SELECT COUNT(*) FROM linear_submissions WHERE state != 'done';
+
+-- Linear requests (ATC-309): what was presented, so a selection is
+-- matched against it.
+-- name: InsertLinearRequest :execrows
+INSERT INTO linear_requests (id, session_id, kind, options, state, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: UpdateLinearRequest :execrows
+UPDATE linear_requests SET state = ?, updated_at = ? WHERE id = ?;
+
+-- name: ListLinearRequests :many
+SELECT * FROM linear_requests WHERE session_id = ? ORDER BY created_at, id;
 
 -- Linear outbox (ATC-302). The key is the deduplication.
 -- name: InsertLinearOutbox :execrows
@@ -244,10 +278,17 @@ INSERT INTO linear_outbox (id, session_id, kind, body, attempts, next_attempt_at
 VALUES (?, ?, ?, ?, 0, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
+-- A session's calls go out in order: only its oldest outstanding row is
+-- due, so a row backing off holds the rows behind it.
 -- name: ListDueLinearOutbox :many
-SELECT * FROM linear_outbox
-WHERE sent_at IS NULL AND failed IS NULL AND next_attempt_at <= ?
-ORDER BY next_attempt_at, created_at, id
+SELECT * FROM linear_outbox AS o
+WHERE o.sent_at IS NULL AND o.failed IS NULL AND o.next_attempt_at <= ?
+  AND NOT EXISTS (
+    SELECT 1 FROM linear_outbox AS p
+    WHERE p.session_id = o.session_id AND p.sent_at IS NULL AND p.failed IS NULL
+      AND (p.created_at < o.created_at OR p.created_at = o.created_at AND p.id < o.id)
+  )
+ORDER BY o.next_attempt_at, o.created_at, o.id
 LIMIT ?;
 
 -- name: CountPendingLinearOutbox :one

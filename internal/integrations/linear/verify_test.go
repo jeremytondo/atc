@@ -20,7 +20,7 @@ func TestDeliveriesThroughTheSharedIngress(t *testing.T) {
 	// T3 is slow for the whole test: acceptance and acknowledgement never
 	// wait for it.
 	release := make(chan struct{})
-	f.starter.set(func(s *fakeStarter) { s.block = release })
+	f.starter.set(func(s *fakeCoordinator) { s.block = release })
 	defer close(release)
 	f.start()
 	ingress := f.ingress()
@@ -30,9 +30,9 @@ func TestDeliveriesThroughTheSharedIngress(t *testing.T) {
 	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), `"status":"accepted"`) {
 		t.Fatalf("valid delivery = %d %s, want 202 accepted", rec.Code, rec.Body)
 	}
-	session := f.waitSession("sess-1", "session recorded", func(s store.LinearSession) bool { return s.State == stateStarting })
-	if !strings.Contains(session.Prompt, "Linear issue ATC-302") || !strings.Contains(session.Prompt, "what does the webhook receiver do") {
-		t.Errorf("session = %+v", session)
+	f.waitSession("sess-1", "session recorded", func(s store.LinearSession) bool { return s.State == stateStarting })
+	if start := f.submissions("sess-1"); len(start) != 1 || !strings.Contains(start[0].Text, "Linear issue ATC-302") || !strings.Contains(start[0].Text, "what does the webhook receiver do") {
+		t.Errorf("start submission = %+v", start)
 	}
 	// Redelivery: acknowledged as a duplicate; nothing new.
 	rec = deliver(ingress, signedRequest("dlv-1", createdEvent("sess-1", now), testSecret))
