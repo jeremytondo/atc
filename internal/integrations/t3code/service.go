@@ -49,6 +49,7 @@ const (
 type ThreadObserver interface {
 	ObserveExternal(ctx context.Context, o threads.ExternalObservation) (string, error)
 	ObserveTurnResponse(ctx context.Context, threadID, providerTurnID, response string) error
+	ObserveApprovals(ctx context.Context, integrationID, providerID string, pending []threads.ApprovalObservation) error
 	ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error
 	ReleaseIntegration(ctx context.Context, integrationID string)
 	UnarchivedProviderIDs(integrationID string) []string
@@ -124,6 +125,12 @@ type Service struct {
 	// client is the live connection's RPC client, for dispatching
 	// commands; nil between connections.
 	client *rpcClient
+	// approvalReads holds, by T3 thread id, the state of the pending
+	// approval read for the thread; approvalReports counts the thread's
+	// approval reports, so a read landing after a newer report yields to
+	// it (approvals.go).
+	approvalReads   map[string]int
+	approvalReports map[string]uint64
 }
 
 // shellState is ATC's copy of T3's shell projection, kept so a dropped
@@ -156,24 +163,26 @@ func New(opts Options) *Service {
 		opts.ProcessAlive = processAlive
 	}
 	s := &Service{
-		home:          opts.Home,
-		sessionPath:   opts.SessionPath,
-		threads:       opts.Threads,
-		hub:           opts.Hub,
-		logger:        opts.Logger,
-		now:           opts.Now,
-		runCLI:        opts.RunCLI,
-		httpClient:    opts.HTTPClient,
-		alive:         opts.ProcessAlive,
-		pollInterval:  pollInterval,
-		backoffMin:    backoffMin,
-		backoffMax:    backoffMax,
-		authRetry:     authRetry,
-		responseRetry: responseRetry,
-		responseSlots: make(chan struct{}, responseWorkers),
-		skipped:       map[string]string{},
-		settled:       map[string]bool{},
-		recovery:      map[string]string{},
+		home:            opts.Home,
+		sessionPath:     opts.SessionPath,
+		threads:         opts.Threads,
+		hub:             opts.Hub,
+		logger:          opts.Logger,
+		now:             opts.Now,
+		runCLI:          opts.RunCLI,
+		httpClient:      opts.HTTPClient,
+		alive:           opts.ProcessAlive,
+		pollInterval:    pollInterval,
+		backoffMin:      backoffMin,
+		backoffMax:      backoffMax,
+		authRetry:       authRetry,
+		responseRetry:   responseRetry,
+		responseSlots:   make(chan struct{}, responseWorkers),
+		skipped:         map[string]string{},
+		settled:         map[string]bool{},
+		recovery:        map[string]string{},
+		approvalReads:   map[string]int{},
+		approvalReports: map[string]uint64{},
 	}
 	// The report is honest before Run starts: one discovery decides
 	// between "not running" and "about to connect".
@@ -539,6 +548,7 @@ func (s *Service) applyEvent(ctx context.Context, event shellEvent) error {
 	case "thread-removed":
 		s.mu.Lock()
 		delete(s.shell.threads, event.ThreadID)
+		delete(s.approvalReports, event.ThreadID)
 		s.mu.Unlock()
 		delete(s.settled, event.ThreadID)
 		delete(s.recovery, event.ThreadID)
@@ -603,6 +613,7 @@ func (s *Service) observe(ctx context.Context, thread threadShell, project proje
 	delete(s.skipped, thread.ID)
 	if id != "" {
 		s.recoverResponse(ctx, id, thread.ID, observation.Turn)
+		s.observeApprovals(ctx, thread.ID, *thread.HasPendingApprovals)
 	}
 }
 

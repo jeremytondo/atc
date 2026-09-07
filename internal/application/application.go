@@ -4,7 +4,8 @@
 // terminal and everything other domains hold about it, deleting a space
 // and every terminal in it, a project change and the thread
 // classification that follows it, starting a thread in an Integration's
-// program (ATC-289) — composed once here and called from
+// program (ATC-289), sending a message into one and deciding a
+// approval request on one (ATC-307) — composed once here and called from
 // every entry point that needs them, so the HTTP handlers stay thin and
 // no domain imports another. Domains keep their own invariants; this
 // package only orders their calls.
@@ -323,5 +324,105 @@ func (c *Coordinator) discard(ctx context.Context, integrationID, providerID str
 func (c *Coordinator) backfill(ctx context.Context, projectID string) {
 	if err := c.threads.Backfill(context.WithoutCancel(ctx)); err != nil {
 		c.logger.Error("backfilling threads after a project change", "project", projectID, "error", err)
+	}
+}
+
+// SendMessage directs a message at an existing thread (ATC-307): the
+// domain records it — under the client's key, so a resubmission finds
+// the same message — before the thread's Integration dispatches it, and
+// records the outcome after. A message the program committed is
+// accepted; one it refused is withdrawn and the refusal returned; one it
+// never answered stays recorded with its delivery uncertain, for a
+// resubmission under the same key to retry the exact same command. A
+// key already recorded returns that message, retrying only an uncertain
+// delivery. The submission is refused before anything is recorded when
+// the text is blank, the Integration cannot send, or the program is not
+// connected; and while another submission is pending on the thread.
+func (c *Coordinator) SendMessage(ctx context.Context, threadID string, params api.ThreadMessageParams) (api.ThreadMessage, error) {
+	if strings.TrimSpace(params.Text) == "" {
+		return api.ThreadMessage{}, fmt.Errorf("%w: text is empty", threads.ErrMessageInvalid)
+	}
+	integrationID, providerID, err := c.threads.Identity(threadID)
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	if params.Key != "" {
+		// A replay is answered from the record whatever the program's
+		// state; only an uncertain delivery goes back to it.
+		recorded, err := c.threads.MessageByKey(ctx, threadID, params.Key)
+		switch {
+		case err == nil && recorded.Delivery == api.MessageAccepted:
+			return recorded, nil
+		case err != nil && !errors.Is(err, threads.ErrNotFound):
+			return api.ThreadMessage{}, err
+		}
+	}
+	messenger, err := c.integrations.ResolveThreadMessenger(integrationID)
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	prepared, err := messenger.PrepareMessage(ctx, providerID)
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	message, err := c.threads.SubmitMessage(ctx, threadID, threads.Submission{Text: params.Text, Key: params.Key, Steers: prepared.Steers})
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	if message.Delivery == api.MessageAccepted {
+		return message, nil
+	}
+	err = prepared.Dispatch(ctx, integrations.ThreadMessage{ID: message.ID, Text: message.Text, CreatedAt: message.CreatedAt})
+	switch {
+	case err == nil:
+		return c.threads.MessageDelivered(ctx, threadID, message.ID)
+	case errors.Is(err, integrations.ErrMessageRejected):
+		// Detached: a client that gave up mid-dispatch must not leave a
+		// pending turn the program will never start.
+		if recordErr := c.threads.MessageRejected(context.WithoutCancel(ctx), threadID, message.ID, err.Error()); recordErr != nil {
+			c.logger.Error("recording a rejected message", "thread", threadID, "message", message.ID, "error", recordErr)
+		}
+		return api.ThreadMessage{}, err
+	default:
+		// The program may hold the message; nothing here can say. The
+		// record stands, uncertain, for the same key to reconcile.
+		c.logger.Warn("message delivery uncertain", "thread", threadID, "message", message.ID, "error", err)
+		return message, nil
+	}
+}
+
+// DecideApproval answers one pending approval request on a thread
+// (ATC-307) with one of the decisions it offers. The domain validates
+// the decision and records it as sent, the thread's Integration
+// dispatches it, and the outcome is recorded: committed resolves the
+// request; refused reopens it; unanswered leaves the decision sent — the
+// same decision again reconciles under the same identity, a different
+// one is refused until the answer is known.
+func (c *Coordinator) DecideApproval(ctx context.Context, threadID, approvalID string, params api.ApprovalDecisionParams) (api.ThreadApproval, error) {
+	integrationID, _, err := c.threads.Identity(threadID)
+	if err != nil {
+		return api.ThreadApproval{}, err
+	}
+	decider, err := c.integrations.ResolveApprovalDecider(integrationID)
+	if err != nil {
+		return api.ThreadApproval{}, err
+	}
+	req, err := c.threads.BeginDecision(threadID, approvalID, params.Decision)
+	if err != nil {
+		return api.ThreadApproval{}, err
+	}
+	err = decider.DecideApproval(ctx, integrations.ApprovalDecision{
+		ProviderID: req.ProviderID, RequestID: req.RequestID, Decision: req.Decision, Key: req.Key,
+	})
+	switch {
+	case err == nil:
+		return c.threads.ResolveDecision(threadID, approvalID)
+	case errors.Is(err, integrations.ErrDecisionRejected), errors.Is(err, integrations.ErrNotConnected):
+		// Nothing reached the request: it takes another decision.
+		c.threads.AbandonDecision(threadID, approvalID)
+		return api.ThreadApproval{}, err
+	default:
+		c.logger.Warn("approval decision uncertain", "thread", threadID, "approval", approvalID, "error", err)
+		return api.ThreadApproval{}, err
 	}
 }

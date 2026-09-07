@@ -31,6 +31,7 @@ package integrations
 import (
 	"context"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jeremytondo/atc/internal/api"
@@ -67,6 +68,72 @@ type Integration struct {
 	// program knows. Nil for an Integration that cannot start
 	// conversations in its program.
 	PrepareThread func(ctx context.Context, req ThreadCreation) (PreparedThread, error)
+	// Messages is the Integration's message seam (ATC-307): sending text
+	// into a conversation its program owns. Nil for an Integration that
+	// cannot; declared together with the threads.send capability.
+	Messages ThreadMessenger
+	// Approvals is the Integration's approval seam (ATC-307): deciding
+	// a request its program reports pending. Nil for an Integration that
+	// cannot; declared together with the threads.decide capability.
+	Approvals ApprovalDecider
+}
+
+// ThreadMessenger sends messages into existing conversations (ATC-307).
+// The domain owns the message's identity and text; the Integration owns
+// the command it becomes, and presents the same command for the same
+// message every time, so a retry after a lost answer is deduplicated by
+// the program rather than delivered twice.
+type ThreadMessenger interface {
+	// PrepareMessage resolves a message against the program's live state
+	// without sending anything: ErrNotConnected while the program is not
+	// reachable. It reports how the program treats a message while a turn
+	// runs, and returns the dispatch.
+	PrepareMessage(ctx context.Context, providerID string) (PreparedMessage, error)
+}
+
+// PreparedMessage is a message the Integration has resolved but not yet
+// sent. Steers reports that the program folds a message sent while a
+// turn runs into that turn (the agent continues the same execution with
+// the new direction) rather than starting another once it ends; the
+// domain then directs the running turn instead of minting a pending
+// one. Dispatch sends the message and returns once the program has
+// committed it: ErrMessageRejected with the program's own reason when it
+// refuses, ErrDeliveryUncertain when it never answers — the program may
+// hold the message, and the same dispatch again reconciles —
+// ErrNotConnected when the connection went away since preparation.
+type PreparedMessage struct {
+	Steers   bool
+	Dispatch func(ctx context.Context, msg ThreadMessage) error
+}
+
+// ThreadMessage is one message to dispatch: its ATC identity — what the
+// Integration derives its stable program-side identities from — its
+// text, and when it was submitted.
+type ThreadMessage struct {
+	ID        string
+	Text      string
+	CreatedAt time.Time
+}
+
+// ApprovalDecider decides pending approval requests (ATC-307). The
+// domain has validated the decision against the request; the Integration
+// translates it and reports the program's answer: nil once committed,
+// ErrDecisionRejected with the program's reason when refused,
+// ErrDeliveryUncertain when the program never answered — the same
+// request again, under the same key, reconciles — ErrNotConnected while
+// the program is not reachable.
+type ApprovalDecider interface {
+	DecideApproval(ctx context.Context, req ApprovalDecision) error
+}
+
+// ApprovalDecision is one decision to dispatch: the private request
+// identities, the decision in ATC's vocabulary, and a key stable for the
+// (request, decision) pair, for the Integration's deduplication.
+type ApprovalDecision struct {
+	ProviderID string
+	RequestID  string
+	Decision   api.ApprovalDecision
+	Key        string
 }
 
 // ThreadCreation is one request to start a conversation in an

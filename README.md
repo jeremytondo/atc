@@ -12,7 +12,7 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 
 **Terminals.** Persistent terminal sessions. Clients create and inspect them, attach for interactive input and output, and detach without stopping the process.
 
-**Threads.** A Thread is one conversation with an Agent, owned by its Provider and tracked by ATC. ATC gives it a stable identity, a normalized status, its latest Turn, and its relationships. Threads are discovered when a provider starts one, or created through ATC when the provider's Integration supports that.
+**Threads.** A Thread is one conversation with an Agent, owned by its Provider and tracked by ATC. ATC gives it a stable identity, a normalized status, its latest Turn, the approval requests it is blocked on, and its relationships. Threads are discovered when a provider starts one, or created through ATC when the provider's Integration supports that; where the Integration supports it, ATC also sends messages into a Thread and decides its pending approval requests.
 
 **Environments (future).** Where and under what runtime context work happens: shell, installed software, environment variables. Today ATC uses the user's normal environment on the local machine, and nothing is modeled yet.
 
@@ -20,7 +20,7 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 
 **Core.** Defines the domains, their relationships, and their capabilities. Owns ATC identity and state, coordinates Integrations, and serves the API and event stream. Cross-tool workflows go through the domains. Integrations never talk to each other.
 
-**Integrations.** An Integration is ATC's built-in relationship with one external system. It can face either way. Most connect a Provider and implement capabilities for ATC's domains: T3 Code supports Threads with observe and create, Claude Code and Codex support Threads with observe, zmx supports Terminals with drive. Some connect a system that sends work into ATC and receives results, like Linear. Every Integration appears in the catalog with its availability and, where it keeps one, its connection state. An Integration may also expose the Apps it ships and the Agents it runs.
+**Integrations.** An Integration is ATC's built-in relationship with one external system. It can face either way. Most connect a Provider and implement capabilities for ATC's domains: T3 Code supports Threads with observe, create, send, and decide, Claude Code and Codex support Threads with observe, zmx supports Terminals with drive. Some connect a system that sends work into ATC and receives results, like Linear. Every Integration appears in the catalog with its availability and, where it keeps one, its connection state. An Integration may also expose the Apps it ships and the Agents it runs.
 
 **API.** One secure API and event stream, the same for local and remote clients. Clients can discover which Integrations are present, whether each is available, and what it supports.
 

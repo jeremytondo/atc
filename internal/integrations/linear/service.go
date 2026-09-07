@@ -658,6 +658,14 @@ func evaluate(session store.LinearSession, thread api.Thread, readErr error, now
 		return finish(outcomeUnrecoverable, contentError, threadGone())
 	}
 	links := thread.Links
+	if pending := thread.PendingTurn; pending != nil && pending.ID == session.TurnID {
+		// T3 has not started the Turn yet. A Thread T3 no longer reports
+		// never will; otherwise there is nothing to say.
+		if thread.Archived {
+			return finish(outcomeUnrecoverable, contentError, threadDropped(links))
+		}
+		return session, nil, false
+	}
 	turn := thread.LatestTurn
 	if turn == nil || turn.ID != session.TurnID {
 		return finish(outcomeUnrecoverable, contentError, turnReplaced(links))

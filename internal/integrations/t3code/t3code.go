@@ -1,13 +1,15 @@
-// Package t3code is T3 Code's Integration (ATC-294, ATC-285, ATC-289): a
-// mirror of the threads a local T3 Code environment owns, and the one
-// place ATC starts a thread there. T3 stays the source of truth — ATC
-// creates a thread with its first prompt (create.go) and then only
-// watches; it never prompts again, approves, archives, or otherwise
-// mutates a T3 thread — and its threads appear in ATC's normal thread
-// list as ordinary records with near-real-time status and deep links
-// back into T3's Apps (its web UI and desktop app), which are handoff
-// Apps: the server never launches them, and no thread records which one
-// started it.
+// Package t3code is T3 Code's Integration (ATC-294, ATC-285, ATC-289,
+// ATC-307): a mirror of the threads a local T3 Code environment owns,
+// and the place ATC drives them. T3 stays the source of truth — ATC
+// creates a thread with its first prompt (create.go), sends later
+// messages into it (send.go), and decides the approvals it reports
+// pending (approvals.go), each as one T3 command whose outcome T3's
+// own events then drive; it never archives or otherwise mutates a T3
+// thread — and its threads appear in ATC's normal thread list as
+// ordinary records with near-real-time status and deep links back into
+// T3's Apps (its web UI and desktop app), which are handoff Apps: the
+// server never launches them, and no thread records which one started
+// it.
 //
 // The Integration is always on and self-discovering: it finds the local
 // server through T3's runtime state file, pairs with it zero-touch (a
@@ -48,9 +50,9 @@ var agents = []api.IntegrationAgent{
 }
 
 // Integration is T3 Code's catalog registration: the agents T3 drives,
-// its two handoff Apps, its live connection, and its thread creation. It
-// launches nothing — a T3 conversation opens in T3, through the thread's
-// links.
+// its two handoff Apps, its live connection, and its thread creation,
+// messages, and approval decisions. It launches nothing — a T3
+// conversation opens in T3, through the thread's links.
 func Integration(service *Service) integrations.Integration {
 	if service == nil {
 		panic("t3code.Integration: service must not be nil")
@@ -62,7 +64,7 @@ func Integration(service *Service) integrations.Integration {
 	return integrations.Integration{
 		ID:           ID,
 		Name:         "T3 Code",
-		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation},
+		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation, api.CapabilityThreadSend, api.CapabilityThreadDecide},
 		Agents:       agents,
 		Apps: []integrations.App{
 			{ID: "web", Name: "T3 Code (web)", Agents: agentIDs, Handoff: true},
@@ -70,6 +72,8 @@ func Integration(service *Service) integrations.Integration {
 		},
 		Connection:    service.Connection,
 		PrepareThread: service.PrepareThread,
+		Messages:      service,
+		Approvals:     service,
 	}
 }
 

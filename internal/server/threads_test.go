@@ -771,13 +771,13 @@ func TestThreadCreateOverTheWire(t *testing.T) {
 		t.Fatalf("T3 received %d commands; want 1", len(commands))
 	}
 	t3ID, _ := commands[0]["threadId"].(string)
-	if !threadIDPattern.MatchString(thread.ID) || thread.LatestTurn == nil || !turnIDPattern.MatchString(thread.LatestTurn.ID) || t3ID == "" {
+	if !threadIDPattern.MatchString(thread.ID) || thread.PendingTurn == nil || !turnIDPattern.MatchString(thread.PendingTurn.ID) || t3ID == "" {
 		t.Fatalf("thread = %+v; command %v", thread, commands[0])
 	}
 	want := api.Thread{
 		ID: thread.ID, IntegrationID: "t3code", AgentID: "codex", ProjectID: f.projectID, InitialDirectory: f.projectDir,
 		Title: "Fix the build", Model: "gpt-5.6-sol", Cwd: f.projectDir, Status: api.ThreadWorking,
-		LatestTurn:     &api.ThreadTurn{ID: thread.LatestTurn.ID, State: api.TurnRunning, StartedAt: thread.LatestTurn.StartedAt},
+		PendingTurn:    &api.PendingTurn{ID: thread.PendingTurn.ID, SubmittedAt: thread.PendingTurn.SubmittedAt},
 		LastEvidenceAt: thread.LastEvidenceAt,
 		Links:          &api.ThreadLinks{Web: f.t3Server.Origin() + "/env-1/" + t3ID, App: "t3code://threads/env-1/" + t3ID},
 		CreatedAt:      thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
@@ -809,8 +809,8 @@ func TestThreadCreateOverTheWire(t *testing.T) {
 		reported, _ = f.threads.Get(thread.ID)
 		return reported.LatestTurn != nil && reported.LatestTurn.StartedAt.Equal(started)
 	})
-	if reported.LatestTurn.ID != thread.LatestTurn.ID || reported.LatestTurn.State != api.TurnRunning || reported.Status != api.ThreadWorking {
-		t.Errorf("after T3's report = %+v; want the provisional turn %s bound and running", reported.LatestTurn, thread.LatestTurn.ID)
+	if reported.LatestTurn.ID != thread.PendingTurn.ID || reported.LatestTurn.State != api.TurnRunning || reported.Status != api.ThreadWorking || reported.PendingTurn != nil {
+		t.Errorf("after T3's report = %+v pending %+v; want the pending turn %s bound and running", reported.LatestTurn, reported.PendingTurn, thread.PendingTurn.ID)
 	}
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
 	var list api.ThreadList

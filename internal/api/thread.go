@@ -26,7 +26,7 @@ const (
 	// ThreadWaitingForInput: the agent asked the user a question and is
 	// blocked on the answer.
 	ThreadWaitingForInput ThreadStatus = "waiting_for_input"
-	// ThreadWaitingForPermission: the agent is blocked on a permission
+	// ThreadWaitingForPermission: the agent is blocked on an approval
 	// approval.
 	ThreadWaitingForPermission ThreadStatus = "waiting_for_permission"
 	// ThreadError: the provider session itself is faulted and cannot take
@@ -56,17 +56,27 @@ const (
 	TurnInterrupted TurnState = "interrupted"
 )
 
-// ThreadTurn is the most recent execution ATC observed or created on a
+// ThreadTurn is the most recent execution the provider reported on a
 // thread. Its id is ATC-minted — the provider's own turn id never appears
-// — and is what a caller that submitted a prompt waits on: the thread's
-// latestTurn carries that id until a later turn replaces it.
+// — and is what a caller that submitted a prompt waits on: the id a
+// submission returned sits in pendingTurn until the provider starts the
+// turn, then in latestTurn until a later turn replaces it (ATC-307).
 type ThreadTurn struct {
-	ID          string     `json:"id" doc:"Server-minted turn identifier (turn-…); the id a submission returned, until a later turn replaces it."`
+	ID          string     `json:"id" doc:"Server-minted turn identifier (turn-…); the id a submission returned, once the provider started its turn, until a later turn replaces it."`
 	State       TurnState  `json:"state" enum:"unknown,running,completed,failed,interrupted" doc:"Whether the turn is running or how it ended; unknown means ATC saw the turn but not its end."`
 	StartedAt   time.Time  `json:"startedAt" doc:"When the turn began, as best ATC knows."`
 	CompletedAt *time.Time `json:"completedAt,omitempty" doc:"When the turn ended; omitted while running and when the end went unobserved."`
 	Error       string     `json:"error,omitempty" doc:"Failure detail from the provider; present only for a failed turn that supplied one."`
 	Response    string     `json:"response,omitempty" doc:"The provider's final assistant message for the turn, as produced (Markdown in practice); omitted until known, and always while running."`
+}
+
+// PendingTurn is a turn ATC submitted that the provider has not reported
+// starting yet (ATC-307): the id a submission returned, waiting to bind
+// to the provider's first new turn. It is not an observed execution — the
+// provider may still refuse it — so it carries no state.
+type PendingTurn struct {
+	ID          string    `json:"id" doc:"Server-minted turn identifier (turn-…) the submission returned; it moves to latestTurn once the provider starts the turn."`
+	SubmittedAt time.Time `json:"submittedAt" doc:"When ATC accepted the submission."`
 }
 
 // Ended reports a turn that is over — completed, failed, or interrupted —
@@ -104,16 +114,18 @@ type Thread struct {
 	Cwd              string `json:"cwd,omitempty" doc:"Provider-reported current working directory, best-effort and mutable; a resumed conversation can run from a different directory than it originated in."`
 	// PermissionMode is provider-native and read-only; ATC imposes no
 	// normalized vocabulary on it.
-	PermissionMode string       `json:"permissionMode,omitempty" doc:"Provider-native permission mode string, read-only."`
-	Status         ThreadStatus `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence. Says nothing about how the last turn ended — see latestTurn."`
-	StatusDetail   string       `json:"statusDetail,omitempty" doc:"The provider's own explanation of a faulted session; present only while status is error."`
-	LatestTurn     *ThreadTurn  `json:"latestTurn,omitempty" doc:"The most recent turn ATC observed or created on the thread; omitted until there is one."`
-	LastEvidenceAt *time.Time   `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
-	Links          *ThreadLinks `json:"links,omitempty" doc:"Where the conversation opens in the provider's own program; present only for threads that live there rather than in an ATC terminal."`
-	Archived       bool         `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its provider) unarchives it."`
-	ArchivedAt     *time.Time   `json:"archivedAt,omitempty" doc:"When the thread was archived; server-managed."`
-	CreatedAt      time.Time    `json:"createdAt"`
-	UpdatedAt      time.Time    `json:"updatedAt"`
+	PermissionMode string           `json:"permissionMode,omitempty" doc:"Provider-native permission mode string, read-only."`
+	Status         ThreadStatus     `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence. Says nothing about how the last turn ended — see latestTurn."`
+	StatusDetail   string           `json:"statusDetail,omitempty" doc:"The provider's own explanation of a faulted session; present only while status is error."`
+	LatestTurn     *ThreadTurn      `json:"latestTurn,omitempty" doc:"The most recent turn the provider reported on the thread; omitted until there is one."`
+	PendingTurn    *PendingTurn     `json:"pendingTurn,omitempty" doc:"A turn ATC submitted (a thread create or a message) that the provider has not reported starting yet; omitted when none. Its id becomes latestTurn's once the provider starts the turn."`
+	Approvals      []ThreadApproval `json:"approvals,omitempty" doc:"Approval requests the agent is blocked on right now, as the Integration observes them; omitted when none. Each is decided through its own decide route, never by an ordinary message."`
+	LastEvidenceAt *time.Time       `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
+	Links          *ThreadLinks     `json:"links,omitempty" doc:"Where the conversation opens in the provider's own program; present only for threads that live there rather than in an ATC terminal."`
+	Archived       bool             `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its provider) unarchives it."`
+	ArchivedAt     *time.Time       `json:"archivedAt,omitempty" doc:"When the thread was archived; server-managed."`
+	CreatedAt      time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
 }
 
 // ThreadLinks are the deep links into the provider's own program that owns a
@@ -156,4 +168,111 @@ type ThreadOption struct {
 // ThreadList is the GET /v1/threads response body.
 type ThreadList struct {
 	Threads []Thread `json:"threads"`
+}
+
+// MessageDelivery is what ATC knows about a message's delivery to the
+// provider (ATC-307): accepted once the provider committed it, uncertain
+// when the provider never answered — it may hold the message, and a
+// resubmission under the same key reconciles rather than sends again. A
+// rejection is not a delivery state: it is the request's error, and the
+// same key reports it again rather than sending again.
+type MessageDelivery string
+
+const (
+	// MessageAccepted: the provider committed the message; its execution
+	// is observed separately through the thread's turns.
+	MessageAccepted MessageDelivery = "accepted"
+	// MessageUncertain: the provider did not answer the dispatch. The
+	// message is kept under its identity; submitting the same key again
+	// retries the exact same command, which the provider deduplicates.
+	MessageUncertain MessageDelivery = "uncertain"
+)
+
+// ThreadMessage is the result of POST /v1/threads/{id}/messages (ATC-307):
+// one text message directed at an existing conversation, with its
+// delivery state and the turn it directs — the thread's pendingTurn when
+// the message starts a new turn, or its running latestTurn when the
+// provider folds the message into the work in progress. The provider's
+// own command and message identities never appear.
+type ThreadMessage struct {
+	ID        string          `json:"id" doc:"Server-minted message identifier (msg-…)."`
+	ThreadID  string          `json:"threadId"`
+	Key       string          `json:"key,omitempty" doc:"The client's idempotency key, when one was given; the same key on the same thread returns this message again instead of sending another."`
+	Text      string          `json:"text"`
+	TurnID    string          `json:"turnId" doc:"The turn the message directs: the thread's pendingTurn until the provider starts it, or the latestTurn it steered. A waiter follows exactly this id through pendingTurn and latestTurn and never a later one."`
+	Delivery  MessageDelivery `json:"delivery" enum:"accepted,uncertain" doc:"accepted once the provider committed the message; uncertain when the provider never answered — resubmit the same key to reconcile."`
+	CreatedAt time.Time       `json:"createdAt"`
+}
+
+// ThreadMessageParams is the POST /v1/threads/{id}/messages request body.
+type ThreadMessageParams struct {
+	Text string `json:"text" doc:"The message. Must be non-empty after trimming; sent to the provider untouched, under the conversation's current agent, model, and settings."`
+	Key  string `json:"key,omitempty" maxLength:"200" doc:"Optional idempotency key, unique per thread on the client's side: a resubmission with the same key returns the message already recorded — retrying its dispatch if the delivery was uncertain — and never sends a second message."`
+}
+
+// ApprovalKind is the kind of action a pending approval request asks
+// about, normalized across providers; unknown for a kind ATC does not
+// recognize.
+type ApprovalKind string
+
+const (
+	ApprovalCommand    ApprovalKind = "command"
+	ApprovalFileRead   ApprovalKind = "file_read"
+	ApprovalFileChange ApprovalKind = "file_change"
+	ApprovalAppAccess  ApprovalKind = "app_access"
+	ApprovalUnknown    ApprovalKind = "unknown"
+)
+
+// ApprovalDecision is one answer a pending approval request offers.
+// Ids are ATC's; the Integration translates each to its provider.
+type ApprovalDecision string
+
+const (
+	DecisionApprove           ApprovalDecision = "approve"
+	DecisionApproveForSession ApprovalDecision = "approve_for_session"
+	DecisionApproveAlways     ApprovalDecision = "approve_always"
+	DecisionDeny              ApprovalDecision = "deny"
+	DecisionCancel            ApprovalDecision = "cancel"
+)
+
+// ApprovalStatus is whether an approval request still waits on a
+// decision.
+type ApprovalStatus string
+
+const (
+	ApprovalPending  ApprovalStatus = "pending"
+	ApprovalResolved ApprovalStatus = "resolved"
+)
+
+// ApprovalOption is one decision a pending approval request offers,
+// as the provider presents it.
+type ApprovalOption struct {
+	Decision ApprovalDecision `json:"decision" enum:"approve,approve_for_session,approve_always,deny,cancel" doc:"The decision id to submit."`
+	Label    string           `json:"label" doc:"The provider's label for the choice."`
+	Warning  string           `json:"warning,omitempty" doc:"A provider-supplied caution about the choice, such as a prompt-injection warning."`
+}
+
+// ThreadApproval is one approval request an agent is blocked on
+// (ATC-307): what it asks, the decisions it offers, and — once decided —
+// how it was resolved. The id is stable for the request's lifetime and
+// the provider's own request id never appears. Pending requests ride the
+// thread as approvals; a decision goes to
+// POST /v1/threads/{id}/approvals/{approvalId}/decide.
+type ThreadApproval struct {
+	ID          string           `json:"id" doc:"Server-derived approval identifier (aprv-…), stable for the request's lifetime."`
+	ThreadID    string           `json:"threadId"`
+	Status      ApprovalStatus   `json:"status" enum:"pending,resolved"`
+	Kind        ApprovalKind     `json:"kind" enum:"command,file_read,file_change,app_access,unknown" doc:"What kind of action is asked about."`
+	Summary     string           `json:"summary" doc:"The provider's one-line summary of the request."`
+	Detail      string           `json:"detail,omitempty" doc:"The action itself as the provider describes it (a command line, a file path, a question); omitted when the provider gave none."`
+	AppName     string           `json:"appName,omitempty" doc:"The app or tool asking, when the provider names one."`
+	Options     []ApprovalOption `json:"options" doc:"The decisions the request offers, in the provider's order."`
+	Decision    ApprovalDecision `json:"decision,omitempty" doc:"The decision submitted through ATC; omitted while pending and when the request was resolved elsewhere."`
+	RequestedAt time.Time        `json:"requestedAt"`
+	ResolvedAt  *time.Time       `json:"resolvedAt,omitempty"`
+}
+
+// ApprovalDecisionParams is the request body of an approval decision.
+type ApprovalDecisionParams struct {
+	Decision ApprovalDecision `json:"decision" enum:"approve,approve_for_session,approve_always,deny,cancel" doc:"One of the request's offered decisions."`
 }

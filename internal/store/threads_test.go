@@ -87,6 +87,7 @@ func TestThreadsRoundTrip(t *testing.T) {
 	updated.StatusDetail = "session faulted"
 	completed := at(5)
 	updated.Turn = &TurnRecord{ID: "turn-bbbbbbbbbb", ProviderID: "t3-turn-1", State: "failed", StartedAt: at(4), CompletedAt: &completed, Error: "boom", Response: "I could not finish: **boom**."}
+	updated.Pending = &PendingTurnRecord{ID: "turn-cccccccccc", Prior: "", SubmittedAt: at(5)}
 	updated.Archived = true
 	updated.ArchivedAt = &archived
 	updated.UpdatedAt = at(6)
@@ -249,5 +250,112 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].ProjectID != "" || len(identities) != 1 {
 		t.Errorf("after project delete: %+v, %d identities; want one unassigned record and its mapping", records, len(identities))
+	}
+}
+
+// Messages (ATC-307): the submission transaction, keyed lookup, delivery
+// updates, the per-thread prune that spares uncertain rows, and the key
+// uniqueness the domain's race guard relies on. Unkeyed messages never
+// collide, and a thread's rows go with it.
+func TestThreadMessages(t *testing.T) {
+	s, _ := openStore(t)
+	ctx := context.Background()
+	threads := s.Threads()
+	insertProject(t, s, "proj-aaaaa", "/")
+	records := map[string]ThreadRecord{}
+	for _, id := range []string{"thrd-aaaaa", "thrd-bbbbb"} {
+		records[id] = ThreadRecord{ID: id, IntegrationID: "t3code", ProjectID: "proj-aaaaa", Status: "idle", CreatedAt: at(0), UpdatedAt: at(0)}
+		if ok, err := threads.InsertObserved(ctx, records[id], ThreadIdentity{IntegrationID: "t3code", ProviderConversationID: "t3-" + id, ThreadID: id}); err != nil || !ok {
+			t.Fatalf("planting %s = %v, %v", id, ok, err)
+		}
+	}
+	submit := func(record ThreadRecord, message ThreadMessageRecord, keep int) (bool, error) {
+		t.Helper()
+		return threads.SubmitMessage(ctx, record, message, keep)
+	}
+	pending := records["thrd-aaaaa"]
+	pending.Pending = &PendingTurnRecord{ID: "turn-aaaaaaaaaa", SubmittedAt: at(1)}
+	pending.Status, pending.UpdatedAt = "working", at(1)
+	keyed := ThreadMessageRecord{ID: "msg-aaaaaaaaaa", ThreadID: "thrd-aaaaa", Key: "k1", Text: "continue", TurnID: "turn-aaaaaaaaaa", Delivery: "uncertain", CreatedAt: at(1), UpdatedAt: at(1)}
+	if ok, err := submit(pending, keyed, 32); err != nil || !ok {
+		t.Fatalf("SubmitMessage = %v, %v", ok, err)
+	}
+	// The thread record went with the message.
+	if got, err := threads.List(ctx); err != nil || len(got) != 2 {
+		t.Fatal(err)
+	} else if diff := cmp.Diff(pending, got[0]); diff != "" {
+		t.Errorf("thread after submit (-want +got):\n%s", diff)
+	}
+	if ok, err := submit(pending, keyed, 32); err != nil || ok {
+		t.Fatalf("SubmitMessage(id collision) = %v, %v; want false", ok, err)
+	}
+	if _, err := submit(pending, ThreadMessageRecord{ID: "msg-bbbbbbbbbb", ThreadID: "thrd-aaaaa", Key: "k1", Text: "again", TurnID: "turn-x", Delivery: "accepted", CreatedAt: at(2), UpdatedAt: at(2)}, 32); !errors.Is(err, ErrMessageKeyTaken) {
+		t.Errorf("SubmitMessage(same key) = %v; want ErrMessageKeyTaken", err)
+	}
+	// A vanished thread inserts nothing.
+	if ok, err := submit(ThreadRecord{ID: "thrd-zzzzz", Status: "idle"}, ThreadMessageRecord{ID: "msg-zzzzzzzzzz", ThreadID: "thrd-zzzzz", Text: "x", TurnID: "t", Delivery: "accepted", CreatedAt: at(2), UpdatedAt: at(2)}, 32); err != nil || ok {
+		t.Errorf("SubmitMessage(absent thread) = %v, %v; want false", ok, err)
+	}
+	// The same key on another thread is another message; unkeyed rows
+	// never collide.
+	for i, record := range []ThreadMessageRecord{
+		{ID: "msg-bbbbbbbbbb", ThreadID: "thrd-bbbbb", Key: "k1", Text: "other", TurnID: "turn-b", Delivery: "accepted", CreatedAt: at(2), UpdatedAt: at(2)},
+		{ID: "msg-cccccccccc", ThreadID: "thrd-aaaaa", Text: "unkeyed", TurnID: "turn-c", Delivery: "accepted", CreatedAt: at(3), UpdatedAt: at(3)},
+		{ID: "msg-dddddddddd", ThreadID: "thrd-aaaaa", Text: "unkeyed too", TurnID: "turn-d", Delivery: "rejected", Detail: "no", CreatedAt: at(4), UpdatedAt: at(4)},
+	} {
+		if ok, err := submit(records[record.ThreadID], record, 32); err != nil || !ok {
+			t.Fatalf("SubmitMessage(%d) = %v, %v", i, ok, err)
+		}
+	}
+
+	got, err := threads.MessageByKey(ctx, "thrd-aaaaa", "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(keyed, got); diff != "" {
+		t.Errorf("MessageByKey (-want +got):\n%s", diff)
+	}
+	if _, err := threads.MessageByKey(ctx, "thrd-aaaaa", "k2"); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("MessageByKey(unknown) = %v", err)
+	}
+	if _, err := threads.MessageByKey(ctx, "thrd-aaaaa", ""); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("MessageByKey(empty key) = %v; want not found, never an unkeyed row", err)
+	}
+	if ok, err := threads.SetMessageDelivery(ctx, "msg-zzzzzzzzzz", "accepted", "", at(5)); err != nil || ok {
+		t.Fatalf("SetMessageDelivery(absent) = %v, %v; want false", ok, err)
+	}
+
+	// The prune keeps the newest rows of the named thread, and every row
+	// whose delivery is still uncertain — the receipt a retry needs.
+	if ok, err := submit(records["thrd-aaaaa"], ThreadMessageRecord{ID: "msg-eeeeeeeeee", ThreadID: "thrd-aaaaa", Text: "newest", TurnID: "turn-e", Delivery: "accepted", CreatedAt: at(6), UpdatedAt: at(6)}, 2); err != nil || !ok {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{keyed.ID: true, "msg-cccccccccc": false, "msg-dddddddddd": true, "msg-eeeeeeeeee": true, "msg-bbbbbbbbbb": true} {
+		_, err := threads.Message(ctx, id)
+		if kept := err == nil; kept != want {
+			t.Errorf("message %s after prune: kept %t, want %t (%v)", id, kept, want, err)
+		}
+	}
+	if ok, err := threads.SetMessageDelivery(ctx, keyed.ID, "rejected", "T3 said no", at(7)); err != nil || !ok {
+		t.Fatalf("SetMessageDelivery = %v, %v", ok, err)
+	}
+	keyed.Delivery, keyed.Detail, keyed.UpdatedAt = "rejected", "T3 said no", at(7)
+	if got, err := threads.Message(ctx, keyed.ID); err != nil {
+		t.Fatal(err)
+	} else if diff := cmp.Diff(keyed, got); diff != "" {
+		t.Errorf("Message (-want +got):\n%s", diff)
+	}
+	if ok, err := submit(records["thrd-aaaaa"], ThreadMessageRecord{ID: "msg-ffffffffff", ThreadID: "thrd-aaaaa", Text: "newer", TurnID: "turn-f", Delivery: "accepted", CreatedAt: at(8), UpdatedAt: at(8)}, 2); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if _, err := threads.Message(ctx, keyed.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("rejected message past the bound = %v; want gone", err)
+	}
+	// Deleting the thread deletes its messages.
+	if ok, err := threads.Delete(ctx, "thrd-aaaaa"); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if _, err := threads.Message(ctx, "msg-eeeeeeeeee"); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("message after thread delete = %v; want gone", err)
 	}
 }

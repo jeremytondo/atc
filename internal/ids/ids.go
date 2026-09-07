@@ -4,8 +4,8 @@
 // so an ID can never spell a word. Fixed length makes IDs prefix-free,
 // which keeps zmx's trailing-* prefix matching safe to type. The format
 // is permanent: it appears in un-versioned surfaces (zmx list) and must
-// never be reformatted. NewLong is the one exception, for identifiers
-// that are never typed and never collision-checked (ATC-301).
+// never be reformatted. NewLong and Derive are the exceptions, for
+// identifiers a person never types (ATC-301, ATC-307).
 package ids
 
 import (
@@ -18,11 +18,11 @@ const (
 	// SuffixLength is the fixed random-suffix length of every ID a person
 	// types.
 	SuffixLength = 5
-	// longSuffixLength is the suffix length of an ID that is never
-	// collision-checked because no history of its kind is kept (a thread's
-	// latest turn): 10 characters keep a duplicate improbable past twenty
-	// million mints. Such IDs are never typed into zmx, so the fixed-length
-	// rule above does not bind them.
+	// longSuffixLength is the suffix length of an ID a person never types
+	// (a turn, a message): 10 characters keep a duplicate improbable past
+	// twenty million mints, which covers the kinds no collision check can
+	// (a thread's latest turn keeps no history). Such IDs are never typed
+	// into zmx, so the fixed-length rule above does not bind them.
 	longSuffixLength = 10
 	alphabet         = "23456789bcdfghjkmnpqrstvwxyz"
 )
@@ -33,8 +33,8 @@ func New(prefix string) string {
 	return mint(prefix, SuffixLength)
 }
 
-// NewLong mints an ID with a 10-character suffix, for identifiers no
-// collision check can cover.
+// NewLong mints an ID with a 10-character suffix, for identifiers a
+// person never types.
 func NewLong(prefix string) string {
 	return mint(prefix, longSuffixLength)
 }
@@ -48,6 +48,38 @@ func mint(prefix string, length int) string {
 		var buf [16]byte
 		rand.Read(buf[:])
 		for _, b := range buf {
+			if i == len(suffix) {
+				break
+			}
+			if b >= limit {
+				continue
+			}
+			suffix[i] = alphabet[int(b)%len(alphabet)]
+			i++
+		}
+	}
+	return prefix + string(suffix)
+}
+
+// Derive mints an ID with a 10-character suffix from a key, the same for
+// the same key: for identifiers that mirror something a provider owns
+// (a pending approval request) so the same request has the same ATC
+// id across reconnects and restarts without a stored mapping. The key
+// never appears in the id.
+func Derive(prefix, key string) string {
+	sum := sha256.Sum256([]byte(key))
+	suffix := make([]byte, longSuffixLength)
+	// Rejection sampling over the digest's bytes keeps the distribution
+	// uniform; a 32-byte digest always yields ten usable bytes with
+	// overwhelming probability, and the fallback re-hashes rather than
+	// bias the alphabet.
+	limit := byte(256 - 256%len(alphabet))
+	i := 0
+	for round := 0; i < len(suffix); round++ {
+		if round > 0 {
+			sum = sha256.Sum256(sum[:])
+		}
+		for _, b := range sum {
 			if i == len(suffix) {
 				break
 			}

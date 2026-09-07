@@ -65,40 +65,54 @@ type Terminal struct {
 }
 
 type Thread struct {
-	ID                 string
-	IntegrationID      string
-	AppID              sql.NullString
-	AgentID            sql.NullString
-	InitialDirectory   sql.NullString
-	ProjectID          sql.NullString
-	TerminalID         sql.NullString
-	Title              sql.NullString
-	TitleUserSet       int64
-	Model              sql.NullString
-	Effort             sql.NullString
-	Cwd                sql.NullString
-	PermissionMode     sql.NullString
-	Status             string
-	LastEvidenceAt     sql.NullString
-	Archived           int64
-	ArchivedAt         sql.NullString
-	CreatedAt          string
-	UpdatedAt          string
-	StatusDetail       sql.NullString
-	TurnID             sql.NullString
-	TurnProviderID     sql.NullString
-	TurnState          sql.NullString
-	TurnStartedAt      sql.NullString
-	TurnCompletedAt    sql.NullString
-	TurnError          sql.NullString
-	TurnResponse       sql.NullString
-	TurnSubmittedPrior sql.NullString
+	ID                     string
+	IntegrationID          string
+	AppID                  sql.NullString
+	AgentID                sql.NullString
+	InitialDirectory       sql.NullString
+	ProjectID              sql.NullString
+	TerminalID             sql.NullString
+	Title                  sql.NullString
+	TitleUserSet           int64
+	Model                  sql.NullString
+	Effort                 sql.NullString
+	Cwd                    sql.NullString
+	PermissionMode         sql.NullString
+	Status                 string
+	LastEvidenceAt         sql.NullString
+	Archived               int64
+	ArchivedAt             sql.NullString
+	CreatedAt              string
+	UpdatedAt              string
+	StatusDetail           sql.NullString
+	TurnID                 sql.NullString
+	TurnProviderID         sql.NullString
+	TurnState              sql.NullString
+	TurnStartedAt          sql.NullString
+	TurnCompletedAt        sql.NullString
+	TurnError              sql.NullString
+	TurnResponse           sql.NullString
+	PendingTurnID          sql.NullString
+	PendingTurnPrior       sql.NullString
+	PendingTurnSubmittedAt sql.NullString
 }
 
 type ThreadIdentity struct {
 	IntegrationID          string
 	ProviderConversationID string
 	ThreadID               string
+}
+
+type ThreadMessage struct {
+	ID        string
+	ThreadID  string
+	Key       sql.NullString
+	Text      string
+	TurnID    string
+	Delivery  string
+	Detail    sql.NullString
+	CreatedAt string
+	UpdatedAt string
 }
 
 type WebhookDelivery struct {

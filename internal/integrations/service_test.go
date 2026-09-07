@@ -69,6 +69,41 @@ func (a *fakePreparingApp) PrepareLaunch(_ context.Context, launch LaunchContext
 
 var observedSince = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
+type fakeMessenger struct{}
+
+func (fakeMessenger) PrepareMessage(context.Context, string) (PreparedMessage, error) {
+	return PreparedMessage{}, nil
+}
+
+type fakeDecider struct{}
+
+func (fakeDecider) DecideApproval(context.Context, ApprovalDecision) error { return nil }
+
+// The message and approval seams route by the thread's Integration
+// (ATC-307): an Integration without one refuses, an unknown id is not
+// found.
+func TestResolveThreadInteractionSeams(t *testing.T) {
+	service := newTestService(t)
+	if messenger, err := service.ResolveThreadMessenger("watcher"); err != nil || messenger == nil {
+		t.Errorf("ResolveThreadMessenger(watcher) = %v, %v", messenger, err)
+	}
+	if _, err := service.ResolveThreadMessenger("alpha"); !errors.Is(err, ErrThreadSendUnsupported) {
+		t.Errorf("ResolveThreadMessenger(alpha) = %v; want ErrThreadSendUnsupported", err)
+	}
+	if _, err := service.ResolveThreadMessenger("nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ResolveThreadMessenger(nope) = %v; want ErrNotFound", err)
+	}
+	if decider, err := service.ResolveApprovalDecider("watcher"); err != nil || decider == nil {
+		t.Errorf("ResolveApprovalDecider(watcher) = %v, %v", decider, err)
+	}
+	if _, err := service.ResolveApprovalDecider("alpha"); !errors.Is(err, ErrThreadDecideUnsupported) {
+		t.Errorf("ResolveApprovalDecider(alpha) = %v; want ErrThreadDecideUnsupported", err)
+	}
+	if _, err := service.ResolveApprovalDecider("nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ResolveApprovalDecider(nope) = %v; want ErrNotFound", err)
+	}
+}
+
 // testIntegrations is the fixture catalog: two executable-backed
 // Integrations with one terminal App each; a connection-backed one that
 // observes a provider's own program, exposes several agents (one sharing
@@ -83,14 +118,16 @@ func testIntegrations(connection api.IntegrationConnection) []Integration {
 		{ID: "beta", Name: "Beta",
 			Apps:       []App{{ID: "tui", Name: "Beta", Terminal: fakeTerminalApp{command: "beta"}}},
 			Executable: &Executable{Binary: "beta-bin", InstallHint: "install beta"}},
-		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation},
+		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation, api.CapabilityThreadSend, api.CapabilityThreadDecide},
 			Agents: []api.IntegrationAgent{{ID: "alpha", Name: "Alpha (as Watcher names it)"}, {ID: "gamma", Name: "Gamma"}},
 			Apps: []App{
 				{ID: "web", Name: "Watcher (web)", Agents: []string{"alpha", "gamma"}, Handoff: true},
 				{ID: "desktop", Name: "Watcher (desktop)", Handoff: true},
 			},
 			Connection:    func() api.IntegrationConnection { return connection },
-			PrepareThread: fakePrepareThread},
+			PrepareThread: fakePrepareThread,
+			Messages:      fakeMessenger{},
+			Approvals:     fakeDecider{}},
 		{ID: "mux", Name: "Mux", Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
 			Executable: &Executable{Binary: "mux", InstallHint: "install mux"}},
 	}
@@ -118,15 +155,19 @@ func TestNewServiceRejectsDuplicates(t *testing.T) {
 		integrations []Integration
 		want         string
 	}{
-		"integration id":              {[]Integration{{ID: "alpha"}, {ID: "alpha"}}, `duplicate integration id "alpha"`},
-		"agent id":                    {[]Integration{{ID: "alpha", Agents: []api.IntegrationAgent{{ID: "x"}, {ID: "x"}}}}, `declares agent "x" twice`},
-		"app id":                      {[]Integration{{ID: "alpha", Apps: []App{{ID: "tui"}, {ID: "tui"}}}}, `declares app "tui" twice`},
-		"qualified app":               {[]Integration{{ID: "alpha", Apps: []App{{ID: "alpha/tui"}}}}, `ids are one non-empty segment`},
-		"empty app":                   {[]Integration{{ID: "alpha", Apps: []App{{ID: ""}}}}, `ids are one non-empty segment`},
-		"qualified id":                {[]Integration{{ID: "alpha/beta"}}, `ids are one non-empty segment`},
-		"empty id":                    {[]Integration{{ID: ""}}, `ids are one non-empty segment`},
-		"creation without capability": {[]Integration{{ID: "alpha", PrepareThread: fakePrepareThread}}, `threads.create capability and the creation seam must be declared together`},
-		"capability without creation": {[]Integration{{ID: "alpha", Capabilities: []api.IntegrationCapability{api.CapabilityThreadCreation}}}, `must be declared together`},
+		"integration id":               {[]Integration{{ID: "alpha"}, {ID: "alpha"}}, `duplicate integration id "alpha"`},
+		"agent id":                     {[]Integration{{ID: "alpha", Agents: []api.IntegrationAgent{{ID: "x"}, {ID: "x"}}}}, `declares agent "x" twice`},
+		"app id":                       {[]Integration{{ID: "alpha", Apps: []App{{ID: "tui"}, {ID: "tui"}}}}, `declares app "tui" twice`},
+		"qualified app":                {[]Integration{{ID: "alpha", Apps: []App{{ID: "alpha/tui"}}}}, `ids are one non-empty segment`},
+		"empty app":                    {[]Integration{{ID: "alpha", Apps: []App{{ID: ""}}}}, `ids are one non-empty segment`},
+		"qualified id":                 {[]Integration{{ID: "alpha/beta"}}, `ids are one non-empty segment`},
+		"empty id":                     {[]Integration{{ID: ""}}, `ids are one non-empty segment`},
+		"creation without capability":  {[]Integration{{ID: "alpha", PrepareThread: fakePrepareThread}}, `threads.create capability and the creation seam must be declared together`},
+		"capability without creation":  {[]Integration{{ID: "alpha", Capabilities: []api.IntegrationCapability{api.CapabilityThreadCreation}}}, `must be declared together`},
+		"messages without capability":  {[]Integration{{ID: "alpha", Messages: fakeMessenger{}}}, `threads.send capability and the message seam must be declared together`},
+		"capability without messages":  {[]Integration{{ID: "alpha", Capabilities: []api.IntegrationCapability{api.CapabilityThreadSend}}}, `must be declared together`},
+		"approvals without capability": {[]Integration{{ID: "alpha", Approvals: fakeDecider{}}}, `threads.decide capability and the approval seam must be declared together`},
+		"capability without approvals": {[]Integration{{ID: "alpha", Capabilities: []api.IntegrationCapability{api.CapabilityThreadDecide}}}, `must be declared together`},
 	}
 	for name, tc := range cases {
 		_, err := NewService(Options{Integrations: tc.integrations})
@@ -178,7 +219,7 @@ func TestListAndGetReportAvailability(t *testing.T) {
 		{ID: "beta", Name: "Beta", Capabilities: []api.IntegrationCapability{}, Agents: []api.IntegrationAgent{},
 			Apps:      []api.App{{ID: "beta/tui", Name: "Beta", Agents: []string{}, Interactions: terminal, Available: &no}},
 			Available: false, InstallHint: "install beta"},
-		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation},
+		{ID: "watcher", Name: "Watcher", Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation, api.CapabilityThreadCreation, api.CapabilityThreadSend, api.CapabilityThreadDecide},
 			Agents: []api.IntegrationAgent{{ID: "alpha", Name: "Alpha (as Watcher names it)"}, {ID: "gamma", Name: "Gamma"}},
 			Apps: []api.App{
 				{ID: "watcher/web", Name: "Watcher (web)", Agents: []string{"alpha", "gamma"}, Interactions: handoff},

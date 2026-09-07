@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/store/gen"
@@ -56,9 +58,22 @@ type ThreadRecord struct {
 	ArchivedAt     *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	// Turn is the latest turn ATC observed or created on the thread; nil
+	// Turn is the latest turn the provider reported on the thread; nil
 	// until there is one.
 	Turn *TurnRecord
+	// Pending is the turn ATC submitted that the provider has not started
+	// yet (ATC-307); nil when none.
+	Pending *PendingTurnRecord
+}
+
+// PendingTurnRecord is a submitted, unstarted turn: the ATC id the
+// submission returned, the provider turn id the thread held at
+// submission — so that turn re-reported is not mistaken for the submitted
+// one starting; "" when the thread had none — and when it was submitted.
+type PendingTurnRecord struct {
+	ID          string
+	Prior       string
+	SubmittedAt time.Time
 }
 
 // TurnRecord is the latest turn's persisted shape. ID is the ATC-minted
@@ -75,12 +90,23 @@ type TurnRecord struct {
 	// Response is the turn's final assistant message, recovered after the
 	// turn ended; empty (stored NULL) until then.
 	Response string
-	// SubmittedPrior marks an unbound submitted turn (ATC-289, ATC-302):
-	// the provider turn id the thread held before the submission, so the
-	// provider re-reporting that turn is not mistaken for the submitted
-	// one starting. Nil once bound, replaced, or never a submission; a
-	// pointer because "" (no prior turn) and nil differ.
-	SubmittedPrior *string
+}
+
+// ThreadMessageRecord is one message submitted to a thread (ATC-307):
+// the durable identity a lost answer is recovered under. Key is the
+// client's idempotency key, empty (stored NULL) when none was given.
+// Delivery is accepted, rejected, or uncertain; Detail the provider's
+// reason for a rejection.
+type ThreadMessageRecord struct {
+	ID        string
+	ThreadID  string
+	Key       string
+	Text      string
+	TurnID    string
+	Delivery  string
+	Detail    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // ThreadIdentity is one row of the private identity mapping:
@@ -109,41 +135,44 @@ func (s *Store) Threads() *Threads {
 
 func insertThreadParams(record ThreadRecord) gen.InsertThreadParams {
 	turn := turnColumnsOf(record.Turn)
+	pending := pendingColumnsOf(record.Pending)
 	return gen.InsertThreadParams{
-		ID:                 record.ID,
-		IntegrationID:      record.IntegrationID,
-		AppID:              nullString(record.AppID),
-		AgentID:            nullString(record.AgentID),
-		InitialDirectory:   nullString(record.InitialDirectory),
-		ProjectID:          nullString(record.ProjectID),
-		TerminalID:         nullStringPtr(record.TerminalID),
-		Title:              nullString(record.Title),
-		TitleUserSet:       boolInt(record.TitleUserSet),
-		Model:              nullString(record.Model),
-		Effort:             nullString(record.Effort),
-		Cwd:                nullString(record.Cwd),
-		PermissionMode:     nullString(record.PermissionMode),
-		Status:             record.Status,
-		StatusDetail:       nullString(record.StatusDetail),
-		LastEvidenceAt:     nullTime(record.LastEvidenceAt),
-		Archived:           boolInt(record.Archived),
-		ArchivedAt:         nullTime(record.ArchivedAt),
-		CreatedAt:          formatTime(record.CreatedAt),
-		UpdatedAt:          formatTime(record.UpdatedAt),
-		TurnID:             turn.id,
-		TurnProviderID:     turn.providerID,
-		TurnState:          turn.state,
-		TurnStartedAt:      turn.startedAt,
-		TurnCompletedAt:    turn.completedAt,
-		TurnError:          turn.err,
-		TurnResponse:       turn.response,
-		TurnSubmittedPrior: turn.submittedPrior,
+		ID:                     record.ID,
+		IntegrationID:          record.IntegrationID,
+		AppID:                  nullString(record.AppID),
+		AgentID:                nullString(record.AgentID),
+		InitialDirectory:       nullString(record.InitialDirectory),
+		ProjectID:              nullString(record.ProjectID),
+		TerminalID:             nullStringPtr(record.TerminalID),
+		Title:                  nullString(record.Title),
+		TitleUserSet:           boolInt(record.TitleUserSet),
+		Model:                  nullString(record.Model),
+		Effort:                 nullString(record.Effort),
+		Cwd:                    nullString(record.Cwd),
+		PermissionMode:         nullString(record.PermissionMode),
+		Status:                 record.Status,
+		StatusDetail:           nullString(record.StatusDetail),
+		LastEvidenceAt:         nullTime(record.LastEvidenceAt),
+		Archived:               boolInt(record.Archived),
+		ArchivedAt:             nullTime(record.ArchivedAt),
+		CreatedAt:              formatTime(record.CreatedAt),
+		UpdatedAt:              formatTime(record.UpdatedAt),
+		TurnID:                 turn.id,
+		TurnProviderID:         turn.providerID,
+		TurnState:              turn.state,
+		TurnStartedAt:          turn.startedAt,
+		TurnCompletedAt:        turn.completedAt,
+		TurnError:              turn.err,
+		TurnResponse:           turn.response,
+		PendingTurnID:          pending.id,
+		PendingTurnPrior:       pending.prior,
+		PendingTurnSubmittedAt: pending.submittedAt,
 	}
 }
 
 // turnColumns is a turn's column values, all NULL when there is none.
 type turnColumns struct {
-	id, providerID, state, startedAt, completedAt, err, response, submittedPrior sql.NullString
+	id, providerID, state, startedAt, completedAt, err, response sql.NullString
 }
 
 func turnColumnsOf(turn *TurnRecord) turnColumns {
@@ -151,14 +180,30 @@ func turnColumnsOf(turn *TurnRecord) turnColumns {
 		return turnColumns{}
 	}
 	return turnColumns{
-		id:             nullString(turn.ID),
-		providerID:     nullString(turn.ProviderID),
-		state:          nullString(turn.State),
-		startedAt:      nullString(formatTime(turn.StartedAt)),
-		completedAt:    nullTime(turn.CompletedAt),
-		err:            nullString(turn.Error),
-		response:       nullString(turn.Response),
-		submittedPrior: nullStringPtr(turn.SubmittedPrior),
+		id:          nullString(turn.ID),
+		providerID:  nullString(turn.ProviderID),
+		state:       nullString(turn.State),
+		startedAt:   nullString(formatTime(turn.StartedAt)),
+		completedAt: nullTime(turn.CompletedAt),
+		err:         nullString(turn.Error),
+		response:    nullString(turn.Response),
+	}
+}
+
+// pendingColumns is a pending turn's column values, all NULL when there
+// is none; prior is stored as given, "" included.
+type pendingColumns struct {
+	id, prior, submittedAt sql.NullString
+}
+
+func pendingColumnsOf(pending *PendingTurnRecord) pendingColumns {
+	if pending == nil {
+		return pendingColumns{}
+	}
+	return pendingColumns{
+		id:          nullString(pending.ID),
+		prior:       sql.NullString{String: pending.Prior, Valid: true},
+		submittedAt: nullString(formatTime(pending.SubmittedAt)),
 	}
 }
 
@@ -200,34 +245,41 @@ func (t *Threads) InsertObserved(ctx context.Context, record ThreadRecord, ident
 // record. A terminal or project deleted since the record was read
 // surfaces as ErrForeignKeyViolation.
 func (t *Threads) Update(ctx context.Context, record ThreadRecord) (bool, error) {
-	turn := turnColumnsOf(record.Turn)
-	n, err := t.writes.UpdateThread(ctx, gen.UpdateThreadParams{
-		AgentID:            nullString(record.AgentID),
-		ProjectID:          nullString(record.ProjectID),
-		TerminalID:         nullStringPtr(record.TerminalID),
-		Title:              nullString(record.Title),
-		TitleUserSet:       boolInt(record.TitleUserSet),
-		Model:              nullString(record.Model),
-		Effort:             nullString(record.Effort),
-		Cwd:                nullString(record.Cwd),
-		PermissionMode:     nullString(record.PermissionMode),
-		Status:             record.Status,
-		StatusDetail:       nullString(record.StatusDetail),
-		LastEvidenceAt:     nullTime(record.LastEvidenceAt),
-		Archived:           boolInt(record.Archived),
-		ArchivedAt:         nullTime(record.ArchivedAt),
-		UpdatedAt:          formatTime(record.UpdatedAt),
-		TurnID:             turn.id,
-		TurnProviderID:     turn.providerID,
-		TurnState:          turn.state,
-		TurnStartedAt:      turn.startedAt,
-		TurnCompletedAt:    turn.completedAt,
-		TurnError:          turn.err,
-		TurnResponse:       turn.response,
-		TurnSubmittedPrior: turn.submittedPrior,
-		ID:                 record.ID,
-	})
+	n, err := t.writes.UpdateThread(ctx, updateThreadParams(record))
 	return n > 0, foreignKeyError(err)
+}
+
+func updateThreadParams(record ThreadRecord) gen.UpdateThreadParams {
+	turn := turnColumnsOf(record.Turn)
+	pending := pendingColumnsOf(record.Pending)
+	return gen.UpdateThreadParams{
+		AgentID:                nullString(record.AgentID),
+		ProjectID:              nullString(record.ProjectID),
+		TerminalID:             nullStringPtr(record.TerminalID),
+		Title:                  nullString(record.Title),
+		TitleUserSet:           boolInt(record.TitleUserSet),
+		Model:                  nullString(record.Model),
+		Effort:                 nullString(record.Effort),
+		Cwd:                    nullString(record.Cwd),
+		PermissionMode:         nullString(record.PermissionMode),
+		Status:                 record.Status,
+		StatusDetail:           nullString(record.StatusDetail),
+		LastEvidenceAt:         nullTime(record.LastEvidenceAt),
+		Archived:               boolInt(record.Archived),
+		ArchivedAt:             nullTime(record.ArchivedAt),
+		UpdatedAt:              formatTime(record.UpdatedAt),
+		TurnID:                 turn.id,
+		TurnProviderID:         turn.providerID,
+		TurnState:              turn.state,
+		TurnStartedAt:          turn.startedAt,
+		TurnCompletedAt:        turn.completedAt,
+		TurnError:              turn.err,
+		TurnResponse:           turn.response,
+		PendingTurnID:          pending.id,
+		PendingTurnPrior:       pending.prior,
+		PendingTurnSubmittedAt: pending.submittedAt,
+		ID:                     record.ID,
+	}
 }
 
 // AssignProject sets the project of a thread that has none; false means
@@ -315,12 +367,11 @@ func threadFrom(row gen.Thread) (ThreadRecord, error) {
 	}
 	if row.TurnID.Valid {
 		turn := &TurnRecord{
-			ID:             row.TurnID.String,
-			ProviderID:     row.TurnProviderID.String,
-			State:          row.TurnState.String,
-			Error:          row.TurnError.String,
-			Response:       row.TurnResponse.String,
-			SubmittedPrior: stringPtr(row.TurnSubmittedPrior),
+			ID:         row.TurnID.String,
+			ProviderID: row.TurnProviderID.String,
+			State:      row.TurnState.String,
+			Error:      row.TurnError.String,
+			Response:   row.TurnResponse.String,
 		}
 		if turn.StartedAt, err = parseTime(row.TurnStartedAt.String); err != nil {
 			return ThreadRecord{}, fmt.Errorf("thread %s turn_started_at: %w", row.ID, err)
@@ -329,6 +380,124 @@ func threadFrom(row gen.Thread) (ThreadRecord, error) {
 			return ThreadRecord{}, fmt.Errorf("thread %s turn_completed_at: %w", row.ID, err)
 		}
 		record.Turn = turn
+	}
+	if row.PendingTurnID.Valid {
+		pending := &PendingTurnRecord{ID: row.PendingTurnID.String, Prior: row.PendingTurnPrior.String}
+		if pending.SubmittedAt, err = parseTime(row.PendingTurnSubmittedAt.String); err != nil {
+			return ThreadRecord{}, fmt.Errorf("thread %s pending_turn_submitted_at: %w", row.ID, err)
+		}
+		record.Pending = pending
+	}
+	return record, nil
+}
+
+// ErrMessageNotFound reports a message id or key with no row.
+var ErrMessageNotFound = errors.New("thread message not found")
+
+// ErrMessageKeyTaken reports a key the thread already has a message for.
+var ErrMessageKeyTaken = errors.New("message key already used")
+
+// SubmitMessage persists a submission in one transaction: the thread
+// record as the submission left it, the message, and the prune that
+// keeps the thread's newest keep messages. False reports a message id
+// collision (the caller re-rolls) or a thread deleted since it was read;
+// a key already recorded for the thread is ErrMessageKeyTaken.
+func (t *Threads) SubmitMessage(ctx context.Context, record ThreadRecord, message ThreadMessageRecord, keep int) (bool, error) {
+	tx, err := t.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	queries := gen.New(tx)
+	n, err := queries.UpdateThread(ctx, updateThreadParams(record))
+	if err != nil {
+		return false, foreignKeyError(err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	n, err = queries.InsertThreadMessage(ctx, insertMessageParams(message))
+	if err != nil {
+		return false, messageError(err, message.Key)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if err := queries.PruneThreadMessages(ctx, gen.PruneThreadMessagesParams{ThreadID: record.ID, Offset: int64(keep)}); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+func insertMessageParams(record ThreadMessageRecord) gen.InsertThreadMessageParams {
+	return gen.InsertThreadMessageParams{
+		ID:        record.ID,
+		ThreadID:  record.ThreadID,
+		Key:       nullString(record.Key),
+		Text:      record.Text,
+		TurnID:    record.TurnID,
+		Delivery:  record.Delivery,
+		Detail:    nullString(record.Detail),
+		CreatedAt: formatTime(record.CreatedAt),
+		UpdatedAt: formatTime(record.UpdatedAt),
+	}
+}
+
+// messageError maps a message insert's constraint failures: the key
+// index to ErrMessageKeyTaken, the thread's foreign key to
+// ErrForeignKeyViolation.
+func messageError(err error, key string) error {
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: thread_messages.thread_id, thread_messages.key") {
+		return fmt.Errorf("%w: %s", ErrMessageKeyTaken, key)
+	}
+	return foreignKeyError(err)
+}
+
+// MessageByKey finds a thread's message by the client's key;
+// ErrMessageNotFound when none.
+func (t *Threads) MessageByKey(ctx context.Context, threadID, key string) (ThreadMessageRecord, error) {
+	row, err := t.reads.GetThreadMessageByKey(ctx, gen.GetThreadMessageByKeyParams{ThreadID: threadID, Key: nullString(key)})
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadMessageRecord{}, ErrMessageNotFound
+	}
+	if err != nil {
+		return ThreadMessageRecord{}, err
+	}
+	return messageFrom(row)
+}
+
+// Message finds a message by id; ErrMessageNotFound when none.
+func (t *Threads) Message(ctx context.Context, id string) (ThreadMessageRecord, error) {
+	row, err := t.reads.GetThreadMessage(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadMessageRecord{}, ErrMessageNotFound
+	}
+	if err != nil {
+		return ThreadMessageRecord{}, err
+	}
+	return messageFrom(row)
+}
+
+// SetMessageDelivery records a message's delivery outcome; false means no
+// such message.
+func (t *Threads) SetMessageDelivery(ctx context.Context, id, delivery, detail string, at time.Time) (bool, error) {
+	n, err := t.writes.UpdateThreadMessageDelivery(ctx, gen.UpdateThreadMessageDeliveryParams{
+		Delivery: delivery, Detail: nullString(detail), UpdatedAt: formatTime(at), ID: id,
+	})
+	return n > 0, err
+}
+
+func messageFrom(row gen.ThreadMessage) (ThreadMessageRecord, error) {
+	record := ThreadMessageRecord{
+		ID: row.ID, ThreadID: row.ThreadID, Key: row.Key.String, Text: row.Text, TurnID: row.TurnID,
+		Delivery: row.Delivery, Detail: row.Detail.String,
+	}
+	var err error
+	if record.CreatedAt, err = parseTime(row.CreatedAt); err != nil {
+		return ThreadMessageRecord{}, fmt.Errorf("thread message %s created_at: %w", row.ID, err)
+	}
+	if record.UpdatedAt, err = parseTime(row.UpdatedAt); err != nil {
+		return ThreadMessageRecord{}, fmt.Errorf("thread message %s updated_at: %w", row.ID, err)
 	}
 	return record, nil
 }
