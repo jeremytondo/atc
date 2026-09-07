@@ -4,11 +4,18 @@
 // terminal and everything other domains hold about it, deleting a space
 // and every terminal in it, a project change and the thread
 // classification that follows it, starting a thread in an Integration's
-// program (ATC-289), sending a message into one and deciding a
-// approval request on one (ATC-307) — composed once here and called from
+// program (ATC-289), sending a message into one, deciding an approval
+// request on one, answering a structured request on one, and stopping
+// its work (ATC-307, ATC-308) — composed once here and called from
 // every entry point that needs them, so the HTTP handlers stay thin and
 // no domain imports another. Domains keep their own invariants; this
 // package only orders their calls.
+//
+// The writes that reach a program are dispatched one at a time per
+// thread (threadLock): the domain records each before its dispatch, and
+// serializing the dispatches gives a stop its defined place — a message
+// accepted before the stop has reached the program by the time the stop
+// does, so it is inside the stop's scope and never starts afterwards.
 package application
 
 import (
@@ -17,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
@@ -59,6 +67,51 @@ type Coordinator struct {
 	integrations *integrations.Service
 	cleanups     []func(terminalID string)
 	logger       *slog.Logger
+
+	// locks holds one dispatch lock per thread with a write in flight
+	// (threadLock), dropped when the last holder releases it.
+	mu    sync.Mutex
+	locks map[string]*threadLock
+}
+
+// threadLock serializes the dispatches to one thread's program: a
+// one-slot channel taken for the duration of a write, waited on with the
+// caller's context, and a count of the goroutines holding or waiting for
+// it so the entry can be dropped once none does.
+type threadLock struct {
+	slot  chan struct{}
+	users int
+}
+
+// lockThread takes the thread's dispatch lock, waiting no longer than
+// the context allows, and returns the release.
+func (c *Coordinator) lockThread(ctx context.Context, threadID string) (func(), error) {
+	c.mu.Lock()
+	lock, ok := c.locks[threadID]
+	if !ok {
+		lock = &threadLock{slot: make(chan struct{}, 1)}
+		c.locks[threadID] = lock
+	}
+	lock.users++
+	c.mu.Unlock()
+	release := func() {
+		c.mu.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(c.locks, threadID)
+		}
+		c.mu.Unlock()
+	}
+	select {
+	case lock.slot <- struct{}{}:
+		return func() {
+			<-lock.slot
+			release()
+		}, nil
+	case <-ctx.Done():
+		release()
+		return nil, ctx.Err()
+	}
 }
 
 // New wires a Coordinator. A missing domain is a boot-time mistake,
@@ -72,7 +125,7 @@ func New(opts Options) *Coordinator {
 	}
 	return &Coordinator{
 		terminals: opts.Terminals, threads: opts.Threads, projects: opts.Projects, integrations: opts.Integrations,
-		cleanups: opts.Cleanups, logger: opts.Logger,
+		cleanups: opts.Cleanups, logger: opts.Logger, locks: make(map[string]*threadLock),
 	}
 }
 
@@ -337,7 +390,8 @@ func (c *Coordinator) backfill(ctx context.Context, projectID string) {
 // key already recorded returns that message, retrying only an uncertain
 // delivery. The submission is refused before anything is recorded when
 // the text is blank, the Integration cannot send, or the program is not
-// connected; and while another submission is pending on the thread.
+// connected; while another submission is pending on the thread; and
+// while a stop is being confirmed on it (ATC-308).
 func (c *Coordinator) SendMessage(ctx context.Context, threadID string, params api.ThreadMessageParams) (api.ThreadMessage, error) {
 	if strings.TrimSpace(params.Text) == "" {
 		return api.ThreadMessage{}, fmt.Errorf("%w: text is empty", threads.ErrMessageInvalid)
@@ -361,6 +415,11 @@ func (c *Coordinator) SendMessage(ctx context.Context, threadID string, params a
 	if err != nil {
 		return api.ThreadMessage{}, err
 	}
+	unlock, err := c.lockThread(ctx, threadID)
+	if err != nil {
+		return api.ThreadMessage{}, err
+	}
+	defer unlock()
 	prepared, err := messenger.PrepareMessage(ctx, providerID)
 	if err != nil {
 		return api.ThreadMessage{}, err
@@ -407,6 +466,11 @@ func (c *Coordinator) DecideApproval(ctx context.Context, threadID, approvalID s
 	if err != nil {
 		return api.ThreadApproval{}, err
 	}
+	unlock, err := c.lockThread(ctx, threadID)
+	if err != nil {
+		return api.ThreadApproval{}, err
+	}
+	defer unlock()
 	req, err := c.threads.BeginDecision(threadID, approvalID, params.Decision)
 	if err != nil {
 		return api.ThreadApproval{}, err
@@ -424,5 +488,121 @@ func (c *Coordinator) DecideApproval(ctx context.Context, threadID, approvalID s
 	default:
 		c.logger.Warn("approval decision uncertain", "thread", threadID, "approval", approvalID, "error", err)
 		return api.ThreadApproval{}, err
+	}
+}
+
+// AnswerInput answers one pending structured request on a thread
+// (ATC-308) with one complete answer set. The domain validates the set
+// against the request and records the answer durably; the thread's
+// Integration dispatches it; and the outcome of the dispatch is
+// recorded: committed is delivery accepted — the request's resolution
+// is still the Integration's evidence to report — refused fails the
+// answer and the request takes another; unanswered leaves the answer
+// sent with its delivery uncertain, for the same answers to reconcile.
+// The same answers again recover the recorded answer — while the
+// program is not connected too, when nothing needs sending; different
+// ones are refused until the evidence is in. Refused before anything is
+// recorded when the Integration cannot answer or the program is not
+// connected, and while a stop is being confirmed on the thread.
+func (c *Coordinator) AnswerInput(ctx context.Context, threadID, requestID string, params api.InputAnswerParams) (api.ThreadInputRequest, error) {
+	integrationID, providerID, err := c.threads.Identity(threadID)
+	if err != nil {
+		return api.ThreadInputRequest{}, err
+	}
+	answerer, err := c.integrations.ResolveInputAnswerer(integrationID)
+	if err != nil {
+		return api.ThreadInputRequest{}, err
+	}
+	unlock, err := c.lockThread(ctx, threadID)
+	if err != nil {
+		return api.ThreadInputRequest{}, err
+	}
+	defer unlock()
+	dispatch, err := answerer.PrepareAnswer(ctx, providerID)
+	if err != nil {
+		if recovered, found, recoverErr := c.threads.RecoverAnswer(threadID, requestID, params.Answers); recoverErr == nil && found && !recovered.Dispatch {
+			return c.threads.InputRequest(threadID, requestID)
+		}
+		return api.ThreadInputRequest{}, err
+	}
+	req, err := c.threads.BeginAnswer(ctx, threadID, requestID, params.Answers)
+	if err != nil {
+		return api.ThreadInputRequest{}, err
+	}
+	if !req.Dispatch {
+		return c.threads.InputRequest(threadID, requestID)
+	}
+	err = dispatch(ctx, integrations.InputAnswer{RequestID: req.RequestID, Answers: req.Answers, Key: req.AnswerID, CreatedAt: req.CreatedAt})
+	switch {
+	case err == nil:
+		return c.threads.AnswerDelivered(ctx, threadID, req.AnswerID)
+	case errors.Is(err, integrations.ErrAnswerRejected):
+		// Detached: a client that gave up mid-dispatch must not leave an
+		// answer sent that the program refused.
+		if recordErr := c.threads.AnswerFailed(context.WithoutCancel(ctx), threadID, req.AnswerID, err.Error()); recordErr != nil {
+			c.logger.Error("recording a refused answer", "thread", threadID, "answer", req.AnswerID, "error", recordErr)
+		}
+		return api.ThreadInputRequest{}, err
+	default:
+		c.logger.Warn("answer delivery uncertain", "thread", threadID, "answer", req.AnswerID, "error", err)
+		return c.threads.InputRequest(threadID, requestID)
+	}
+}
+
+// StopThread stops a thread's work (ATC-308): the domain records the
+// stop with its scope — behind the thread's dispatch lock, so every
+// write accepted before it has reached the program — the thread's
+// Integration dispatches it, and the dispatch's outcome is recorded:
+// committed is delivery accepted, the stop's resolution still the
+// Integration's evidence to report; refused fails the stop for good;
+// unanswered leaves it stopping with its delivery uncertain, for the
+// same operation to reconcile. The stop recorded under the client's
+// key, or one still stopping, is returned as it stands — while the
+// program is not connected too, when nothing needs sending —
+// re-dispatched only if its delivery was uncertain. Refused before
+// anything is recorded when the Integration cannot stop or the program
+// is not connected.
+func (c *Coordinator) StopThread(ctx context.Context, threadID string, params api.ThreadStopParams) (api.ThreadStop, error) {
+	integrationID, providerID, err := c.threads.Identity(threadID)
+	if err != nil {
+		return api.ThreadStop{}, err
+	}
+	stopper, err := c.integrations.ResolveThreadStopper(integrationID)
+	if err != nil {
+		return api.ThreadStop{}, err
+	}
+	unlock, err := c.lockThread(ctx, threadID)
+	if err != nil {
+		return api.ThreadStop{}, err
+	}
+	defer unlock()
+	dispatch, err := stopper.PrepareStop(ctx, providerID)
+	if err != nil {
+		if recovered, stop, found, recoverErr := c.threads.RecoverStop(threadID, params.Key); recoverErr == nil && found && !recovered.Dispatch {
+			return stop, nil
+		}
+		return api.ThreadStop{}, err
+	}
+	req, stop, err := c.threads.BeginStop(ctx, threadID, params.Key)
+	if err != nil {
+		return api.ThreadStop{}, err
+	}
+	if !req.Dispatch {
+		return stop, nil
+	}
+	err = dispatch(ctx, integrations.ThreadStop{Key: req.StopID, CreatedAt: req.CreatedAt})
+	switch {
+	case err == nil:
+		return c.threads.StopDelivered(ctx, threadID, req.StopID)
+	case errors.Is(err, integrations.ErrStopRejected):
+		// Detached: the refusal must be recorded, or the thread stays
+		// refusing work for a stop the program will never perform.
+		if _, recordErr := c.threads.StopFailed(context.WithoutCancel(ctx), threadID, req.StopID, err.Error()); recordErr != nil {
+			c.logger.Error("recording a refused stop", "thread", threadID, "stop", req.StopID, "error", recordErr)
+		}
+		return api.ThreadStop{}, err
+	default:
+		c.logger.Warn("stop delivery uncertain", "thread", threadID, "stop", req.StopID, "error", err)
+		return stop, nil
 	}
 }

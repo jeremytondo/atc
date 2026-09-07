@@ -608,6 +608,13 @@ func WithSession(status string, provider string) ThreadOpt {
 	}
 }
 
+// SessionUpdatedAt sets when the session last changed (an ISO
+// timestamp); use after WithSession. A stopped session carries the stop
+// command's createdAt here.
+func SessionUpdatedAt(at string) ThreadOpt {
+	return func(m map[string]any) { m["session"].(map[string]any)["updatedAt"] = at }
+}
+
 // LastError sets the session's error text; use after WithSession.
 func LastError(detail string) ThreadOpt {
 	return func(m map[string]any) { m["session"].(map[string]any)["lastError"] = detail }
@@ -712,6 +719,73 @@ func ApprovalResolved(id, requestID, decision string) map[string]any {
 // could not be delivered to the provider, with T3's detail text.
 func ApprovalRespondFailed(id, requestID, detail string) map[string]any {
 	return activityItem(id, "error", "provider.approval.respond.failed", "Provider approval response failed", map[string]any{"detail": detail, "requestId": requestID})
+}
+
+// QuestionOpt tweaks a user-input question.
+type QuestionOpt func(map[string]any)
+
+// QuestionOption adds one choice to a question; value is T3's optional
+// option value (the label stands in when absent).
+func QuestionOption(label, description string, value ...string) QuestionOpt {
+	return func(q map[string]any) {
+		option := map[string]any{"label": label, "description": description}
+		if len(value) > 0 {
+			option["value"] = value[0]
+		}
+		q["options"] = append(q["options"].([]any), option)
+	}
+}
+
+// AllowCustom sets whether the question allows a custom text answer;
+// omitted, T3 leaves it allowed.
+func AllowCustom(allowed bool) QuestionOpt {
+	return func(q map[string]any) { q["allowCustomAnswer"] = allowed }
+}
+
+// MultiSelect makes the question take several choices.
+func MultiSelect() QuestionOpt {
+	return func(q map[string]any) { q["multiSelect"] = true }
+}
+
+// Question is one user-input question in T3's shape.
+func Question(id, header, text string, opts ...QuestionOpt) map[string]any {
+	q := map[string]any{"id": id, "header": header, "question": text, "options": []any{}}
+	for _, opt := range opts {
+		opt(q)
+	}
+	return q
+}
+
+// UserInputRequested is a user-input.requested activity for a request
+// carrying these questions.
+func UserInputRequested(id, requestID string, questions ...map[string]any) map[string]any {
+	list := make([]any, 0, len(questions))
+	for _, question := range questions {
+		list = append(list, question)
+	}
+	return activityItem(id, "info", "user-input.requested", "User input requested", map[string]any{"requestId": requestID, "questions": list})
+}
+
+// UserInputResolved is a user-input.resolved activity: the answers the
+// provider took, by question id — a string, or a list of strings for a
+// multi-select question; empty for an abandoned request.
+func UserInputResolved(id, requestID string, answers map[string]any) map[string]any {
+	if answers == nil {
+		answers = map[string]any{}
+	}
+	return activityItem(id, "info", "user-input.resolved", "User input submitted", map[string]any{"requestId": requestID, "answers": answers})
+}
+
+// UserInputRespondFailed is the error activity T3 appends when an
+// answer could not be delivered to the provider, with T3's detail text.
+func UserInputRespondFailed(id, requestID, detail string) map[string]any {
+	return activityItem(id, "error", "provider.user-input.respond.failed", "Provider user input response failed", map[string]any{"detail": detail, "requestId": requestID})
+}
+
+// ActivityAt sets when an activity happened (an ISO timestamp).
+func ActivityAt(activity map[string]any, at string) map[string]any {
+	activity["createdAt"] = at
+	return activity
 }
 
 // ActivityItem is any other activity, with an opaque payload.

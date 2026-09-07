@@ -447,10 +447,16 @@ func insertMessageParams(record ThreadMessageRecord) gen.InsertThreadMessagePara
 // index to ErrMessageKeyTaken, the thread's foreign key to
 // ErrForeignKeyViolation.
 func messageError(err error, key string) error {
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: thread_messages.thread_id, thread_messages.key") {
+	if uniqueViolation(err, "thread_messages.thread_id, thread_messages.key") {
 		return fmt.Errorf("%w: %s", ErrMessageKeyTaken, key)
 	}
 	return foreignKeyError(err)
+}
+
+// uniqueViolation reports whether err is SQLite refusing a row for the
+// named unique index (its columns as SQLite lists them).
+func uniqueViolation(err error, index string) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: "+index)
 }
 
 // MessageByKey finds a thread's message by the client's key;

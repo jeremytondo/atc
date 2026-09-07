@@ -12,7 +12,7 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 
 **Terminals.** Persistent terminal sessions. Clients create and inspect them, attach for interactive input and output, and detach without stopping the process.
 
-**Threads.** A Thread is one conversation with an Agent, owned by its Provider and tracked by ATC. ATC gives it a stable identity, a normalized status, its latest Turn, the approval requests it is blocked on, and its relationships. Threads are discovered when a provider starts one, or created through ATC when the provider's Integration supports that; where the Integration supports it, ATC also sends messages into a Thread and decides its pending approval requests.
+**Threads.** A Thread is one conversation with an Agent, owned by its Provider and tracked by ATC. ATC gives it a stable identity, a normalized status, its latest Turn, the approval requests it is blocked on, and its relationships. Threads are discovered when a provider starts one, or created through ATC when the provider's Integration supports that; where the Integration supports it, ATC also sends messages into a Thread, decides its pending approval requests, answers its structured questions, and stops its work.
 
 **Environments (future).** Where and under what runtime context work happens: shell, installed software, environment variables. Today ATC uses the user's normal environment on the local machine, and nothing is modeled yet.
 

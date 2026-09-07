@@ -166,7 +166,7 @@ func TestThreadSendCLIOutcomes(t *testing.T) {
 	})
 	ts.t3Server.Push(t3codetest.Upserted(6, t3codetest.ThreadItem("t1", "p1", "One", t3codetest.WithSession("running", "codex"), t3codetest.LatestTurn("pt-3", "running", "2026-09-01T00:00:04Z", nil))))
 	stdout, _, err = cli.wait(t)
-	if err == nil || !strings.Contains(err.Error(), "was replaced by turn") || stdout != "" {
+	if err == nil || !strings.Contains(err.Error(), "withdrawn or replaced") || stdout != "" {
 		t.Errorf("replaced = %q, %v", stdout, err)
 	}
 	// Ctrl-C: the wait ends with the interrupt status, nothing is sent to
@@ -219,7 +219,7 @@ func TestEvaluateReply(t *testing.T) {
 		"failed":               {api.Thread{LatestTurn: &api.ThreadTurn{ID: "turn-a", State: api.TurnFailed, Error: "boom"}}, time.Time{}, "", true, "failed: boom"},
 		"failed, no detail":    {thread(api.TurnFailed, ""), time.Time{}, "", true, "no detail"},
 		"interrupted":          {thread(api.TurnInterrupted, ""), time.Time{}, "", true, "interrupted"},
-		"replaced":             {api.Thread{LatestTurn: &api.ThreadTurn{ID: "turn-b", State: api.TurnCompleted, Response: "other"}}, time.Time{}, "", true, "replaced by turn turn-b"},
+		"replaced":             {api.Thread{LatestTurn: &api.ThreadTurn{ID: "turn-b", State: api.TurnCompleted, Response: "other"}}, time.Time{}, "", true, "latest turn is turn-b"},
 		"pending is another's": {api.Thread{PendingTurn: &api.PendingTurn{ID: "turn-b"}, LatestTurn: &api.ThreadTurn{ID: "turn-a", State: api.TurnCompleted, Response: "mine"}}, time.Time{}, "mine", true, ""},
 		"no turn":              {api.Thread{}, time.Time{}, "", true, "no longer known"},
 	}

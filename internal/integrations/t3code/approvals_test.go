@@ -35,7 +35,7 @@ func TestPendingApprovals(t *testing.T) {
 		t3codetest.ActivityItem("a0", "approval.requested", "not an object"),
 	}
 	data, _ := json.Marshal(items)
-	var activities []approvalActivity
+	var activities []activity
 	if err := json.Unmarshal(data, &activities); err != nil {
 		t.Fatal(err)
 	}

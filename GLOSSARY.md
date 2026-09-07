@@ -13,5 +13,7 @@
 * **Turn** — one execution on a Thread, from a prompt to the agent's final response. Part of the Threads domain.
 * **Message** — one text a Client sends into an existing Thread through ATC; it starts the next Turn or directs the one running, and ATC keeps its identity so a lost answer is recovered rather than sent twice. Part of the Threads domain.
 * **Approval request** — a request for approval an Agent is blocked on inside a Thread, as its Provider reports it; ATC presents it with the decisions it offers and relays exactly one. Part of the Threads domain.
+* **Input request** — a set of structured questions an Agent is blocked on inside a Thread, as its Provider reports it; ATC presents each question with the choices and answer forms it allows, relays one complete answer set, and reports the request resolved only on the Provider's evidence. Part of the Threads domain.
+* **Stop** — an explicit operation that ends a Thread's work — the Turn running and any Turn already submitted — while keeping the conversation for a later Message; ATC records it before anything reaches the Provider, refuses new work until the Provider's evidence resolves it, and never calls it done on the command's acceptance alone. Part of the Threads domain.
 * **Client** — anything outside ATC that uses the API.
 * **API** — the contract through which Clients reach ATC's domains and capabilities.

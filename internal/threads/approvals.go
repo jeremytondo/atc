@@ -193,16 +193,20 @@ func (s *Service) approval(threadID, approvalID string) (*approvalEntry, error) 
 }
 
 // BeginDecision checks a decision against the request — it must be
-// pending, the decision offered, and no different decision awaiting the
-// provider's answer — records the decision as sent, and returns what the
-// Integration needs to dispatch it. The same decision begun again (a
-// retry after a lost answer) presents the same key.
+// pending, the decision offered, no different decision awaiting the
+// provider's answer, and no stop being confirmed on the thread — records
+// the decision as sent, and returns what the Integration needs to
+// dispatch it. The same decision begun again (a retry after a lost
+// answer) presents the same key.
 func (s *Service) BeginDecision(threadID, approvalID string, decision api.ApprovalDecision) (DecisionRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, err := s.approval(threadID, approvalID)
 	if err != nil {
 		return DecisionRequest{}, err
+	}
+	if stop := s.stopping(threadID); stop != nil {
+		return DecisionRequest{}, fmt.Errorf("%w: %s", ErrThreadStopping, stop.ID)
 	}
 	if entry.approval.Status == api.ApprovalResolved {
 		how := "elsewhere"
@@ -256,6 +260,16 @@ func (s *Service) AbandonDecision(threadID, approvalID string) {
 	defer s.mu.Unlock()
 	if entry, err := s.approval(threadID, approvalID); err == nil && entry.approval.Status == api.ApprovalPending {
 		entry.deciding = ""
+	}
+}
+
+// closeApprovals resolves every pending request with no decision — the
+// work asking was stopped (ATC-308). Caller holds mu.
+func (s *Service) closeApprovals(threadID string, at time.Time) {
+	for _, entry := range s.approvals[threadID] {
+		if entry.approval.Status == api.ApprovalPending {
+			resolve(entry, "", at)
+		}
 	}
 }
 

@@ -125,6 +125,55 @@ DELETE FROM thread_messages WHERE delivery != 'uncertain' AND id IN (
     ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
 );
 
+-- A confirmed stop withdraws the messages still uncertain on the turns it
+-- covered (ATC-308): a replay must not deliver them into work that was
+-- stopped.
+-- name: WithdrawThreadMessages :execrows
+UPDATE thread_messages SET delivery = 'withdrawn', detail = ?, updated_at = ?
+WHERE thread_id = ? AND turn_id = ? AND delivery = 'uncertain';
+
+-- Thread answers and stops (ATC-308): the durable identity of each
+-- operation, read whole at boot (recent rows only) and updated as the
+-- provider's evidence settles them.
+-- name: InsertThreadAnswer :execrows
+INSERT INTO thread_answers (id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: ListThreadAnswers :many
+SELECT * FROM thread_answers ORDER BY created_at, id;
+
+-- name: UpdateThreadAnswer :execrows
+UPDATE thread_answers SET delivery = ?, state = ?, detail = ?, updated_at = ? WHERE id = ?;
+
+-- A confirmed stop supersedes the answers still awaiting evidence on
+-- the thread (ATC-308): the work asking was stopped.
+-- name: SupersedeThreadAnswers :execrows
+UPDATE thread_answers SET state = 'superseded', detail = ?, updated_at = ? WHERE thread_id = ? AND state = 'sent';
+
+-- name: PruneThreadAnswers :exec
+DELETE FROM thread_answers WHERE state != 'sent' AND id IN (
+    SELECT older.id FROM thread_answers AS older WHERE older.thread_id = ?
+    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
+);
+
+-- name: InsertThreadStop :execrows
+INSERT INTO thread_stops (id, thread_id, key, state, delivery, scope_turn, scope_pending, scope_status, detail, created_at, updated_at, resolved_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: ListThreadStops :many
+SELECT * FROM thread_stops ORDER BY created_at, id;
+
+-- name: UpdateThreadStop :execrows
+UPDATE thread_stops SET state = ?, delivery = ?, detail = ?, updated_at = ?, resolved_at = ? WHERE id = ?;
+
+-- name: PruneThreadStops :exec
+DELETE FROM thread_stops WHERE state != 'stopping' AND id IN (
+    SELECT older.id FROM thread_stops AS older WHERE older.thread_id = ?
+    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
+);
+
 -- Webhook inbox (ATC-306). Acceptance is the deduplication: the
 -- Integration-scoped unique constraint makes a redelivery insert zero rows,
 -- with no check-then-insert window under the single writer.
