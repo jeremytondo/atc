@@ -18,10 +18,10 @@ import (
 // a faulted session (status error, with the provider's explanation in
 // statusDetail) is not a turn outcome. A third slot, the pending turn,
 // holds a submission the provider has not started yet: the id a thread
-// create or a message returned, kept apart from the latest turn so a
-// turn the provider is still running is never displaced and its end
-// never lost. Both are decided here from the normalized evidence
-// Integrations report; no Integration ranks or guesses on its own.
+// create returned, kept apart from the latest turn so a turn the
+// provider is still running is never displaced and its end never lost.
+// Both are decided here from the normalized evidence Integrations
+// report; no Integration ranks or guesses on its own.
 
 const turnPrefix = "turn-"
 

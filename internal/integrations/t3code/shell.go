@@ -36,20 +36,15 @@ type projectShell struct {
 }
 
 type threadShell struct {
-	ID             string          `json:"id"`
-	ProjectID      string          `json:"projectId"`
-	Title          string          `json:"title"`
-	ModelSelection *modelSelection `json:"modelSelection"`
-	// RuntimeMode and InteractionMode are the thread's own settings, sent
-	// back untouched on a message (ATC-307); T3 omits interactionMode for
-	// a thread on its default.
-	RuntimeMode         string         `json:"runtimeMode"`
-	InteractionMode     string         `json:"interactionMode"`
-	WorktreePath        nullableString `json:"worktreePath"`
-	Session             *sessionShell  `json:"session"`
-	HasPendingApprovals *bool          `json:"hasPendingApprovals"`
-	HasPendingUserInput *bool          `json:"hasPendingUserInput"`
-	BackgroundLiveness  *string        `json:"backgroundLiveness"`
+	ID                  string          `json:"id"`
+	ProjectID           string          `json:"projectId"`
+	Title               string          `json:"title"`
+	ModelSelection      *modelSelection `json:"modelSelection"`
+	WorktreePath        nullableString  `json:"worktreePath"`
+	Session             *sessionShell   `json:"session"`
+	HasPendingApprovals *bool           `json:"hasPendingApprovals"`
+	HasPendingUserInput *bool           `json:"hasPendingUserInput"`
+	BackgroundLiveness  *string         `json:"backgroundLiveness"`
 	// LatestTurn is T3's own latest-turn projection; null before any
 	// turn.
 	LatestTurn *latestTurnShell `json:"latestTurn"`
@@ -68,14 +63,11 @@ type modelSelection struct {
 	Model string `json:"model"`
 }
 
-// sessionShell is T3's provider session behind a thread. updatedAt is
-// when the session last changed; for a stopped session it is the stop
-// command's own createdAt, the evidence a stop resolves on (stop.go).
+// sessionShell is T3's provider session behind a thread.
 type sessionShell struct {
-	Status       string     `json:"status"`
-	ProviderName *string    `json:"providerName"`
-	LastError    *string    `json:"lastError"`
-	UpdatedAt    *time.Time `json:"updatedAt"`
+	Status       string  `json:"status"`
+	ProviderName *string `json:"providerName"`
+	LastError    *string `json:"lastError"`
 }
 
 // latestTurnShell is T3's latest turn: its id is the private provider
@@ -239,8 +231,6 @@ func validateThread(thread threadShell) error {
 		return schemaErrorf("thread %q omitted id, projectId, or title", thread.ID)
 	case thread.ModelSelection == nil || thread.ModelSelection.Model == "":
 		return schemaErrorf("thread %s omitted modelSelection.model", thread.ID)
-	case thread.RuntimeMode == "":
-		return schemaErrorf("thread %s omitted runtimeMode", thread.ID)
 	case !thread.WorktreePath.Set:
 		return schemaErrorf("thread %s omitted worktreePath", thread.ID)
 	case thread.HasPendingApprovals == nil || thread.HasPendingUserInput == nil:

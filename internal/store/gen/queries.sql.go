@@ -198,53 +198,6 @@ func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
 	return i, err
 }
 
-const getThreadMessage = `-- name: GetThreadMessage :one
-SELECT id, thread_id, "key", text, turn_id, delivery, detail, created_at, updated_at FROM thread_messages WHERE id = ?
-`
-
-func (q *Queries) GetThreadMessage(ctx context.Context, id string) (ThreadMessage, error) {
-	row := q.db.QueryRowContext(ctx, getThreadMessage, id)
-	var i ThreadMessage
-	err := row.Scan(
-		&i.ID,
-		&i.ThreadID,
-		&i.Key,
-		&i.Text,
-		&i.TurnID,
-		&i.Delivery,
-		&i.Detail,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getThreadMessageByKey = `-- name: GetThreadMessageByKey :one
-SELECT id, thread_id, "key", text, turn_id, delivery, detail, created_at, updated_at FROM thread_messages WHERE thread_id = ? AND key = ?
-`
-
-type GetThreadMessageByKeyParams struct {
-	ThreadID string
-	Key      sql.NullString
-}
-
-func (q *Queries) GetThreadMessageByKey(ctx context.Context, arg GetThreadMessageByKeyParams) (ThreadMessage, error) {
-	row := q.db.QueryRowContext(ctx, getThreadMessageByKey, arg.ThreadID, arg.Key)
-	var i ThreadMessage
-	err := row.Scan(
-		&i.ID,
-		&i.ThreadID,
-		&i.Key,
-		&i.Text,
-		&i.TurnID,
-		&i.Delivery,
-		&i.Detail,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const insertLinearOutbox = `-- name: InsertLinearOutbox :execrows
 INSERT INTO linear_outbox (id, session_id, kind, body, attempts, next_attempt_at, created_at)
 VALUES (?, ?, ?, ?, 0, ?, ?)
@@ -496,51 +449,6 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 	return result.RowsAffected()
 }
 
-const insertThreadAnswer = `-- name: InsertThreadAnswer :execrows
-INSERT INTO thread_answers (id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (id) DO NOTHING
-`
-
-type InsertThreadAnswerParams struct {
-	ID                string
-	ThreadID          string
-	RequestID         string
-	ProviderRequestID string
-	Questions         string
-	Answers           string
-	ProviderAnswers   string
-	Delivery          string
-	State             string
-	Detail            sql.NullString
-	CreatedAt         string
-	UpdatedAt         string
-}
-
-// Thread answers and stops (ATC-308): the durable identity of each
-// operation, read whole at boot (recent rows only) and updated as the
-// provider's evidence settles them.
-func (q *Queries) InsertThreadAnswer(ctx context.Context, arg InsertThreadAnswerParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertThreadAnswer,
-		arg.ID,
-		arg.ThreadID,
-		arg.RequestID,
-		arg.ProviderRequestID,
-		arg.Questions,
-		arg.Answers,
-		arg.ProviderAnswers,
-		arg.Delivery,
-		arg.State,
-		arg.Detail,
-		arg.CreatedAt,
-		arg.UpdatedAt,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const insertThreadIdentity = `-- name: InsertThreadIdentity :execrows
 INSERT INTO thread_identities (integration_id, provider_conversation_id, thread_id)
 VALUES (?, ?, ?)
@@ -555,85 +463,6 @@ type InsertThreadIdentityParams struct {
 
 func (q *Queries) InsertThreadIdentity(ctx context.Context, arg InsertThreadIdentityParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertThreadIdentity, arg.IntegrationID, arg.ProviderConversationID, arg.ThreadID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const insertThreadMessage = `-- name: InsertThreadMessage :execrows
-INSERT INTO thread_messages (id, thread_id, key, text, turn_id, delivery, detail, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (id) DO NOTHING
-`
-
-type InsertThreadMessageParams struct {
-	ID        string
-	ThreadID  string
-	Key       sql.NullString
-	Text      string
-	TurnID    string
-	Delivery  string
-	Detail    sql.NullString
-	CreatedAt string
-	UpdatedAt string
-}
-
-// Thread messages (ATC-307): the durable identity of each submission.
-func (q *Queries) InsertThreadMessage(ctx context.Context, arg InsertThreadMessageParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertThreadMessage,
-		arg.ID,
-		arg.ThreadID,
-		arg.Key,
-		arg.Text,
-		arg.TurnID,
-		arg.Delivery,
-		arg.Detail,
-		arg.CreatedAt,
-		arg.UpdatedAt,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const insertThreadStop = `-- name: InsertThreadStop :execrows
-INSERT INTO thread_stops (id, thread_id, key, state, delivery, scope_turn, scope_pending, scope_status, detail, created_at, updated_at, resolved_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (id) DO NOTHING
-`
-
-type InsertThreadStopParams struct {
-	ID           string
-	ThreadID     string
-	Key          sql.NullString
-	State        string
-	Delivery     string
-	ScopeTurn    sql.NullString
-	ScopePending sql.NullString
-	ScopeStatus  string
-	Detail       sql.NullString
-	CreatedAt    string
-	UpdatedAt    string
-	ResolvedAt   sql.NullString
-}
-
-func (q *Queries) InsertThreadStop(ctx context.Context, arg InsertThreadStopParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertThreadStop,
-		arg.ID,
-		arg.ThreadID,
-		arg.Key,
-		arg.State,
-		arg.Delivery,
-		arg.ScopeTurn,
-		arg.ScopePending,
-		arg.ScopeStatus,
-		arg.Detail,
-		arg.CreatedAt,
-		arg.UpdatedAt,
-		arg.ResolvedAt,
-	)
 	if err != nil {
 		return 0, err
 	}
@@ -910,46 +739,6 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 	return items, nil
 }
 
-const listThreadAnswers = `-- name: ListThreadAnswers :many
-SELECT id, thread_id, request_id, provider_request_id, questions, answers, provider_answers, delivery, state, detail, created_at, updated_at FROM thread_answers ORDER BY created_at, id
-`
-
-func (q *Queries) ListThreadAnswers(ctx context.Context) ([]ThreadAnswer, error) {
-	rows, err := q.db.QueryContext(ctx, listThreadAnswers)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ThreadAnswer
-	for rows.Next() {
-		var i ThreadAnswer
-		if err := rows.Scan(
-			&i.ID,
-			&i.ThreadID,
-			&i.RequestID,
-			&i.ProviderRequestID,
-			&i.Questions,
-			&i.Answers,
-			&i.ProviderAnswers,
-			&i.Delivery,
-			&i.State,
-			&i.Detail,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listThreadIdentities = `-- name: ListThreadIdentities :many
 SELECT integration_id, provider_conversation_id, thread_id FROM thread_identities
 `
@@ -964,46 +753,6 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 	for rows.Next() {
 		var i ThreadIdentity
 		if err := rows.Scan(&i.IntegrationID, &i.ProviderConversationID, &i.ThreadID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listThreadStops = `-- name: ListThreadStops :many
-SELECT id, thread_id, "key", state, delivery, scope_turn, scope_pending, scope_status, detail, created_at, updated_at, resolved_at FROM thread_stops ORDER BY created_at, id
-`
-
-func (q *Queries) ListThreadStops(ctx context.Context) ([]ThreadStop, error) {
-	rows, err := q.db.QueryContext(ctx, listThreadStops)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ThreadStop
-	for rows.Next() {
-		var i ThreadStop
-		if err := rows.Scan(
-			&i.ID,
-			&i.ThreadID,
-			&i.Key,
-			&i.State,
-			&i.Delivery,
-			&i.ScopeTurn,
-			&i.ScopePending,
-			&i.ScopeStatus,
-			&i.Detail,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ResolvedAt,
-		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1157,60 +906,6 @@ func (q *Queries) PruneLinearOutbox(ctx context.Context, cutoff sql.NullString) 
 	return result.RowsAffected()
 }
 
-const pruneThreadAnswers = `-- name: PruneThreadAnswers :exec
-DELETE FROM thread_answers WHERE state != 'sent' AND id IN (
-    SELECT older.id FROM thread_answers AS older WHERE older.thread_id = ?
-    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
-)
-`
-
-type PruneThreadAnswersParams struct {
-	ThreadID string
-	Offset   int64
-}
-
-func (q *Queries) PruneThreadAnswers(ctx context.Context, arg PruneThreadAnswersParams) error {
-	_, err := q.db.ExecContext(ctx, pruneThreadAnswers, arg.ThreadID, arg.Offset)
-	return err
-}
-
-const pruneThreadMessages = `-- name: PruneThreadMessages :exec
-DELETE FROM thread_messages WHERE delivery != 'uncertain' AND id IN (
-    SELECT older.id FROM thread_messages AS older WHERE older.thread_id = ?
-    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
-)
-`
-
-type PruneThreadMessagesParams struct {
-	ThreadID string
-	Offset   int64
-}
-
-// Keeps a thread's newest messages only; the domain names the bound. A
-// message whose delivery is still uncertain is never pruned: it is the
-// receipt a retry reconciles against.
-func (q *Queries) PruneThreadMessages(ctx context.Context, arg PruneThreadMessagesParams) error {
-	_, err := q.db.ExecContext(ctx, pruneThreadMessages, arg.ThreadID, arg.Offset)
-	return err
-}
-
-const pruneThreadStops = `-- name: PruneThreadStops :exec
-DELETE FROM thread_stops WHERE state != 'stopping' AND id IN (
-    SELECT older.id FROM thread_stops AS older WHERE older.thread_id = ?
-    ORDER BY older.created_at DESC, older.id DESC LIMIT -1 OFFSET ?
-)
-`
-
-type PruneThreadStopsParams struct {
-	ThreadID string
-	Offset   int64
-}
-
-func (q *Queries) PruneThreadStops(ctx context.Context, arg PruneThreadStopsParams) error {
-	_, err := q.db.ExecContext(ctx, pruneThreadStops, arg.ThreadID, arg.Offset)
-	return err
-}
-
 const recordTerminalExit = `-- name: RecordTerminalExit :execrows
 UPDATE terminals SET exited_at = ?, exit_code = ?, updated_at = ?
 WHERE id = ? AND exited_at IS NULL
@@ -1268,26 +963,6 @@ type RetryLinearOutboxParams struct {
 
 func (q *Queries) RetryLinearOutbox(ctx context.Context, arg RetryLinearOutboxParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, retryLinearOutbox, arg.Attempts, arg.NextAttemptAt, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const supersedeThreadAnswers = `-- name: SupersedeThreadAnswers :execrows
-UPDATE thread_answers SET state = 'superseded', detail = ?, updated_at = ? WHERE thread_id = ? AND state = 'sent'
-`
-
-type SupersedeThreadAnswersParams struct {
-	Detail    sql.NullString
-	UpdatedAt string
-	ThreadID  string
-}
-
-// A confirmed stop supersedes the answers still awaiting evidence on
-// the thread (ATC-308): the work asking was stopped.
-func (q *Queries) SupersedeThreadAnswers(ctx context.Context, arg SupersedeThreadAnswersParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, supersedeThreadAnswers, arg.Detail, arg.UpdatedAt, arg.ThreadID)
 	if err != nil {
 		return 0, err
 	}
@@ -1486,112 +1161,6 @@ func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int
 		arg.PendingTurnPrior,
 		arg.PendingTurnSubmittedAt,
 		arg.ID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const updateThreadAnswer = `-- name: UpdateThreadAnswer :execrows
-UPDATE thread_answers SET delivery = ?, state = ?, detail = ?, updated_at = ? WHERE id = ?
-`
-
-type UpdateThreadAnswerParams struct {
-	Delivery  string
-	State     string
-	Detail    sql.NullString
-	UpdatedAt string
-	ID        string
-}
-
-func (q *Queries) UpdateThreadAnswer(ctx context.Context, arg UpdateThreadAnswerParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateThreadAnswer,
-		arg.Delivery,
-		arg.State,
-		arg.Detail,
-		arg.UpdatedAt,
-		arg.ID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const updateThreadMessageDelivery = `-- name: UpdateThreadMessageDelivery :execrows
-UPDATE thread_messages SET delivery = ?, detail = ?, updated_at = ? WHERE id = ?
-`
-
-type UpdateThreadMessageDeliveryParams struct {
-	Delivery  string
-	Detail    sql.NullString
-	UpdatedAt string
-	ID        string
-}
-
-func (q *Queries) UpdateThreadMessageDelivery(ctx context.Context, arg UpdateThreadMessageDeliveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateThreadMessageDelivery,
-		arg.Delivery,
-		arg.Detail,
-		arg.UpdatedAt,
-		arg.ID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const updateThreadStop = `-- name: UpdateThreadStop :execrows
-UPDATE thread_stops SET state = ?, delivery = ?, detail = ?, updated_at = ?, resolved_at = ? WHERE id = ?
-`
-
-type UpdateThreadStopParams struct {
-	State      string
-	Delivery   string
-	Detail     sql.NullString
-	UpdatedAt  string
-	ResolvedAt sql.NullString
-	ID         string
-}
-
-func (q *Queries) UpdateThreadStop(ctx context.Context, arg UpdateThreadStopParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateThreadStop,
-		arg.State,
-		arg.Delivery,
-		arg.Detail,
-		arg.UpdatedAt,
-		arg.ResolvedAt,
-		arg.ID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const withdrawThreadMessages = `-- name: WithdrawThreadMessages :execrows
-UPDATE thread_messages SET delivery = 'withdrawn', detail = ?, updated_at = ?
-WHERE thread_id = ? AND turn_id = ? AND delivery = 'uncertain'
-`
-
-type WithdrawThreadMessagesParams struct {
-	Detail    sql.NullString
-	UpdatedAt string
-	ThreadID  string
-	TurnID    string
-}
-
-// A confirmed stop withdraws the messages still uncertain on the turns it
-// covered (ATC-308): a replay must not deliver them into work that was
-// stopped.
-func (q *Queries) WithdrawThreadMessages(ctx context.Context, arg WithdrawThreadMessagesParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, withdrawThreadMessages,
-		arg.Detail,
-		arg.UpdatedAt,
-		arg.ThreadID,
-		arg.TurnID,
 	)
 	if err != nil {
 		return 0, err

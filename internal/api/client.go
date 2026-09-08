@@ -199,61 +199,6 @@ func (c *Client) UpdateThread(ctx context.Context, id string, params ThreadUpdat
 	return thread, err
 }
 
-// SendThreadMessage directs a message at an existing thread (ATC-307),
-// returning it with its delivery state and the turn it directs. The
-// same key on the same thread returns the recorded message and never
-// sends twice; a rejection is the server's typed problem.
-func (c *Client) SendThreadMessage(ctx context.Context, id string, params ThreadMessageParams) (ThreadMessage, error) {
-	var message ThreadMessage
-	err := c.do(ctx, http.MethodPost, "/v1/threads/"+url.PathEscape(id)+"/messages", params, &message)
-	return message, err
-}
-
-// DecideThreadApproval answers one of a thread's pending approval
-// requests with an offered decision (ATC-307), returning the request
-// resolved.
-func (c *Client) DecideThreadApproval(ctx context.Context, id, approvalID string, params ApprovalDecisionParams) (ThreadApproval, error) {
-	var approval ThreadApproval
-	err := c.do(ctx, http.MethodPost, "/v1/threads/"+url.PathEscape(id)+"/approvals/"+url.PathEscape(approvalID)+"/decide", params, &approval)
-	return approval, err
-}
-
-// ThreadInputRequest fetches one of a thread's structured requests
-// (ATC-308), pending or resolved while remembered.
-func (c *Client) ThreadInputRequest(ctx context.Context, id, requestID string) (ThreadInputRequest, error) {
-	var request ThreadInputRequest
-	err := c.do(ctx, http.MethodGet, "/v1/threads/"+url.PathEscape(id)+"/input-requests/"+url.PathEscape(requestID), nil, &request)
-	return request, err
-}
-
-// AnswerThreadInputRequest submits one complete answer set for a
-// thread's pending structured request (ATC-308), returning the request
-// with the answer recorded; its resolution is the provider's evidence,
-// read back with ThreadInputRequest. The same answers again recover the
-// recorded answer; a refusal is the server's typed problem.
-func (c *Client) AnswerThreadInputRequest(ctx context.Context, id, requestID string, params InputAnswerParams) (ThreadInputRequest, error) {
-	var request ThreadInputRequest
-	err := c.do(ctx, http.MethodPost, "/v1/threads/"+url.PathEscape(id)+"/input-requests/"+url.PathEscape(requestID)+"/answer", params, &request)
-	return request, err
-}
-
-// StopThread stops a thread's work (ATC-308), returning the stop
-// operation as recorded; its outcome is the provider's evidence, read
-// back with ThreadStop. The same key on the same thread returns the
-// recorded stop again and never stops later work.
-func (c *Client) StopThread(ctx context.Context, id string, params ThreadStopParams) (ThreadStop, error) {
-	var stop ThreadStop
-	err := c.do(ctx, http.MethodPost, "/v1/threads/"+url.PathEscape(id)+"/stop", params, &stop)
-	return stop, err
-}
-
-// ThreadStop fetches one of a thread's stop operations (ATC-308).
-func (c *Client) ThreadStop(ctx context.Context, id, stopID string) (ThreadStop, error) {
-	var stop ThreadStop
-	err := c.do(ctx, http.MethodGet, "/v1/threads/"+url.PathEscape(id)+"/stops/"+url.PathEscape(stopID), nil, &stop)
-	return stop, err
-}
-
 // DeleteThread removes ATC's record of the conversation; the
 // provider-side conversation is untouched.
 func (c *Client) DeleteThread(ctx context.Context, id string) error {

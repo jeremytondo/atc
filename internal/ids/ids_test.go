@@ -20,15 +20,3 @@ func TestUUIDs(t *testing.T) {
 		t.Error("UUIDFrom collapses distinct keys")
 	}
 }
-
-// Derived ids are stable per key, distinct across keys, and in the long
-// format.
-func TestDerive(t *testing.T) {
-	a, b := Derive("aprv-", "t3code/t1/req-1"), Derive("aprv-", "t3code/t1/req-1")
-	if a != b || !regexp.MustCompile(`^aprv-[a-z2-9]{10}$`).MatchString(a) {
-		t.Errorf("Derive = %s, %s; want equal, long format", a, b)
-	}
-	if Derive("aprv-", "t3code/t1/req-1") == Derive("aprv-", "t3code/t1/req-2") {
-		t.Error("Derive collapses distinct keys")
-	}
-}

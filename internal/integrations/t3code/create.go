@@ -134,7 +134,8 @@ func turnStartCommand(threadID, projectID, title string, req integrations.Thread
 		}
 		selection["options"] = options
 	}
-	createdAt := timestamp(now)
+	// createdAt is the command's own timestamp, formatted as T3 reads it.
+	createdAt := now.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	return map[string]any{
 		"type":      "thread.turn.start",
 		"commandId": ids.UUID(),

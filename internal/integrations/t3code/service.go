@@ -49,12 +49,9 @@ const (
 type ThreadObserver interface {
 	ObserveExternal(ctx context.Context, o threads.ExternalObservation) (string, error)
 	ObserveTurnResponse(ctx context.Context, threadID, providerTurnID, response string) error
-	ObserveApprovals(ctx context.Context, integrationID, providerID string, pending []threads.ApprovalObservation) error
-	ObserveInputs(ctx context.Context, integrationID, providerID string, pending []threads.InputObservation, resolutions []threads.InputResolution) (bool, error)
 	ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error
 	ReleaseIntegration(ctx context.Context, integrationID string)
 	UnarchivedProviderIDs(integrationID string) []string
-	UnresolvedAnswers(integrationID string) []string
 	Get(id string) (api.Thread, error)
 }
 
@@ -124,23 +121,9 @@ type Service struct {
 	mu                    sync.Mutex
 	connection            api.IntegrationConnection
 	origin, environmentID string
-	// token is the session bearer the reads outside the Run goroutine
-	// use; set with origin at each connection.
-	token string
-	// runCtx is Run's context while it runs, for the reads other
-	// goroutines start (requests.go); nil otherwise.
-	runCtx context.Context
 	// client is the live connection's RPC client, for dispatching
 	// commands; nil between connections.
 	client *rpcClient
-	// requestReads holds, by T3 thread id, the state of the pending
-	// request read for the thread; requestReports counts the thread's
-	// request reports, so a read landing after a newer report yields to
-	// it; watched marks the threads holding an answer ATC awaits evidence
-	// for, read until it arrives (requests.go).
-	requestReads   map[string]int
-	requestReports map[string]uint64
-	watched        map[string]bool
 }
 
 // shellState is ATC's copy of T3's shell projection, kept so a dropped
@@ -173,27 +156,24 @@ func New(opts Options) *Service {
 		opts.ProcessAlive = processAlive
 	}
 	s := &Service{
-		home:           opts.Home,
-		sessionPath:    opts.SessionPath,
-		threads:        opts.Threads,
-		hub:            opts.Hub,
-		logger:         opts.Logger,
-		now:            opts.Now,
-		runCLI:         opts.RunCLI,
-		httpClient:     opts.HTTPClient,
-		alive:          opts.ProcessAlive,
-		pollInterval:   pollInterval,
-		backoffMin:     backoffMin,
-		backoffMax:     backoffMax,
-		authRetry:      authRetry,
-		responseRetry:  responseRetry,
-		responseSlots:  make(chan struct{}, responseWorkers),
-		skipped:        map[string]string{},
-		settled:        map[string]bool{},
-		recovery:       map[string]string{},
-		requestReads:   map[string]int{},
-		requestReports: map[string]uint64{},
-		watched:        map[string]bool{},
+		home:          opts.Home,
+		sessionPath:   opts.SessionPath,
+		threads:       opts.Threads,
+		hub:           opts.Hub,
+		logger:        opts.Logger,
+		now:           opts.Now,
+		runCLI:        opts.RunCLI,
+		httpClient:    opts.HTTPClient,
+		alive:         opts.ProcessAlive,
+		pollInterval:  pollInterval,
+		backoffMin:    backoffMin,
+		backoffMax:    backoffMax,
+		authRetry:     authRetry,
+		responseRetry: responseRetry,
+		responseSlots: make(chan struct{}, responseWorkers),
+		skipped:       map[string]string{},
+		settled:       map[string]bool{},
+		recovery:      map[string]string{},
 	}
 	// The report is honest before Run starts: one discovery decides
 	// between "not running" and "about to connect".
@@ -250,9 +230,6 @@ func (s *Service) setState(state api.IntegrationConnectionState, detail string) 
 // every hold, and reconnect with backoff — quietly polling for a runtime
 // file while T3 is not running.
 func (s *Service) Run(ctx context.Context) {
-	s.mu.Lock()
-	s.runCtx = ctx
-	s.mu.Unlock()
 	defer s.reads.Wait()
 	backoff := s.backoffMin
 	for {
@@ -387,7 +364,7 @@ func (s *Service) serve(ctx context.Context, state runtime) error {
 	}
 
 	s.mu.Lock()
-	s.origin, s.environmentID, s.token = origin, environmentID, s.session.Token
+	s.origin, s.environmentID = origin, environmentID
 	s.mu.Unlock()
 
 	socketURL, err := websocketURL(origin, ticket)
@@ -519,13 +496,6 @@ func (s *Service) applySnapshot(ctx context.Context, snapshot shellSnapshot) err
 }
 
 func (s *Service) reconcile(ctx context.Context) {
-	// Every connection is a fresh chance at the evidence an answer sent
-	// before it still awaits.
-	s.mu.Lock()
-	for _, id := range s.threads.UnresolvedAnswers(ID) {
-		s.watched[id] = true
-	}
-	s.mu.Unlock()
 	ids := make([]string, 0, len(s.shell.threads))
 	for id := range s.shell.threads {
 		ids = append(ids, id)
@@ -569,8 +539,6 @@ func (s *Service) applyEvent(ctx context.Context, event shellEvent) error {
 	case "thread-removed":
 		s.mu.Lock()
 		delete(s.shell.threads, event.ThreadID)
-		delete(s.requestReports, event.ThreadID)
-		delete(s.watched, event.ThreadID)
 		s.mu.Unlock()
 		delete(s.settled, event.ThreadID)
 		delete(s.recovery, event.ThreadID)
@@ -621,11 +589,6 @@ func (s *Service) observe(ctx context.Context, thread threadShell, project proje
 			// failed turn alike; the domain records it where it applies.
 			observation.StatusDetail = *thread.Session.LastError
 		}
-		if thread.Session.Status == "stopped" && thread.Session.UpdatedAt != nil {
-			// T3 stamps a stopped session with the stop command's own
-			// createdAt: the instant a stop is confirmed against.
-			observation.SessionClosedAt = *thread.Session.UpdatedAt
-		}
 	}
 	observation.Turn = turnObservation(thread.LatestTurn, observation.StatusDetail)
 	id, err := s.threads.ObserveExternal(ctx, observation)
@@ -640,7 +603,6 @@ func (s *Service) observe(ctx context.Context, thread threadShell, project proje
 	delete(s.skipped, thread.ID)
 	if id != "" {
 		s.recoverResponse(ctx, id, thread.ID, observation.Turn)
-		s.observeRequests(ctx, thread.ID, *thread.HasPendingApprovals, *thread.HasPendingUserInput)
 	}
 }
 

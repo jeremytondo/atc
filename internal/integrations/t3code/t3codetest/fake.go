@@ -78,11 +78,9 @@ type Server struct {
 	commands []map[string]any
 	sequence uint64
 	// details answers thread detail snapshot reads by thread id (absent
-	// answers 404); detailReads counts the reads per thread; detailDelay
-	// holds each read before it is answered.
+	// answers 404); detailReads counts the reads per thread.
 	details     map[string]map[string]any
 	detailReads map[string]int
-	detailDelay time.Duration
 }
 
 type session struct {
@@ -211,14 +209,6 @@ func (s *Server) SetThreadDetail(threadID string, detail map[string]any) {
 	s.details[threadID] = detail
 }
 
-// SetDetailDelay holds every thread detail snapshot read for d before
-// answering — a slow read, for tests of what happens meanwhile.
-func (s *Server) SetDetailDelay(d time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.detailDelay = d
-}
-
 // DetailReads reports how many thread detail snapshot reads a thread has
 // received.
 func (s *Server) DetailReads(threadID string) int {
@@ -236,14 +226,10 @@ func (s *Server) threadDetail(w http.ResponseWriter, r *http.Request) {
 	threadID := r.PathValue("threadId")
 	s.detailReads[threadID]++
 	detail, ok := s.details[threadID]
-	delay := s.detailDelay
 	s.mu.Unlock()
 	if !authorized {
 		http.Error(w, `{"code":"auth_invalid"}`, http.StatusUnauthorized)
 		return
-	}
-	if delay > 0 {
-		time.Sleep(delay)
 	}
 	if !ok {
 		http.Error(w, `{"code":"not_found","reason":"thread_not_found"}`, http.StatusNotFound)
@@ -608,13 +594,6 @@ func WithSession(status string, provider string) ThreadOpt {
 	}
 }
 
-// SessionUpdatedAt sets when the session last changed (an ISO
-// timestamp); use after WithSession. A stopped session carries the stop
-// command's createdAt here.
-func SessionUpdatedAt(at string) ThreadOpt {
-	return func(m map[string]any) { m["session"].(map[string]any)["updatedAt"] = at }
-}
-
 // LastError sets the session's error text; use after WithSession.
 func LastError(detail string) ThreadOpt {
 	return func(m map[string]any) { m["session"].(map[string]any)["lastError"] = detail }
@@ -629,17 +608,6 @@ func LatestTurn(id, state string, startedAt, completedAt any) ThreadOpt {
 			"startedAt": startedAt, "completedAt": completedAt, "assistantMessageId": nil,
 		}
 	}
-}
-
-// InteractionMode sets the thread's interaction mode ("default" or
-// "plan"); ThreadItem omits it, as T3 does for the default.
-func InteractionMode(mode string) ThreadOpt {
-	return func(m map[string]any) { m["interactionMode"] = mode }
-}
-
-// RuntimeMode sets the thread's runtime mode.
-func RuntimeMode(mode string) ThreadOpt {
-	return func(m map[string]any) { m["runtimeMode"] = mode }
 }
 
 // AssistantMessage names the latest turn's final assistant message; use
@@ -669,146 +637,6 @@ func ThreadDetailItem(thread map[string]any, messages ...map[string]any) map[str
 	}
 	detail["messages"], detail["activities"], detail["checkpoints"], detail["proposedPlans"] = list, []any{}, []any{}, []any{}
 	return map[string]any{"snapshotSequence": 1, "thread": detail}
-}
-
-// ApprovalOption is one decision an approval request offers, in T3's
-// vocabulary (accept, acceptForSession, acceptAlways, decline, cancel).
-func ApprovalOption(decision, label string) map[string]any {
-	return map[string]any{"decision": decision, "label": label}
-}
-
-// ApprovalRequested is an approval.requested activity for a request of
-// T3's requestType (command_execution_approval, file_change_approval,
-// mcp_elicitation_approval, ...) with the given detail and options; no
-// options leaves T3's default choice to the reader.
-func ApprovalRequested(id, requestID, requestType, detail string, options ...map[string]any) map[string]any {
-	kind, summary := "", "Approval requested"
-	switch requestType {
-	case "command_execution_approval", "exec_command_approval":
-		kind, summary = "command", "Command approval requested"
-	case "file_read_approval":
-		kind, summary = "file-read", "File-read approval requested"
-	case "file_change_approval", "apply_patch_approval":
-		kind, summary = "file-change", "File-change approval requested"
-	case "mcp_elicitation_approval":
-		kind, summary = "mcp-elicitation", "App access approval requested"
-	}
-	payload := map[string]any{"requestId": requestID, "requestType": requestType}
-	if kind != "" {
-		payload["requestKind"] = kind
-	}
-	if detail != "" {
-		payload["detail"] = detail
-	}
-	if len(options) > 0 {
-		list := make([]any, 0, len(options))
-		for _, option := range options {
-			list = append(list, option)
-		}
-		payload["options"] = list
-	}
-	return activityItem(id, "approval", "approval.requested", summary, payload)
-}
-
-// ApprovalResolved is an approval.resolved activity.
-func ApprovalResolved(id, requestID, decision string) map[string]any {
-	return activityItem(id, "approval", "approval.resolved", "Approval resolved", map[string]any{"requestId": requestID, "requestType": "command_execution_approval", "decision": decision})
-}
-
-// ApprovalRespondFailed is the error activity T3 appends when a decision
-// could not be delivered to the provider, with T3's detail text.
-func ApprovalRespondFailed(id, requestID, detail string) map[string]any {
-	return activityItem(id, "error", "provider.approval.respond.failed", "Provider approval response failed", map[string]any{"detail": detail, "requestId": requestID})
-}
-
-// QuestionOpt tweaks a user-input question.
-type QuestionOpt func(map[string]any)
-
-// QuestionOption adds one choice to a question; value is T3's optional
-// option value (the label stands in when absent).
-func QuestionOption(label, description string, value ...string) QuestionOpt {
-	return func(q map[string]any) {
-		option := map[string]any{"label": label, "description": description}
-		if len(value) > 0 {
-			option["value"] = value[0]
-		}
-		q["options"] = append(q["options"].([]any), option)
-	}
-}
-
-// AllowCustom sets whether the question allows a custom text answer;
-// omitted, T3 leaves it allowed.
-func AllowCustom(allowed bool) QuestionOpt {
-	return func(q map[string]any) { q["allowCustomAnswer"] = allowed }
-}
-
-// MultiSelect makes the question take several choices.
-func MultiSelect() QuestionOpt {
-	return func(q map[string]any) { q["multiSelect"] = true }
-}
-
-// Question is one user-input question in T3's shape.
-func Question(id, header, text string, opts ...QuestionOpt) map[string]any {
-	q := map[string]any{"id": id, "header": header, "question": text, "options": []any{}}
-	for _, opt := range opts {
-		opt(q)
-	}
-	return q
-}
-
-// UserInputRequested is a user-input.requested activity for a request
-// carrying these questions.
-func UserInputRequested(id, requestID string, questions ...map[string]any) map[string]any {
-	list := make([]any, 0, len(questions))
-	for _, question := range questions {
-		list = append(list, question)
-	}
-	return activityItem(id, "info", "user-input.requested", "User input requested", map[string]any{"requestId": requestID, "questions": list})
-}
-
-// UserInputResolved is a user-input.resolved activity: the answers the
-// provider took, by question id — a string, or a list of strings for a
-// multi-select question; empty for an abandoned request.
-func UserInputResolved(id, requestID string, answers map[string]any) map[string]any {
-	if answers == nil {
-		answers = map[string]any{}
-	}
-	return activityItem(id, "info", "user-input.resolved", "User input submitted", map[string]any{"requestId": requestID, "answers": answers})
-}
-
-// UserInputRespondFailed is the error activity T3 appends when an
-// answer could not be delivered to the provider, with T3's detail text.
-func UserInputRespondFailed(id, requestID, detail string) map[string]any {
-	return activityItem(id, "error", "provider.user-input.respond.failed", "Provider user input response failed", map[string]any{"detail": detail, "requestId": requestID})
-}
-
-// ActivityAt sets when an activity happened (an ISO timestamp).
-func ActivityAt(activity map[string]any, at string) map[string]any {
-	activity["createdAt"] = at
-	return activity
-}
-
-// ActivityItem is any other activity, with an opaque payload.
-func ActivityItem(id, kind string, payload any) map[string]any {
-	return activityItem(id, "info", kind, kind, payload)
-}
-
-func activityItem(id, tone, kind, summary string, payload any) map[string]any {
-	return map[string]any{
-		"id": id, "tone": tone, "kind": kind, "summary": summary, "payload": payload, "turnId": nil,
-		"createdAt": "2026-09-01T00:00:0" + id[len(id)-1:] + "Z",
-	}
-}
-
-// WithActivities puts activities on a thread detail snapshot
-// (ThreadDetailItem).
-func WithActivities(detail map[string]any, activities ...map[string]any) map[string]any {
-	list := make([]any, 0, len(activities))
-	for _, activity := range activities {
-		list = append(list, activity)
-	}
-	detail["thread"].(map[string]any)["activities"] = list
-	return detail
 }
 
 // Pending sets the pending-approval and pending-input flags.

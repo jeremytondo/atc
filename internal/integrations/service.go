@@ -60,34 +60,6 @@ var (
 	// created the conversation. A caller that must not start a duplicate
 	// tells this apart from a refusal; the API reports both as failed.
 	ErrThreadCreationUncertain = errors.New("thread creation outcome unknown")
-	// ErrThreadSendUnsupported refuses sending a message into a thread
-	// whose Integration has no message seam (ATC-307).
-	ErrThreadSendUnsupported = errors.New("integration does not support sending messages")
-	// ErrThreadDecideUnsupported refuses deciding an approval request on
-	// a thread whose Integration has no approval seam (ATC-307).
-	ErrThreadDecideUnsupported = errors.New("integration does not support approval decisions")
-	// ErrMessageRejected reports the program refusing a message; the
-	// message is the program's own.
-	ErrMessageRejected = errors.New("message rejected")
-	// ErrDecisionRejected reports the program refusing an approval
-	// decision; the message is the program's own.
-	ErrDecisionRejected = errors.New("approval decision rejected")
-	// ErrDeliveryUncertain reports the program never answering a message,
-	// decision, answer, or stop dispatch: it may hold it. The same dispatch
-	// again, under the same identity, reconciles.
-	ErrDeliveryUncertain = errors.New("delivery outcome unknown")
-	// ErrThreadAnswerUnsupported refuses answering a structured request on
-	// a thread whose Integration has no answer seam (ATC-308).
-	ErrThreadAnswerUnsupported = errors.New("integration does not support structured answers")
-	// ErrThreadStopUnsupported refuses stopping a thread whose Integration
-	// has no stop seam (ATC-308).
-	ErrThreadStopUnsupported = errors.New("integration does not support stopping work")
-	// ErrAnswerRejected reports the program refusing an answer; the
-	// message is the program's own.
-	ErrAnswerRejected = errors.New("answer rejected")
-	// ErrStopRejected reports the program refusing a stop; the message is
-	// the program's own.
-	ErrStopRejected = errors.New("stop rejected")
 )
 
 // Options wires a Service.
@@ -135,18 +107,6 @@ func NewService(opts Options) (*Service, error) {
 		}
 		if (integration.PrepareThread != nil) != slices.Contains(integration.Capabilities, api.CapabilityThreadCreation) {
 			return nil, fmt.Errorf("integration %q: the %s capability and the creation seam must be declared together", integration.ID, api.CapabilityThreadCreation)
-		}
-		if (integration.Messages != nil) != slices.Contains(integration.Capabilities, api.CapabilityThreadSend) {
-			return nil, fmt.Errorf("integration %q: the %s capability and the message seam must be declared together", integration.ID, api.CapabilityThreadSend)
-		}
-		if (integration.Approvals != nil) != slices.Contains(integration.Capabilities, api.CapabilityThreadDecide) {
-			return nil, fmt.Errorf("integration %q: the %s capability and the approval seam must be declared together", integration.ID, api.CapabilityThreadDecide)
-		}
-		if (integration.Inputs != nil) != slices.Contains(integration.Capabilities, api.CapabilityThreadAnswer) {
-			return nil, fmt.Errorf("integration %q: the %s capability and the answer seam must be declared together", integration.ID, api.CapabilityThreadAnswer)
-		}
-		if (integration.Stops != nil) != slices.Contains(integration.Capabilities, api.CapabilityThreadStop) {
-			return nil, fmt.Errorf("integration %q: the %s capability and the stop seam must be declared together", integration.ID, api.CapabilityThreadStop)
 		}
 		agents := make(map[string]bool, len(integration.Agents))
 		for _, agent := range integration.Agents {
@@ -358,10 +318,11 @@ func (s *Service) ResolveResume(ctx context.Context, req threads.ResumeRequest) 
 // creation, and list the agent. The program's live state is not consulted
 // here — the seam gates on it.
 func (s *Service) ResolveThreadCreation(integrationID, agentID string) (func(context.Context, ThreadCreation) (PreparedThread, error), error) {
-	integration, err := s.registration(integrationID)
-	if err != nil {
-		return nil, err
+	i, ok := s.index[integrationID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrNotFound, integrationID)
 	}
+	integration := s.integrations[i]
 	if integration.PrepareThread == nil {
 		return nil, fmt.Errorf("%w: %s", ErrThreadCreationUnsupported, integration.Name)
 	}
@@ -369,71 +330,6 @@ func (s *Service) ResolveThreadCreation(integrationID, agentID string) (func(con
 		return nil, fmt.Errorf("%w: %s lists no agent %q", ErrAgentNotFound, integration.Name, agentID)
 	}
 	return integration.PrepareThread, nil
-}
-
-// ResolveThreadMessenger routes a message to its thread's Integration
-// (ATC-307): the Integration must exist and implement the message seam.
-// The program's live state is not consulted here — the seam gates on it.
-func (s *Service) ResolveThreadMessenger(integrationID string) (ThreadMessenger, error) {
-	integration, err := s.registration(integrationID)
-	if err != nil {
-		return nil, err
-	}
-	if integration.Messages == nil {
-		return nil, fmt.Errorf("%w: %s", ErrThreadSendUnsupported, integration.Name)
-	}
-	return integration.Messages, nil
-}
-
-// ResolveApprovalDecider routes an approval decision to its thread's
-// Integration (ATC-307): the Integration must exist and implement the
-// approval seam.
-func (s *Service) ResolveApprovalDecider(integrationID string) (ApprovalDecider, error) {
-	integration, err := s.registration(integrationID)
-	if err != nil {
-		return nil, err
-	}
-	if integration.Approvals == nil {
-		return nil, fmt.Errorf("%w: %s", ErrThreadDecideUnsupported, integration.Name)
-	}
-	return integration.Approvals, nil
-}
-
-// ResolveInputAnswerer routes a structured answer to its thread's
-// Integration (ATC-308): the Integration must exist and implement the
-// answer seam.
-func (s *Service) ResolveInputAnswerer(integrationID string) (InputAnswerer, error) {
-	integration, err := s.registration(integrationID)
-	if err != nil {
-		return nil, err
-	}
-	if integration.Inputs == nil {
-		return nil, fmt.Errorf("%w: %s", ErrThreadAnswerUnsupported, integration.Name)
-	}
-	return integration.Inputs, nil
-}
-
-// ResolveThreadStopper routes a stop to its thread's Integration
-// (ATC-308): the Integration must exist and implement the stop seam.
-func (s *Service) ResolveThreadStopper(integrationID string) (ThreadStopper, error) {
-	integration, err := s.registration(integrationID)
-	if err != nil {
-		return nil, err
-	}
-	if integration.Stops == nil {
-		return nil, fmt.Errorf("%w: %s", ErrThreadStopUnsupported, integration.Name)
-	}
-	return integration.Stops, nil
-}
-
-// registration finds an Integration by id, ErrNotFound naming an unknown
-// one.
-func (s *Service) registration(integrationID string) (Integration, error) {
-	i, ok := s.index[integrationID]
-	if !ok {
-		return Integration{}, fmt.Errorf("%w: %q", ErrNotFound, integrationID)
-	}
-	return s.integrations[i], nil
 }
 
 // launch composes the launch input: the App's command once the id is

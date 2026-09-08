@@ -123,7 +123,7 @@ func TestWaitsFollowUpsAndStopsPointToT3(t *testing.T) {
 
 	f.process(t, "dlv-2", promptedEvent("sess-1", now, "also check the tests", ""))
 	acts = f.waitActivities("sess-1", 5)
-	contains(t, acts[4].Body, "Follow-up messages from Linear are not supported")
+	contains(t, acts[4].Body, "Follow-up messages from Linear are not relayed to the agent")
 	contains(t, acts[4].Body, "https://t3.test/env-1/"+providerID)
 	f.process(t, "dlv-3", promptedEvent("sess-1", now, "", "stop"))
 	acts = f.waitActivities("sess-1", 6)
