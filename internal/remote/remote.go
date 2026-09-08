@@ -31,9 +31,13 @@ type Bootstrap struct {
 	Version string `json:"version"`
 }
 
-// String redacts the token so no format verb can print it.
+// String and GoString redact the token so no format verb can print it.
 func (b Bootstrap) String() string {
 	return fmt.Sprintf("Bootstrap{URL:%s Token:[redacted] Version:%s}", b.URL, b.Version)
+}
+
+func (b Bootstrap) GoString() string {
+	return fmt.Sprintf("remote.Bootstrap{URL:%q, Token:%q, Version:%q}", b.URL, "[redacted]", b.Version)
 }
 
 // maxBootstrapOutput caps what the local side will read from the remote
@@ -128,7 +132,9 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 	if err := dec.Decode(&b); err != nil {
 		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned unexpected output: %w", target, err)
 	}
-	if dec.More() {
+	// Decoder.More is false at a stray ']' or '}' too; only EOF proves the
+	// object stood alone.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned more than one JSON value", target)
 	}
 	for name, value := range map[string]string{"url": b.URL, "token": b.Token, "version": b.Version} {
@@ -137,7 +143,7 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 		}
 	}
 	parsed, err := url.Parse(b.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned a non-HTTPS url %q", target, b.URL)
 	}
 	return b, nil

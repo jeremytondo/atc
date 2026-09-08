@@ -51,6 +51,9 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 		"missing field":    {stdout: `{"url":"https://h:1","version":"v"}`, wantErr: "returned no token"},
 		"not https":        {stdout: `{"url":"http://h:1","token":"t","version":"v"}`, wantErr: "non-HTTPS url"},
 		"trailing garbage": {stdout: good + `{"more":true}`, wantErr: "more than one JSON value"},
+		"trailing bracket": {stdout: good + `]`, wantErr: "more than one JSON value"},
+		"trailing brace":   {stdout: good + `}`, wantErr: "more than one JSON value"},
+		"empty hostname":   {stdout: `{"url":"https://:443","token":"t","version":"v"}`, wantErr: "non-HTTPS url"},
 		"oversized":        {stdout: strings.Repeat(" ", maxBootstrapOutput) + good, wantErr: "more than"},
 		"empty":            {stdout: "", wantErr: "unexpected output"},
 	} {
@@ -77,7 +80,7 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("Bootstrap (-want +got):\n%s", diff)
 			}
-			if printed := fmt.Sprintf("%v %+v %s", got, got, got); strings.Contains(printed, got.Token) {
+			if printed := fmt.Sprintf("%v %+v %s %#v", got, got, got, got); strings.Contains(printed, got.Token) {
 				t.Errorf("formatting a Bootstrap prints the token: %s", printed)
 			}
 			if diff := cmp.Diff([]string{"/usr/bin/ssh", "--", "ws", "atc", "__bootstrap"}, script.cmd.Args); diff != "" {
