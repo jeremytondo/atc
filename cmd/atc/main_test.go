@@ -18,9 +18,11 @@ import (
 )
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
+	// Bare atc is the picker (ATC-316); without a terminal it prints usage
+	// and fails.
 	var stdout, stderr strings.Builder
-	if err := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr); err != nil {
-		t.Fatalf("run() = %v, want nil", err)
+	if err := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("run() = nil, want the TTY refusal")
 	}
 	if !strings.Contains(stdout.String(), "Usage:") {
 		t.Errorf("stdout = %q, want usage text", stdout.String())
@@ -29,7 +31,7 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 
 func TestRootHelpScopesConfigurationPrecedence(t *testing.T) {
 	var stdout, stderr strings.Builder
-	if err := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	help := stdout.String()

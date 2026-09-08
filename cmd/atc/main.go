@@ -1,7 +1,7 @@
 // Command atc is the ATC command-line interface. It is the single entrypoint
 // for the product: client commands and the server lifecycle both live under
 // this binary, per the ATC-246 layout. The command tree is Cobra-based; bare
-// `atc` stays a stub that prints help until the TUI epic (ATC-258).
+// `atc` opens the picker (ATC-316), locally or with --remote over ssh.
 package main
 
 import (
@@ -80,9 +80,14 @@ func newRootCmd() *cobra.Command {
 	// foreground `run` can sit last under `atc server`.
 	cobra.EnableCommandSorting = false
 	root := &cobra.Command{
-		Use:   "atc",
+		Use:   "atc [--remote <target>]",
 		Short: "The ATC terminal client and server",
 		Long: `atc is the ATC terminal client and server.
+
+Bare ` + "`atc`" + ` opens the picker: choose a space, then a terminal, and attach to
+it (ctrl-\ detaches back to the picker). ` + "`atc --remote <target>`" + ` opens
+the same picker against the machine an ssh target names; its server is
+started if needed and must expose the API on the tailnet.
 
 For ` + "`atc server run`" + `, configuration precedence is:
   flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
@@ -95,12 +100,12 @@ launch they start.`,
 		// Errors surface once, prefixed "atc:" in main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
-		},
+		Args:          cobra.NoArgs,
+		RunE:          runRoot,
 	}
-	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
-		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd())
+	addPickerFlags(root)
+	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newDirectoryCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
+		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd(), newBootstrapCmd())
 	return root
 }
 
@@ -772,6 +777,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 		},
 		Coordinator: coordinator,
+		HomeDir:     homeDir,
 	})
 	// The reconcile loop is waited on before the deferred database close,
 	// so shutdown never races an in-flight pass against it. The wait is

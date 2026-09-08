@@ -1,8 +1,8 @@
 // Package cli implements the client-side behavior ATC's user-facing
 // clients share: constructing the authenticated API client, resolving the
 // project that owns the current directory, and handing a TTY to a running
-// session. cmd/atc stays cobra wiring over this package; the TUI (ATC-258)
-// will drive the same behavior without going through cobra.
+// session. cmd/atc stays cobra wiring over this package; the picker
+// (internal/tui) drives the same behavior without going through cobra.
 package cli
 
 import (

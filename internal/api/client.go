@@ -134,6 +134,18 @@ func (c *Client) DeleteSpace(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/spaces/"+id, nil, nil)
 }
 
+// Directories lists the immediate subdirectories of path on the server's
+// machine; an empty path lists the server user's home directory.
+func (c *Client) Directories(ctx context.Context, path string) (DirectoryList, error) {
+	route := "/v1/directories"
+	if path != "" {
+		route += "?path=" + url.QueryEscape(path)
+	}
+	var list DirectoryList
+	err := c.do(ctx, http.MethodGet, route, nil, &list)
+	return list, err
+}
+
 // Integrations lists the compiled-in Integrations with their Apps, agents,
 // and evidence-based health, probed against the server's machine at
 // request time.

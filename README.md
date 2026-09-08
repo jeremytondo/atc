@@ -61,6 +61,17 @@ an issue starts one T3 Code conversation and posts the answer back. Setup
 is manual; see
 [`internal/integrations/linear/README.md`](internal/integrations/linear/README.md).
 
+## Using the picker
+
+Bare `atc` opens the picker against the local server, starting it if it is
+stopped: choose a Space, then a Terminal, and attach (ctrl-\ detaches back
+to the picker). `atc --remote <target>` opens the same picker against the
+machine an ordinary ssh target names. The remote's server is started if
+needed and must expose the API on the tailnet (`tailscale = true` in its
+`config.toml`); control traffic uses that HTTPS endpoint, and ssh carries
+only the launch-time bootstrap and the interactive attach. Nothing is
+cached locally. `atc --help` and `?` inside the picker list the keys.
+
 ## Installing and upgrading
 
 ```sh

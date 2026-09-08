@@ -238,6 +238,7 @@ func newFixture(t *testing.T) *fixture {
 			Cleanups: []func(string){claudeHooks.Deregister, codexObserver.Forget},
 		}),
 		HeartbeatInterval: 50 * time.Millisecond,
+		HomeDir:           projectDir,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
 		binaries: binaries, markers: markers, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}

@@ -116,11 +116,12 @@ func startTestServerFull(t *testing.T) *testServer {
 	t.Cleanup(func() { _ = db.Close() })
 	driver := &cliDriver{sessions: map[string]bool{}}
 	hub := events.NewHub(events.DefaultBacklog)
+	homeDir := t.TempDir()
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Driver:     driver,
 		Spaces:     db.Spaces(),
-		HomeDir:    t.TempDir(),
+		HomeDir:    homeDir,
 		MarkerDir:  t.TempDir(),
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -194,6 +195,7 @@ func startTestServerFull(t *testing.T) *testServer {
 		Integrations: catalog,
 		Threads:      threadService,
 		Events:       hub,
+		HomeDir:      homeDir,
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
