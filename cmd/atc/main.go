@@ -100,7 +100,7 @@ launch they start.`,
 		},
 	}
 	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newDirectoryCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
-		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd())
+		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd(), newBootstrapCmd())
 	return root
 }
 

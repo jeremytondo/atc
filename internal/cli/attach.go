@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"syscall"
 
 	"github.com/jeremytondo/atc/internal/api"
@@ -50,20 +51,35 @@ type SessionAttacher interface {
 	AttachCommand(id string) (executable string, argv, env []string, err error)
 }
 
+// PrepareAttach resolves the command that hands a real TTY to the
+// terminal's running session: the one attach preparation both clients
+// share (ATC-316). The CLI execs it in place (AttachSession); the picker
+// runs it as a child and takes the terminal back when it exits.
+func PrepareAttach(terminal api.Terminal, attacher SessionAttacher) (*exec.Cmd, error) {
+	if terminal.Status != api.TerminalRunning {
+		return nil, fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
+	}
+	executable, argv, env, err := attacher.AttachCommand(terminal.ID)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(executable)
+	cmd.Args = argv
+	cmd.Env = env
+	return cmd, nil
+}
+
 // AttachSession hands this process's TTY over to the terminal's running
 // session. On success it never returns: the process is replaced by the
 // driver's attach client until detach.
 func AttachSession(terminal api.Terminal, attacher SessionAttacher) error {
-	if terminal.Status != api.TerminalRunning {
-		return fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
-	}
-	executable, argv, env, err := attacher.AttachCommand(terminal.ID)
+	cmd, err := PrepareAttach(terminal, attacher)
 	if err != nil {
 		return err
 	}
 	// Exec replaces this process: the user's real TTY belongs to the
 	// session until detach.
-	return syscall.Exec(executable, argv, env)
+	return syscall.Exec(cmd.Path, cmd.Args, cmd.Env)
 }
 
 // IsLocalServer reports whether the client targets a server on this
