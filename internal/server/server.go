@@ -69,6 +69,10 @@ type Options struct {
 	Coordinator *application.Coordinator
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
+	// HomeDir is the server user's home directory, the default root of
+	// the directory browser (ATC-316); empty leaves /v1/directories
+	// unmounted.
+	HomeDir string
 }
 
 // NewHandler builds the /v1 API surface plus /openapi.json and /docs.
@@ -133,6 +137,9 @@ func NewHandler(opts Options) http.Handler {
 	}
 	if opts.Webhooks != nil {
 		registerWebhooks(humaAPI, opts.Webhooks)
+	}
+	if opts.HomeDir != "" {
+		registerDirectories(humaAPI, opts.HomeDir)
 	}
 
 	handler := withAuth(opts.Verify, withWriteDeadlines(problemMux(mux)))

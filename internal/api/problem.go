@@ -70,6 +70,8 @@ const (
 	CodeAppNotTerminalCapable     = "app_not_terminal_capable"
 	CodeAppUnavailable            = "app_unavailable"
 	CodeLaunchModeConflict        = "launch_mode_conflict"
+	CodeDirectoryInvalid          = "directory_invalid"
+	CodeDirectoryTimeout          = "directory_timeout"
 )
 
 func (p *Problem) Error() string {
