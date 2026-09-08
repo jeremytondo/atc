@@ -54,12 +54,12 @@ func waiting(status api.ThreadStatus, links *api.ThreadLinks) string {
 }
 
 func followUpNotSupported(links *api.ThreadLinks) string {
-	return "Follow-up messages from Linear are not supported yet, so this one was not sent to the agent. To continue the conversation, open it in T3 Code." +
+	return "Follow-up messages from Linear are not relayed to the agent, so this one was not sent. To continue the conversation, open it in T3 Code." +
 		linkLines(links) + "\n\nTo start an independent run, mention @atc in a new comment."
 }
 
 func stopNotSupported(links *api.ThreadLinks) string {
-	return "Stopping from Linear is not supported yet; the run has not been stopped. To stop it, open the conversation in T3 Code. ATC keeps watching and reports how the run ends." +
+	return "Runs are not stopped from Linear; this one has not been stopped. To stop it, open the conversation in T3 Code. ATC keeps watching and reports how the run ends." +
 		linkLines(links)
 }
 

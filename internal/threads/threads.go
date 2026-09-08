@@ -158,13 +158,6 @@ type ExternalObservation struct {
 	// reports none.
 	Turn     *TurnObservation
 	Metadata Metadata
-	// SessionClosedAt is when the program reports the execution session
-	// behind the conversation closed — the provider process stopped, the
-	// conversation kept for a later resume — zero while it reports the
-	// session open or reports none. It is the evidence a stop resolves on
-	// (stops.go): a close no earlier than the stop's acceptance confirms
-	// it.
-	SessionClosedAt time.Time
 }
 
 // ResumeRequest asks the application coordinator to launch a terminal

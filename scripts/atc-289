@@ -151,6 +151,10 @@ for _ in $(seq 1 120); do
   sleep 0.5
 done
 [[ -f "$t3_home/userdata/server-runtime.json" ]] || { echo "atc-289: T3 Code never wrote its runtime file" >&2; exit 1; }
+# The bootstrap flag alone has not registered the workspace on recent
+# nightlies; a thread create is refused (409) until T3 knows the project.
+NODE_NO_WARNINGS=1 node "$t3_bin" project add --base-dir "$t3_home" "$workspace" >>"$scratch/logs/t3.log" 2>&1 ||
+  echo "atc-289: t3 project add failed; see $scratch/logs/t3.log" >&2
 
 echo "atc-289: starting ATC on 127.0.0.1:$atc_port with private state under $scratch/xdg" >&2
 export ATC_SERVER="http://127.0.0.1:$atc_port"
@@ -199,6 +203,8 @@ done
 echo
 echo "atc-289: final thread after $((SECONDS - started))s"
 "$atc" thread get "$thread_id"
+echo "atc-289: final response of the latest turn (ATC-303):"
+"$atc" api "/v1/threads/$thread_id" | jq -r '.latestTurn.response // "(none recorded)"'
 if [[ -z "$ended" ]]; then
   echo "atc-289: FAIL — the turn did not end within ${timeout}s (status $thread_status, turn $state)" >&2
   show_logs

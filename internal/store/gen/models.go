@@ -97,52 +97,10 @@ type Thread struct {
 	PendingTurnSubmittedAt sql.NullString
 }
 
-type ThreadAnswer struct {
-	ID                string
-	ThreadID          string
-	RequestID         string
-	ProviderRequestID string
-	Questions         string
-	Answers           string
-	ProviderAnswers   string
-	Delivery          string
-	State             string
-	Detail            sql.NullString
-	CreatedAt         string
-	UpdatedAt         string
-}
-
 type ThreadIdentity struct {
 	IntegrationID          string
 	ProviderConversationID string
 	ThreadID               string
-}
-
-type ThreadMessage struct {
-	ID        string
-	ThreadID  string
-	Key       sql.NullString
-	Text      string
-	TurnID    string
-	Delivery  string
-	Detail    sql.NullString
-	CreatedAt string
-	UpdatedAt string
-}
-
-type ThreadStop struct {
-	ID           string
-	ThreadID     string
-	Key          sql.NullString
-	State        string
-	Delivery     string
-	ScopeTurn    sql.NullString
-	ScopePending sql.NullString
-	ScopeStatus  string
-	Detail       sql.NullString
-	CreatedAt    string
-	UpdatedAt    string
-	ResolvedAt   sql.NullString
 }
 
 type WebhookDelivery struct {

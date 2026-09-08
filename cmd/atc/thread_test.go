@@ -95,6 +95,25 @@ func TestThreadCLILifecycle(t *testing.T) {
 		t.Errorf("list output shows turn detail:\n%s", stdout)
 	}
 
+	// A completed turn's final response is shown, every line of it.
+	if err := threadService.ObserveStatus(context.Background(), threads.StatusObservation{
+		IntegrationID: "claude", ProviderID: "sess-1", Status: api.ThreadIdle,
+		Turn: &threads.TurnObservation{State: api.TurnCompleted, Response: "Fixed the build.\n\n- one\n- two\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, _, err = runCLI(t, "thread", "get", id); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"turn response", "Fixed the build.", "- two"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("get output with a response lacks %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "turn error") {
+		t.Errorf("get output keeps a stale turn error:\n%s", stdout)
+	}
+
 	if stdout, _, err = runCLI(t, "thread", "update", id, "--title", "my title"); err != nil {
 		t.Fatal(err)
 	}
