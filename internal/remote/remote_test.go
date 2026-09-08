@@ -77,6 +77,9 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("Bootstrap (-want +got):\n%s", diff)
 			}
+			if printed := fmt.Sprintf("%v %+v %s", got, got, got); strings.Contains(printed, got.Token) {
+				t.Errorf("formatting a Bootstrap prints the token: %s", printed)
+			}
 			if diff := cmp.Diff([]string{"/usr/bin/ssh", "--", "ws", "atc", "__bootstrap"}, script.cmd.Args); diff != "" {
 				t.Errorf("argv (-want +got):\n%s", diff)
 			}

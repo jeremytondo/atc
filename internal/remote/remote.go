@@ -31,6 +31,11 @@ type Bootstrap struct {
 	Version string `json:"version"`
 }
 
+// String redacts the token so no format verb can print it.
+func (b Bootstrap) String() string {
+	return fmt.Sprintf("Bootstrap{URL:%s Token:[redacted] Version:%s}", b.URL, b.Version)
+}
+
 // maxBootstrapOutput caps what the local side will read from the remote
 // command's stdout: the object is a few hundred bytes, so anything larger
 // is not a bootstrap.
