@@ -547,8 +547,8 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 	// The child's exit arrives; the return remeasures before redrawing
 	// and reloads the same Space with the same Terminal selected.
 	ended := h.send(msgs[0])
-	if !h.m.remeasured == false || h.m.screen != screenTerminals || h.m.selectedTerminal != "term-old" || h.m.message != "" {
-		t.Fatalf("detach = remeasured %v screen %v selected %q message %q", h.m.remeasured, h.m.screen, h.m.selectedTerminal, h.m.message)
+	if h.m.screen != screenTerminals || h.m.selectedTerminal != "term-old" || h.m.message != "" {
+		t.Fatalf("detach = screen %v selected %q message %q", h.m.screen, h.m.selectedTerminal, h.m.message)
 	}
 	var sawResize bool
 	for _, msg := range ended {
@@ -561,12 +561,9 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 	if !sawResize {
 		t.Error("return did not request a remeasure")
 	}
-	if !strings.Contains(h.m.View().Content, "remeasuring") {
-		t.Error("view does not say it is remeasuring")
-	}
 	h.run(tea.WindowSizeMsg{Width: 100, Height: 40})
-	if !h.m.remeasured || h.m.width != 100 || h.m.selectedTerminal != "term-old" {
-		t.Errorf("after resize = remeasured %v width %d selected %q", h.m.remeasured, h.m.width, h.m.selectedTerminal)
+	if h.m.height != 40 || h.m.selectedTerminal != "term-old" {
+		t.Errorf("after resize = height %d selected %q", h.m.height, h.m.selectedTerminal)
 	}
 	// The selected Terminal is gone on return: the adjacent row.
 	h.client.terminals = terminals[1:]
@@ -630,8 +627,13 @@ func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	h.client.err = errors.New("dial tcp: no route to host")
 	msgs := h.send(keyPress("enter"))
 	ended := h.send(msgs[0])
-	if h.m.screen != screenReconnecting || !strings.Contains(h.m.message, "connection lost, reconnecting to play") {
-		t.Fatalf("loss = screen %v message %q", h.m.screen, h.m.message)
+	if h.m.reconnect == nil || !strings.Contains(h.m.message, "connection lost, reconnecting to play") || !strings.Contains(h.m.View().Content, "waiting for play") {
+		t.Fatalf("loss = reconnect %v message %q", h.m.reconnect, h.m.message)
+	}
+	// The retry is modal: list keys are ignored until it ends.
+	h.key("j")
+	if h.m.selectedTerminal != "term-play" || h.m.reconnect == nil {
+		t.Fatalf("keys during reconnect moved the selection")
 	}
 	var tick tea.Msg
 	for _, msg := range ended {

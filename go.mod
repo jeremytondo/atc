@@ -3,6 +3,7 @@ module github.com/jeremytondo/atc
 go 1.26.7
 
 require (
+	charm.land/bubbletea/v2 v2.0.9
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/danielgtaylor/huma/v2 v2.39.1
@@ -15,7 +16,6 @@ require (
 )
 
 require (
-	charm.land/bubbletea/v2 v2.0.9 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect

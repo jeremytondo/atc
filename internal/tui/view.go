@@ -28,9 +28,11 @@ func (m model) View() tea.View {
 	b.WriteString("\n\n")
 	switch {
 	case m.help:
-		b.WriteString(helpText)
+		b.WriteString(helpText())
 	case m.confirm != nil:
 		b.WriteString(m.confirmText())
+	case m.reconnect != nil:
+		b.WriteString(m.reconnectingView())
 	default:
 		switch m.screen {
 		case screenSpaces:
@@ -39,8 +41,6 @@ func (m model) View() tea.View {
 			b.WriteString(m.terminalsView())
 		case screenDirectories:
 			b.WriteString(m.directoriesView())
-		case screenReconnecting:
-			b.WriteString(m.reconnectingView())
 		}
 	}
 	b.WriteString("\n")
@@ -69,9 +69,6 @@ func (m model) statusLine() string {
 	}
 	if m.loading {
 		line += "  loading…"
-	}
-	if !m.remeasured {
-		line += "  remeasuring…"
 	}
 	return line
 }
@@ -155,11 +152,7 @@ func (m model) directoriesView() string {
 }
 
 func (m model) reconnectingView() string {
-	r := m.reconnect
-	if r == nil {
-		return ""
-	}
-	return fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)\n", safeText(r.terminal.Name), r.delay)
+	return fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)\n", safeText(m.reconnect.terminal.Name), m.reconnect.delay)
 }
 
 func (m model) confirmText() string {
@@ -195,36 +188,42 @@ func (m model) rowsView(rows []string, selected int) string {
 	return b.String()
 }
 
+// The key map, written once: the footer shows the current screen's line
+// and the help overlay shows them all.
+const (
+	spacesKeys       = "j/k move  enter open  n new space  d delete  r refresh  ? help  q quit"
+	terminalsKeys    = "j/k move  enter attach (ctrl-\\ detaches)  n new shell  d delete  esc/h back  r refresh  ? help  q quit"
+	directoriesKeys  = "type to filter, or /an/absolute/path  ↑/↓ move  enter descend  backspace up  . choose this directory  esc back  ctrl+r refresh"
+	reconnectingKeys = "esc cancel and return to the terminal list"
+)
+
 func (m model) hints() string {
 	switch {
 	case m.help:
 		return "any key to close"
 	case m.confirm != nil:
 		return "y confirm  n/esc cancel"
+	case m.reconnect != nil:
+		return reconnectingKeys
 	}
 	switch m.screen {
 	case screenSpaces:
-		return "j/k move  enter open  n new space  d delete  r refresh  ? help  q quit"
+		return spacesKeys
 	case screenTerminals:
-		return "j/k move  enter attach  n new shell  d delete  esc/h back  r refresh  ? help  q quit"
+		return terminalsKeys
 	case screenDirectories:
-		return "type to filter or /path  ↑/↓ move  enter descend  backspace up  . choose this directory  esc back  ctrl+r refresh"
-	case screenReconnecting:
-		return "esc cancel and return to the terminal list"
+		return directoriesKeys
 	}
 	return ""
 }
 
-const helpText = `keys
-
-  spaces        j/k or ↑/↓ move   enter open   n new space   d delete   r refresh   q quit
-  terminals     j/k or ↑/↓ move   enter attach (ctrl-\ detaches)   n new shell   d delete   esc or h back
-  new space     type to filter, or type /an/absolute/path and press enter to go there
-                ↑/↓ move   enter descend   backspace go up   . choose this directory   esc back
-  reconnecting  esc cancels the retry
-
-  ? shows this; any key closes it
-`
+func helpText() string {
+	return "keys\n\n" +
+		"  spaces        " + spacesKeys + "\n" +
+		"  terminals     " + terminalsKeys + "\n" +
+		"  new space     " + directoriesKeys + "\n" +
+		"  reconnecting  " + reconnectingKeys + "\n"
+}
 
 func statusLabel(terminal api.Terminal) string {
 	if terminal.Status == api.TerminalExited && terminal.ExitCode != nil {

@@ -21,7 +21,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os/exec"
 	"sort"
@@ -69,10 +68,6 @@ type Options struct {
 	// transport failed and the same terminal should be re-attached once
 	// it answers again; nil never reconnects (local mode).
 	TransportLoss func(err error) bool
-	// Input and Output override the terminal streams; nil means the
-	// process's own.
-	Input  io.Reader
-	Output io.Writer
 }
 
 // Run runs the picker until the user quits or ctx ends. In-flight
@@ -83,15 +78,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	m := newModel(runCtx, opts)
-	programOptions := []tea.ProgramOption{tea.WithContext(runCtx)}
-	if opts.Input != nil {
-		programOptions = append(programOptions, tea.WithInput(opts.Input))
-	}
-	if opts.Output != nil {
-		programOptions = append(programOptions, tea.WithOutput(opts.Output))
-	}
-	_, err := tea.NewProgram(m, programOptions...).Run()
+	_, err := tea.NewProgram(newModel(runCtx, opts), tea.WithContext(runCtx)).Run()
 	if errors.Is(err, tea.ErrInterrupted) || (errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil) {
 		return nil
 	}
@@ -104,7 +91,6 @@ const (
 	screenSpaces screen = iota
 	screenTerminals
 	screenDirectories
-	screenReconnecting
 )
 
 // confirmation is the pending delete: what, named for the prompt, and
@@ -116,7 +102,8 @@ type confirmation struct {
 	count int
 }
 
-// reconnect is the same-terminal retry after transport loss. generation
+// reconnect is the same-terminal retry after transport loss; while it is
+// set the terminal list is modal and only Esc is heard. generation
 // invalidates ticks and polls scheduled by an earlier attempt.
 type reconnect struct {
 	terminal   api.Terminal
@@ -137,12 +124,9 @@ type model struct {
 	execProcess func(*exec.Cmd, tea.ExecCallback) tea.Cmd
 	tick        func(time.Duration, uint64) tea.Cmd
 
-	width, height int
-	// remeasured is false from an attachment's return until the window
-	// size has been re-read; the view says so instead of drawing stale.
-	remeasured bool
-	screen     screen
-	loading    bool
+	height  int
+	screen  screen
+	loading bool
 	// message is the current screen's notice or error; cleared by the
 	// next key press.
 	message string
@@ -180,7 +164,6 @@ func newModel(ctx context.Context, opts Options) model {
 		tick: func(delay time.Duration, generation uint64) tea.Cmd {
 			return tea.Tick(delay, func(time.Time) tea.Msg { return reconnectTickMsg{generation: generation} })
 		},
-		remeasured: true,
 	}
 }
 
@@ -353,8 +336,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case startMsg:
 		return m, m.loadSpaces()
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.remeasured = true
+		m.height = msg.Height
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -456,6 +438,15 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.confirm != nil {
 		return m.handleConfirmKey(key)
 	}
+	if m.reconnect != nil {
+		if key == "esc" {
+			m.reconnect = nil
+			m.generation++
+			m.message = "reconnect cancelled"
+			return m, m.loadTerminals()
+		}
+		return m, nil
+	}
 	// A message lives until the next key: loads never clear one, so a
 	// notice set beside a reload (an attachment's exit, a refused
 	// create) survives the reload that follows it.
@@ -467,14 +458,6 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleTerminalsKey(key)
 	case screenDirectories:
 		return m.handleDirectoryKey(msg)
-	case screenReconnecting:
-		if key == "esc" {
-			m.reconnect = nil
-			m.generation++
-			m.screen = screenTerminals
-			m.message = "reconnect cancelled"
-			return m, m.loadTerminals()
-		}
 	}
 	return m, nil
 }
@@ -656,10 +639,9 @@ func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 
 // attachEnded is the return from an attachment. Exit zero is a detach;
 // transport loss in remote mode starts the same-terminal retry; any other
-// exit is reported and not retried. Every path remeasures the terminal
-// before drawing.
+// exit is reported and not retried. Every path asks for the terminal size
+// again: it may have changed while the child held the TTY.
 func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
-	m.remeasured = false
 	m.screen = screenTerminals
 	m.selectedTerminal = msg.terminal.ID
 	switch {
@@ -668,7 +650,6 @@ func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
 	case m.transportLoss != nil && m.transportLoss(msg.err):
 		m.generation++
 		m.reconnect = &reconnect{terminal: msg.terminal, delay: reconnectMin, generation: m.generation}
-		m.screen = screenReconnecting
 		m.message = fmt.Sprintf("connection lost, reconnecting to %s", msg.terminal.Name)
 		return m, tea.Batch(requestWindowSize, m.tick(reconnectMin, m.generation))
 	default:
@@ -684,7 +665,6 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 	r := *m.reconnect
 	stop := func(message string) (tea.Model, tea.Cmd) {
 		m.reconnect = nil
-		m.screen = screenTerminals
 		m.message = message
 		return m, m.loadTerminals()
 	}
@@ -704,7 +684,6 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		return stop(refusal(msg.terminal))
 	}
 	m.reconnect = nil
-	m.screen = screenTerminals
 	return m.startAttach(msg.terminal)
 }
 

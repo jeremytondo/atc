@@ -232,8 +232,8 @@ func TestRootRemoteBootstrapFailureEndsLaunch(t *testing.T) {
 	if captured.Client != nil {
 		t.Error("picker opened after a failed bootstrap")
 	}
-	if _, _, err := runCLI(t, "--remote", "-oProxyCommand=x"); err == nil {
-		t.Error("option-shaped target accepted")
+	if _, _, err := runCLI(t, "--remote", "ws\x07"); err == nil {
+		t.Error("target with a control character accepted")
 	}
 }
 

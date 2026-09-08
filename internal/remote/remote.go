@@ -36,15 +36,6 @@ type Bootstrap struct {
 // is not a bootstrap.
 const maxBootstrapOutput = 16 << 10
 
-// BootstrapCommand is the remote plumbing subcommand's argv.
-var BootstrapCommand = []string{"atc", "__bootstrap"}
-
-// attachOptions bound transport-loss detection on the interactive
-// channel to roughly fifteen seconds. Connection sharing is deliberately
-// not configured: whether the channel rides the user's ControlMaster is
-// their SSH configuration's business.
-var attachOptions = []string{"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"}
-
 // SSH runs OpenSSH children. run is the process seam: (*exec.Cmd).Run in
 // production, a scripted double in tests.
 type SSH struct {
@@ -61,19 +52,15 @@ func NewSSH() (*SSH, error) {
 	return &SSH{executable: executable, run: (*exec.Cmd).Run}, nil
 }
 
-// ValidateTarget accepts anything ssh accepts except control characters
-// and an option-shaped leading dash; ATC never parses the target further.
-func ValidateTarget(target string) error {
+// validateTarget rejects only control characters; anything else is
+// ssh's to judge, and the command line's "--" keeps an option-shaped
+// target from being read as one.
+func validateTarget(target string) error {
 	if target == "" {
 		return errors.New("--remote needs an ssh target")
 	}
-	if strings.HasPrefix(target, "-") {
-		return fmt.Errorf("invalid ssh target %q: must not begin with '-'", target)
-	}
-	for _, r := range target {
-		if unicode.IsControl(r) || unicode.IsSpace(r) {
-			return fmt.Errorf("invalid ssh target %q: contains whitespace or control characters", target)
-		}
+	if strings.IndexFunc(target, unicode.IsControl) >= 0 {
+		return fmt.Errorf("invalid ssh target %q: contains a control character", target)
 	}
 	return nil
 }
@@ -84,11 +71,10 @@ func ValidateTarget(target string) error {
 // live. Stdout is captured and decoded strictly. Any failure ends the
 // launch: there is no retry, the user re-runs the command.
 func (s *SSH) Bootstrap(ctx context.Context, target string, stdin io.Reader, stderr io.Writer) (Bootstrap, error) {
-	if err := ValidateTarget(target); err != nil {
+	if err := validateTarget(target); err != nil {
 		return Bootstrap{}, err
 	}
-	args := append([]string{"--", target}, BootstrapCommand...)
-	cmd := exec.CommandContext(ctx, s.executable, args...)
+	cmd := exec.CommandContext(ctx, s.executable, "--", target, "atc", "__bootstrap")
 	cmd.Stdin = stdin
 	stdout := &cappedBuffer{limit: maxBootstrapOutput}
 	tail := &cappedBuffer{limit: 4 << 10}
@@ -152,13 +138,14 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 }
 
 // AttachCommand is the interactive channel: `ssh -tt <target> atc
-// terminal attach <id>` with keepalives, run as a child so the picker
-// takes the terminal back when it exits. The remote attach uses the
-// remote's own token file; nothing secret rides argv or the environment.
+// terminal attach <id>`, run as a child so the picker takes the terminal
+// back when it exits. The keepalives bound transport-loss detection to
+// roughly fifteen seconds; connection sharing is deliberately left to the
+// user's SSH configuration. The remote attach uses the remote's own token
+// file; nothing secret rides argv or the environment.
 func (s *SSH) AttachCommand(target, terminalID string) *exec.Cmd {
-	args := append([]string{"-tt"}, attachOptions...)
-	args = append(args, "--", target, "atc", "terminal", "attach", terminalID)
-	return exec.Command(s.executable, args...)
+	return exec.Command(s.executable, "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+		"--", target, "atc", "terminal", "attach", terminalID)
 }
 
 // IsTransportLoss reports whether an attach child ended because the SSH

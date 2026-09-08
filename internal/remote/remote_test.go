@@ -86,12 +86,12 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 
 func TestBootstrapRejectsBadTargets(t *testing.T) {
 	ssh := &SSH{executable: "ssh", run: func(*exec.Cmd) error { t.Fatal("ssh ran"); return nil }}
-	for _, target := range []string{"", "-oProxyCommand=evil", "ws\n", "ws host"} {
+	for _, target := range []string{"", "ws\n", "ws\x1b[2J"} {
 		if _, err := ssh.Bootstrap(context.Background(), target, strings.NewReader(""), io.Discard); err == nil {
 			t.Errorf("target %q accepted", target)
 		}
 	}
-	if err := ValidateTarget("user@ws.example:2222"); err != nil {
+	if err := validateTarget("user@ws.example:2222"); err != nil {
 		t.Errorf("ordinary target refused: %v", err)
 	}
 }

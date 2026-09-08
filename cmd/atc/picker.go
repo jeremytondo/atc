@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,7 +28,6 @@ import (
 var (
 	runPicker        = tui.Run
 	startLocalServer = service.Start
-	newSSH           = remote.NewSSH
 )
 
 func addPickerFlags(root *cobra.Command) {
@@ -68,7 +68,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 // attaches through the local zmx namespace.
 func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 	ctx := cmd.Context()
-	client, baseURL, err := cli.NewClient(cmd.ErrOrStderr())
+	// The skew warning would land on the picker's screen; its status
+	// line reports the same fact.
+	client, baseURL, err := cli.NewClient(io.Discard)
 	if err != nil {
 		return err
 	}
@@ -113,7 +115,7 @@ func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 // connectRemote bootstraps over ssh and points the picker at the remote
 // server's tailnet URL with the token it returned, held in memory only.
 func connectRemote(cmd *cobra.Command, target string, opts *tui.Options) error {
-	ssh, err := newSSH()
+	ssh, err := remote.NewSSH()
 	if err != nil {
 		return err
 	}
