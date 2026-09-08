@@ -134,7 +134,7 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 	dec.DisallowUnknownFields()
 	var b Bootstrap
 	if err := dec.Decode(&b); err != nil {
-		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned unexpected output (%v): %s", target, err, lastLine(string(out)))
+		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned unexpected output (%w): %s", target, err, lastLine(string(out)))
 	}
 	if dec.More() {
 		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned more than one JSON value", target)
