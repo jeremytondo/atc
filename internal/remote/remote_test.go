@@ -47,7 +47,7 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 		"ssh failure":      {stderr: "ssh: connect to host ws port 22: Connection refused\n", exit: scriptedExit(255), wantErr: "ssh to ws failed"},
 		"no atc":           {stderr: "bash: atc: command not found\n", exit: scriptedExit(127), wantErr: "not installed on ws"},
 		"old atc":          {stderr: `atc: unknown command "__bootstrap" for "atc"` + "\n", exit: scriptedExit(1), wantErr: "too old"},
-		"unknown field":    {stdout: `{"url":"https://h:1","token":"t","version":"v","port":7331}`, wantErr: "unexpected output"},
+		"unknown field":    {stdout: `{"url":"https://h:1","token":"atc_leaked","version":"v","port":7331}`, wantErr: "unexpected output"},
 		"missing field":    {stdout: `{"url":"https://h:1","version":"v"}`, wantErr: "returned no token"},
 		"not https":        {stdout: `{"url":"http://h:1","token":"t","version":"v"}`, wantErr: "non-HTTPS url"},
 		"trailing garbage": {stdout: good + `{"more":true}`, wantErr: "more than one JSON value"},
@@ -65,6 +65,9 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 				}
 				if stderr.String() != tc.stderr {
 					t.Errorf("remote stderr shown = %q, want %q", stderr.String(), tc.stderr)
+				}
+				if strings.Contains(err.Error(), "atc_leaked") || strings.Contains(err.Error(), "atc_secret") {
+					t.Errorf("error carries the token: %v", err)
 				}
 				return
 			}
@@ -98,7 +101,7 @@ func TestBootstrapRejectsBadTargets(t *testing.T) {
 
 func TestAttachCommandAndTransportLoss(t *testing.T) {
 	ssh := &SSH{executable: "/usr/bin/ssh"}
-	cmd := ssh.AttachCommand("ws", "term-abcde")
+	cmd := ssh.AttachCommand(context.Background(), "ws", "term-abcde")
 	want := []string{"/usr/bin/ssh", "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("argv (-want +got):\n%s", diff)

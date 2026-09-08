@@ -73,7 +73,7 @@ func TestRootOpensLocalPicker(t *testing.T) {
 	// The local attach runs the zmx preflight: with no zmx on PATH the
 	// picker learns why, per attempt, instead of the launch failing.
 	t.Setenv("PATH", t.TempDir())
-	if _, err := captured.Attach(api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}); err == nil || !strings.Contains(err.Error(), "zmx") {
+	if _, err := captured.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}); err == nil || !strings.Contains(err.Error(), "zmx") {
 		t.Errorf("attach without zmx = %v", err)
 	}
 }
@@ -193,7 +193,7 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	if captured.Target != "ws" || captured.ServerVersion != "v9.9.9" || captured.TransportLoss == nil || captured.Client == nil {
 		t.Errorf("options = target %q server %q transportLoss set %v client %v", captured.Target, captured.ServerVersion, captured.TransportLoss != nil, captured.Client)
 	}
-	cmd, err := captured.Attach(api.Terminal{ID: "term-abcde", Status: api.TerminalRunning})
+	cmd, err := captured.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning})
 	if err != nil {
 		t.Fatal(err)
 	}

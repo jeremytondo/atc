@@ -58,7 +58,7 @@ func registerDirectories(humaAPI huma.API, homeDir string) {
 	}, func(ctx context.Context, input *struct {
 		Path string `query:"path" doc:"Absolute directory to list; the server user's home directory when omitted."`
 	}) (*directoryListOutput, error) {
-		list, err := listDirectories(ctx, input.Path, homeDir)
+		list, err := listDirectoriesWithin(ctx, input.Path, homeDir)
 		if err != nil {
 			return nil, mapDirectoryError(err)
 		}
@@ -66,10 +66,37 @@ func registerDirectories(humaAPI huma.API, homeDir string) {
 	})
 }
 
-// listDirectories reads dir's immediate subdirectories under the entry cap
-// and the time bound. Entries are read in batches with the deadline
-// checked between them, so a huge directory cannot hold the request past
-// the bound; the sort runs on what the cap admitted.
+type directoryResult struct {
+	list api.DirectoryList
+	err  error
+}
+
+// listDirectoriesWithin answers within the time bound whatever the
+// filesystem does: the listing runs aside, and a call still blocked in a
+// syscall when the deadline passes (a stalled network mount) is left to
+// finish on its own while the request gets the timeout error.
+func listDirectoriesWithin(ctx context.Context, path, homeDir string) (api.DirectoryList, error) {
+	ctx, cancel := context.WithTimeout(ctx, directoryListTimeout)
+	defer cancel()
+	results := make(chan directoryResult, 1)
+	go func() {
+		list, err := listDirectories(ctx, path, homeDir)
+		results <- directoryResult{list: list, err: err}
+	}()
+	select {
+	case result := <-results:
+		return result.list, result.err
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return api.DirectoryList{}, errDirectoryTimeout
+		}
+		return api.DirectoryList{}, ctx.Err()
+	}
+}
+
+// listDirectories reads dir's immediate subdirectories under the entry
+// cap. Entries are read in batches with the deadline checked between
+// them; the sort runs on what the cap admitted.
 func listDirectories(ctx context.Context, path, homeDir string) (api.DirectoryList, error) {
 	if path == "" {
 		path = homeDir
@@ -77,12 +104,13 @@ func listDirectories(ctx context.Context, path, homeDir string) (api.DirectoryLi
 	if !filepath.IsAbs(path) {
 		return api.DirectoryList{}, fmt.Errorf("%w: %q", errDirectoryRelative, path)
 	}
+	if err := ctx.Err(); err != nil {
+		return api.DirectoryList{}, err
+	}
 	dir, err := paths.CanonicalDir(path)
 	if err != nil {
 		return api.DirectoryList{}, fmt.Errorf("%w: %w", errDirectoryInvalid, err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, directoryListTimeout)
-	defer cancel()
 
 	f, err := os.Open(dir)
 	if err != nil {

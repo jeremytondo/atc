@@ -114,13 +114,14 @@ func bootstrapFailure(target string, err error, stderr string) error {
 }
 
 // decodeBootstrap decodes exactly one object with exactly the known
-// fields and rejects anything missing or trailing.
+// fields and rejects anything missing or trailing. The output itself
+// never rides an error: a rejected object may still hold the token.
 func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 	dec := json.NewDecoder(bytes.NewReader(out))
 	dec.DisallowUnknownFields()
 	var b Bootstrap
 	if err := dec.Decode(&b); err != nil {
-		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned unexpected output (%w): %s", target, err, lastLine(string(out)))
+		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned unexpected output: %w", target, err)
 	}
 	if dec.More() {
 		return Bootstrap{}, fmt.Errorf("bootstrap on %s returned more than one JSON value", target)
@@ -143,8 +144,8 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 // roughly fifteen seconds; connection sharing is deliberately left to the
 // user's SSH configuration. The remote attach uses the remote's own token
 // file; nothing secret rides argv or the environment.
-func (s *SSH) AttachCommand(target, terminalID string) *exec.Cmd {
-	return exec.Command(s.executable, "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+func (s *SSH) AttachCommand(ctx context.Context, target, terminalID string) *exec.Cmd {
+	return exec.CommandContext(ctx, s.executable, "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
 		"--", target, "atc", "terminal", "attach", terminalID)
 }
 

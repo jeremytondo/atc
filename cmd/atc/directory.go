@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -45,13 +47,13 @@ The listing stops at the server's cap and says so.`,
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintf(w, "path\t%s\n", list.Path)
+			_, _ = fmt.Fprintf(w, "path\t%s\n", printable(list.Path))
 			if list.Parent != nil {
-				_, _ = fmt.Fprintf(w, "parent\t%s\n", *list.Parent)
+				_, _ = fmt.Fprintf(w, "parent\t%s\n", printable(*list.Parent))
 			}
 			_, _ = fmt.Fprintln(w, "NAME\tPATH")
 			for _, entry := range list.Entries {
-				_, _ = fmt.Fprintf(w, "%s\t%s\n", entry.Name, entry.Path)
+				_, _ = fmt.Fprintf(w, "%s\t%s\n", printable(entry.Name), printable(entry.Path))
 			}
 			if list.Truncated {
 				_, _ = fmt.Fprintln(w, "(listing truncated at the server's cap)")
@@ -59,4 +61,15 @@ The listing stops at the server's cap and says so.`,
 			return w.Flush()
 		}),
 	}
+}
+
+// printable keeps a filesystem-chosen name from carrying control bytes
+// into the caller's terminal or breaking the table.
+func printable(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '\uFFFD'
+		}
+		return r
+	}, value)
 }

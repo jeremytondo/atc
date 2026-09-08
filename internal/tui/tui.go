@@ -62,8 +62,9 @@ type Options struct {
 	ClientVersion string
 	ServerVersion string
 	// Attach resolves the child that hands the TTY to a running terminal:
-	// the local zmx handover or the remote ssh channel.
-	Attach func(terminal api.Terminal) (*exec.Cmd, error)
+	// the local zmx handover or the remote ssh channel, bound to ctx so
+	// ending the picker ends the child.
+	Attach func(ctx context.Context, terminal api.Terminal) (*exec.Cmd, error)
 	// TransportLoss reports whether an attach child's exit means the
 	// transport failed and the same terminal should be re-attached once
 	// it answers again; nil never reconnects (local mode).
@@ -117,7 +118,7 @@ type model struct {
 	target        string
 	clientVersion string
 	serverVersion string
-	attach        func(api.Terminal) (*exec.Cmd, error)
+	attach        func(context.Context, api.Terminal) (*exec.Cmd, error)
 	transportLoss func(error) bool
 	// execProcess and tick are the process and clock seams:
 	// tea.ExecProcess and tea.Tick in production, scripted in tests.
@@ -199,6 +200,7 @@ type directoriesLoadedMsg struct {
 }
 
 type spaceCreatedMsg struct {
+	seq         uint64
 	space       api.Space
 	terminal    api.Terminal
 	spaceErr    error
@@ -206,11 +208,13 @@ type spaceCreatedMsg struct {
 }
 
 type terminalCreatedMsg struct {
+	seq      uint64
 	terminal api.Terminal
 	err      error
 }
 
 type deletedMsg struct {
+	seq  uint64
 	kind string
 	id   string
 	err  error
@@ -276,38 +280,41 @@ func (m *model) loadDirectory(path string) tea.Cmd {
 	}
 }
 
+// Mutations are stamped like loads: while one is in flight the keys that
+// would start another are ignored (a held-down n must not create a
+// terminal per repeat), and a result that arrives after the user has
+// navigated on is dropped — the resource exists, and the next load
+// shows it.
+
 // createSpace creates the Space at dir and its first shell Terminal; the
 // two failures are reported apart because they leave the user in
 // different places.
 func (m *model) createSpace(dir string) tea.Cmd {
-	m.loading = true
-	client, ctx := m.client, m.ctx
+	seq, client, ctx := m.nextSeq(), m.client, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 		space, err := client.CreateSpace(ctx, api.SpaceCreateParams{Directory: dir})
 		if err != nil {
-			return spaceCreatedMsg{spaceErr: err}
+			return spaceCreatedMsg{seq: seq, spaceErr: err}
 		}
 		terminal, err := client.CreateTerminal(ctx, api.TerminalCreateParams{SpaceID: space.ID})
-		return spaceCreatedMsg{space: space, terminal: terminal, terminalErr: err}
+		return spaceCreatedMsg{seq: seq, space: space, terminal: terminal, terminalErr: err}
 	}
 }
 
 func (m *model) createTerminal() tea.Cmd {
-	m.loading = true
-	client, ctx, spaceID := m.client, m.ctx, m.space.ID
+	seq, client, ctx, spaceID := m.nextSeq(), m.client, m.ctx, m.space.ID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 		terminal, err := client.CreateTerminal(ctx, api.TerminalCreateParams{SpaceID: spaceID})
-		return terminalCreatedMsg{terminal: terminal, err: err}
+		return terminalCreatedMsg{seq: seq, terminal: terminal, err: err}
 	}
 }
 
 func (m *model) deleteConfirmed(c confirmation) tea.Cmd {
-	m.loading = true
-	client, ctx := m.client, m.ctx
+	seq, client, ctx := m.nextSeq(), m.client, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
@@ -317,7 +324,7 @@ func (m *model) deleteConfirmed(c confirmation) tea.Cmd {
 		} else {
 			err = client.DeleteTerminal(ctx, c.id)
 		}
-		return deletedMsg{kind: c.kind, id: c.id, err: err}
+		return deletedMsg{seq: seq, kind: c.kind, id: c.id, err: err}
 	}
 }
 
@@ -381,6 +388,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reselectDirectory()
 		return m, nil
 	case spaceCreatedMsg:
+		if msg.seq != m.seq {
+			return m, nil
+		}
 		m.loading = false
 		if msg.spaceErr != nil {
 			m.message = m.describe("creating space", msg.spaceErr)
@@ -394,6 +404,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.startAttach(msg.terminal)
 	case terminalCreatedMsg:
+		if msg.seq != m.seq {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.message = m.describe("creating terminal", msg.err)
@@ -401,6 +414,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.startAttach(msg.terminal)
 	case deletedMsg:
+		if msg.seq != m.seq {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.message = m.describe("deleting "+msg.kind, msg.err)
@@ -465,6 +481,9 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m model) handleConfirmKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "y":
+		if m.loading {
+			return m, nil
+		}
 		c := *m.confirm
 		m.confirm = nil
 		return m, m.deleteConfirmed(c)
@@ -497,7 +516,7 @@ func (m model) handleSpacesKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.loadDirectory("")
 	case "d":
 		space, ok := m.findSpace(m.selectedSpace)
-		if !ok {
+		if !ok || m.loading {
 			return m, nil
 		}
 		if space.IsDefault {
@@ -524,19 +543,15 @@ func (m model) handleTerminalsKey(key string) (tea.Model, tea.Cmd) {
 	case "esc", "h":
 		return m.showSpaces()
 	case "enter":
-		terminal, ok := m.findTerminal(m.selectedTerminal)
-		if !ok {
-			return m, nil
+		if terminal, ok := m.findTerminal(m.selectedTerminal); ok && !m.loading {
+			return m.startAttach(terminal)
 		}
-		if terminal.Status != api.TerminalRunning {
-			m.message = refusal(terminal)
-			return m, nil
-		}
-		return m.startAttach(terminal)
 	case "n":
-		return m, m.createTerminal()
+		if !m.loading {
+			return m, m.createTerminal()
+		}
 	case "d":
-		if terminal, ok := m.findTerminal(m.selectedTerminal); ok {
+		if terminal, ok := m.findTerminal(m.selectedTerminal); ok && !m.loading {
 			m.confirm = &confirmation{kind: "terminal", id: terminal.ID, name: terminal.Name}
 		}
 	}
@@ -591,7 +606,7 @@ func (m model) handleDirectoryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadDirectory(m.dir.Path)
 	case ".":
-		if !absolute && m.dir.Path != "" {
+		if !absolute && m.dir.Path != "" && !m.loading {
 			return m, m.createSpace(m.dir.Path)
 		}
 	}
@@ -624,9 +639,16 @@ func (m model) showSpaces() (tea.Model, tea.Cmd) {
 	return m, m.loadSpaces()
 }
 
+// startAttach hands the TTY to terminal's session. Only a running
+// terminal is attached, whatever path led here — a create that settled
+// as exited or unreachable is refused with its status, not handed to ssh.
 func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 	m.selectedTerminal = terminal.ID
-	cmd, err := m.attach(terminal)
+	if terminal.Status != api.TerminalRunning {
+		m.message = refusal(terminal)
+		return m, m.loadTerminals()
+	}
+	cmd, err := m.attach(m.ctx, terminal)
 	if err != nil {
 		m.message = "cannot attach: " + err.Error()
 		return m, m.loadTerminals()
@@ -670,12 +692,13 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.err != nil {
 		var problem *api.Problem
-		if errors.As(msg.err, &problem) {
-			// The server answered: the terminal is gone, or the token no
-			// longer works. Neither heals by waiting.
+		if errors.As(msg.err, &problem) && (problem.Status == http.StatusNotFound || problem.Status == http.StatusUnauthorized) {
+			// The terminal is gone, or the token no longer works: neither
+			// heals by waiting.
 			return stop(m.describe("reconnecting to "+r.terminal.Name, msg.err))
 		}
-		// Still unreachable: wait longer, up to the cap.
+		// Unreachable, or answering with a transient failure: wait
+		// longer, up to the cap.
 		r.delay = min(r.delay*2, reconnectMax)
 		m.reconnect = &r
 		return m, m.tick(r.delay, r.generation)

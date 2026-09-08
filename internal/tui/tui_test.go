@@ -29,8 +29,10 @@ type fakeClient struct {
 	createdTerm []api.TerminalCreateParams
 	deleted     []string
 	createErr   error
-	nextID      int
-	polls       int
+	// createStatus overrides the status a created terminal reports.
+	createStatus api.TerminalStatus
+	nextID       int
+	polls        int
 }
 
 func (c *fakeClient) Spaces(context.Context) ([]api.Space, error) {
@@ -83,6 +85,9 @@ func (c *fakeClient) CreateTerminal(_ context.Context, params api.TerminalCreate
 	}
 	c.nextID++
 	terminal := api.Terminal{ID: fmt.Sprintf("term-new%02d", c.nextID), Name: "shell", SpaceID: params.SpaceID, Status: api.TerminalRunning, CreatedAt: time.Now()}
+	if c.createStatus != "" {
+		terminal.Status = c.createStatus
+	}
 	c.terminals = append(c.terminals, terminal)
 	return terminal, nil
 }
@@ -183,7 +188,7 @@ func newHarness(t *testing.T, target string) *harness {
 	h := &harness{t: t, client: client, exec: &fakeExec{}, clock: &fakeClock{}}
 	h.m = newModel(context.Background(), Options{
 		Client: client, Target: target, ClientVersion: "v1", ServerVersion: "v1",
-		Attach: func(terminal api.Terminal) (*exec.Cmd, error) {
+		Attach: func(_ context.Context, terminal api.Terminal) (*exec.Cmd, error) {
 			cmd := exec.Command("/bin/attach", terminal.ID)
 			cmd.Env = []string{"TERM=xterm"}
 			return cmd, nil
@@ -610,6 +615,26 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	h.key("n")
 	if !strings.Contains(h.m.message, "creating terminal: boom") || len(h.exec.commands) != 1 {
 		t.Errorf("create failure = %q exec %v", h.m.message, h.exec.commands)
+	}
+	// A create that settled without running is refused with its status,
+	// never handed to the attach child.
+	h.client.createErr = nil
+	h.client.createStatus = api.TerminalUnreachable
+	h.key("n")
+	if !strings.Contains(h.m.message, "is unreachable") || len(h.exec.commands) != 1 {
+		t.Errorf("unreachable create = %q exec %v", h.m.message, h.exec.commands)
+	}
+	// While a create is in flight, another n is ignored.
+	h.client.createStatus = ""
+	pending := h.send(keyPress("n"))
+	if more := h.send(keyPress("n")); len(more) != 0 || len(h.client.createdTerm) != 4 {
+		t.Errorf("second n during create = %v, created %d", more, len(h.client.createdTerm))
+	}
+	for _, msg := range pending {
+		h.run(msg)
+	}
+	if len(h.exec.commands) != 2 {
+		t.Errorf("exec after the pending create = %v", h.exec.commands)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -83,12 +84,14 @@ func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 		if errors.As(err, &problem) {
 			return err
 		}
-		if os.Getenv("ATC_SERVER") != "" {
-			return fmt.Errorf("no server answers at %s: %w", baseURL, err)
-		}
 		lifecycle, err := lifecycleOptions(cmd)
 		if err != nil {
 			return err
+		}
+		// Only the supervised server can be started; an ATC_SERVER that
+		// names some other local port is not it.
+		if server := os.Getenv("ATC_SERVER"); server != "" && server != fmt.Sprintf("http://127.0.0.1:%d", lifecycle.Config.Port) {
+			return fmt.Errorf("no server answers at %s: %w", baseURL, err)
 		}
 		if err := startLocalServer(ctx, lifecycle); err != nil {
 			return err
@@ -103,11 +106,11 @@ func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 	}
 	opts.Client = client
 	opts.ServerVersion = health.Version
-	opts.Attach = func(terminal api.Terminal) (*exec.Cmd, error) {
+	opts.Attach = func(ctx context.Context, terminal api.Terminal) (*exec.Cmd, error) {
 		if err := attacher.Preflight(); err != nil {
 			return nil, err
 		}
-		return cli.PrepareAttach(terminal, attacher)
+		return cli.PrepareAttach(ctx, terminal, attacher)
 	}
 	return nil
 }
@@ -126,8 +129,8 @@ func connectRemote(cmd *cobra.Command, target string, opts *tui.Options) error {
 	opts.Client = api.NewClient(bootstrap.URL, bootstrap.Token, version.String(), nil, nil)
 	opts.Target = target
 	opts.ServerVersion = bootstrap.Version
-	opts.Attach = func(terminal api.Terminal) (*exec.Cmd, error) {
-		return ssh.AttachCommand(target, terminal.ID), nil
+	opts.Attach = func(ctx context.Context, terminal api.Terminal) (*exec.Cmd, error) {
+		return ssh.AttachCommand(ctx, target, terminal.ID), nil
 	}
 	opts.TransportLoss = remote.IsTransportLoss
 	return nil

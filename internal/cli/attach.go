@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -54,8 +55,9 @@ type SessionAttacher interface {
 // PrepareAttach resolves the command that hands a real TTY to the
 // terminal's running session: the one attach preparation both clients
 // share (ATC-316). The CLI execs it in place (AttachSession); the picker
-// runs it as a child and takes the terminal back when it exits.
-func PrepareAttach(terminal api.Terminal, attacher SessionAttacher) (*exec.Cmd, error) {
+// runs it as a child bound to ctx, so ending the picker ends the child
+// and nothing it started outlives it.
+func PrepareAttach(ctx context.Context, terminal api.Terminal, attacher SessionAttacher) (*exec.Cmd, error) {
 	if terminal.Status != api.TerminalRunning {
 		return nil, fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
 	}
@@ -63,7 +65,7 @@ func PrepareAttach(terminal api.Terminal, attacher SessionAttacher) (*exec.Cmd, 
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(executable)
+	cmd := exec.CommandContext(ctx, executable)
 	cmd.Args = argv
 	cmd.Env = env
 	return cmd, nil
@@ -73,7 +75,7 @@ func PrepareAttach(terminal api.Terminal, attacher SessionAttacher) (*exec.Cmd, 
 // session. On success it never returns: the process is replaced by the
 // driver's attach client until detach.
 func AttachSession(terminal api.Terminal, attacher SessionAttacher) error {
-	cmd, err := PrepareAttach(terminal, attacher)
+	cmd, err := PrepareAttach(context.Background(), terminal, attacher)
 	if err != nil {
 		return err
 	}

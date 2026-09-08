@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -21,7 +22,7 @@ func (a *fakeAttacher) AttachCommand(id string) (string, []string, []string, err
 // other status is refused before the driver is consulted.
 func TestPrepareAttach(t *testing.T) {
 	attacher := &fakeAttacher{}
-	cmd, err := PrepareAttach(api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}, attacher)
+	cmd, err := PrepareAttach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}, attacher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestPrepareAttach(t *testing.T) {
 	}
 
 	for _, status := range []api.TerminalStatus{api.TerminalExited, api.TerminalUnreachable, api.TerminalMissing} {
-		if _, err := PrepareAttach(api.Terminal{ID: "term-abcde", Status: status}, attacher); err == nil {
+		if _, err := PrepareAttach(context.Background(), api.Terminal{ID: "term-abcde", Status: status}, attacher); err == nil {
 			t.Errorf("%s terminal prepared an attach", status)
 		}
 	}

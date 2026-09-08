@@ -58,22 +58,25 @@ func Bootstrap(ctx context.Context, opts Options) (remote.Bootstrap, error) {
 		serverVersion = opts.Version
 	}
 
-	deadline := time.Now().Add(tailnetServingTimeout)
+	// One deadline covers every inspection, so a hung tailscale CLI
+	// cannot hold the bootstrap past the bound.
+	waitCtx, cancel := context.WithTimeout(ctx, tailnetServingTimeout)
+	defer cancel()
 	for {
-		endpoint, problem := inspectTailnetEndpoint(ctx, opts.Config, "")
+		endpoint, problem := inspectTailnetEndpoint(waitCtx, opts.Config, "")
 		if err := ctx.Err(); err != nil {
 			return remote.Bootstrap{}, err
 		}
-		if problem == "" && endpoint != "" {
+		if problem == "" && endpoint != "" && waitCtx.Err() == nil {
 			return remote.Bootstrap{URL: endpoint, Token: token, Version: serverVersion}, nil
-		}
-		if time.Now().After(deadline) {
-			return remote.Bootstrap{}, fmt.Errorf("tailnet exposure did not reach serving within %s: %s", tailnetServingTimeout, problem)
 		}
 		select {
 		case <-time.After(tailnetPollInterval):
-		case <-ctx.Done():
-			return remote.Bootstrap{}, ctx.Err()
+		case <-waitCtx.Done():
+			if problem == "" {
+				problem = "inspection did not finish"
+			}
+			return remote.Bootstrap{}, fmt.Errorf("tailnet exposure did not reach serving within %s: %s", tailnetServingTimeout, problem)
 		}
 	}
 }

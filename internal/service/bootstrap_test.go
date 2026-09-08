@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/remote"
 )
 
@@ -96,5 +97,16 @@ func TestBootstrapRefusesWithoutTailnetAndBoundsTheWait(t *testing.T) {
 	_, err = Bootstrap(context.Background(), opts)
 	if err == nil || !strings.Contains(err.Error(), "did not reach serving") || !strings.Contains(err.Error(), s.tailnetProblem) {
 		t.Errorf("never serving: err = %v", err)
+	}
+
+	// An inspection that hangs is cut off by the same bound.
+	inspectTailnetEndpoint = func(ctx context.Context, _ config.Config, _ string) (string, string) {
+		<-ctx.Done()
+		return "", ""
+	}
+	started := time.Now()
+	_, err = Bootstrap(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "did not reach serving") || time.Since(started) > time.Second {
+		t.Errorf("hung inspection: err = %v after %s", err, time.Since(started))
 	}
 }
