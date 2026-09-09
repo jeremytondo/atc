@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -45,9 +46,22 @@ import (
 	"github.com/jeremytondo/atc/internal/webhooks"
 )
 
+// shutdownSignal is the signal that cancelled the root context, for the
+// server's shutdown log (ATC-319: the cause of a stop is evidence).
+var shutdownSignal atomic.Value
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		received := <-signals
+		shutdownSignal.Store(received.String())
+		// A second signal during shutdown gets the default action.
+		signal.Stop(signals)
+		cancel()
+	}()
 	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		// An ExitError's report is already on stdout (e.g. `server status`
 		// exit codes); it only picks the process exit code.
@@ -804,6 +818,13 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	}
 
 	serveErr := server.Serve(ctx, listener, handler, logger)
+	if ctx.Err() != nil {
+		cause, _ := shutdownSignal.Load().(string)
+		if cause == "" {
+			cause = "context cancelled"
+		}
+		logger.Info("shutdown cause", "cause", cause)
+	}
 	stopLoop()
 	background.Wait()
 	exposure.Wait()

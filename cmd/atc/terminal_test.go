@@ -59,6 +59,10 @@ func (a *cliDriver) Create(_ context.Context, id string, spec terminals.CreateSp
 	return nil
 }
 
+func (a *cliDriver) Leftovers(context.Context, []terminals.Session) ([]string, error) {
+	return nil, nil
+}
+
 func (a *cliDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

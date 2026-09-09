@@ -1004,6 +1004,9 @@ type fakeResumer struct {
 	fail      error
 	failLink  bool
 	onResume  func()
+	// unverified is returned alongside the terminal: the resume ran but
+	// its session could not be verified (terminals.UnverifiedLaunch).
+	unverified error
 }
 
 // Discard records the terminal the domain gave up on and removes it the
@@ -1024,7 +1027,7 @@ func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal
 	r.mu.Lock()
 	r.requests = append(r.requests, req)
 	n := len(r.requests)
-	gate, fail, onResume, failLink := r.gate, r.fail, r.onResume, r.failLink
+	gate, fail, onResume, failLink, unverified := r.gate, r.fail, r.onResume, r.failLink, r.unverified
 	r.mu.Unlock()
 	if gate != nil {
 		<-gate
@@ -1051,7 +1054,7 @@ func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal
 			return api.Terminal{}, fmt.Errorf("sabotaging resume terminal = %v: %w", ok, err)
 		}
 	}
-	return api.Terminal{ID: id, SpaceID: r.f.space, AppID: req.AppID, Status: api.TerminalRunning}, nil
+	return api.Terminal{ID: id, SpaceID: r.f.space, AppID: req.AppID, Status: api.TerminalRunning}, unverified
 }
 
 // observed plants a project with a running terminal showing conversation
@@ -1304,6 +1307,29 @@ func TestOpenLinksDespiteCancel(t *testing.T) {
 	records, err := f.store.Threads().List(context.Background())
 	if err != nil || len(records) != 1 || records[0].TerminalID == nil || *records[0].TerminalID != "term-resm1" {
 		t.Errorf("persisted records = %+v, %v", records, err)
+	}
+}
+
+// A resume whose session could not be verified (ATC-319) still hands
+// back its terminal, and the thread is linked to it — the session may yet
+// appear under that identity, and an unlinked terminal would let the next
+// open start a second one — while the caller still hears the failure.
+func TestOpenLinksAnUnverifiedResume(t *testing.T) {
+	f := newFixture(t)
+	id := f.observed(t)
+	f.dormant(t)
+	unverified := errors.New("terminal term-resm1 was created but its session could not be verified")
+	resumer := &fakeResumer{f: f, unverified: unverified}
+
+	terminal, created, err := f.service.Open(context.Background(), id, resumer)
+	if !errors.Is(err, unverified) || !created || terminal.ID != "term-resm1" {
+		t.Fatalf("Open of an unverified resume = %+v, %v, %v; want the terminal, created, and the error", terminal, created, err)
+	}
+	if thread, _ := f.service.Get(id); thread.TerminalID != "term-resm1" {
+		t.Errorf("linkage after unverified resume = %q, want term-resm1", thread.TerminalID)
+	}
+	if len(resumer.discarded) != 0 {
+		t.Errorf("discarded = %v; want nothing", resumer.discarded)
 	}
 }
 

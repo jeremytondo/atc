@@ -21,7 +21,14 @@ import (
 // TestMain doubles as the monitor executable for the real-zmx integration
 // tests: re-exec'd as `<test-binary> __child --report … --id … --dir …
 // [--command …]`, it runs the real monitor exactly the way cmd/atc does.
+// serveMode is the body of `<test-binary> __serve`, the workload of the
+// real-supervisor service test; set by the Linux-only test file.
+var serveMode func(args []string) int
+
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "__serve" && serveMode != nil {
+		os.Exit(serveMode(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "__child" {
 		flags := flag.NewFlagSet("__child", flag.ExitOnError)
 		rep := flags.String("report", "", "")
@@ -128,14 +135,21 @@ func TestNewTightensPermissiveSocketDir(t *testing.T) {
 	}
 }
 
+// unavailable skips a real-tooling test, or fails it when the dedicated
+// CI job demands the real thing (ATC_SUPERVISOR_TESTS=require).
+func unavailable(t *testing.T, what, reason string) {
+	t.Helper()
+	if os.Getenv("ATC_SUPERVISOR_TESTS") == "require" {
+		t.Fatalf("real %s tests required but unavailable: %s", what, reason)
+	}
+	t.Skipf("real %s tests unavailable: %s", what, reason)
+}
+
 // Integration against a real zmx in a private, throwaway socket directory
 // (never the developer's real sessions — repo doctrine). /tmp keeps the
 // socket-path budget; TempDir on macOS does not.
 func newRealDriver(t *testing.T) *Driver {
 	t.Helper()
-	if _, err := New(Options{SocketDir: t.TempDir(), ReportDir: t.TempDir(), MonitorExecutable: "/bin/true"}); err != nil {
-		t.Skipf("driver unavailable: %v", err)
-	}
 	driver, err := New(Options{
 		SocketDir:         mkShortTempDir(t),
 		ReportDir:         t.TempDir(),
@@ -146,7 +160,7 @@ func newRealDriver(t *testing.T) *Driver {
 		t.Fatal(err)
 	}
 	if _, err := driver.zmx(); err != nil {
-		t.Skip("zmx not installed; skipping real-zmx integration test")
+		unavailable(t, "zmx", "zmx not installed")
 	}
 	return driver
 }

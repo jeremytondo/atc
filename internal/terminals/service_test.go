@@ -39,6 +39,19 @@ type fakeDriver struct {
 	onCreate func(id string, spec CreateSpec)
 	// commands records what each session was created with.
 	commands map[string]string
+	// leftovers is what Leftovers reports; leftoversErr makes it
+	// unavailable.
+	leftovers    []string
+	leftoversErr error
+}
+
+func (a *fakeDriver) Leftovers(context.Context, []Session) ([]string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.leftoversErr != nil {
+		return nil, a.leftoversErr
+	}
+	return append([]string(nil), a.leftovers...), nil
 }
 
 func (a *fakeDriver) createdCommand(id string) string {
@@ -359,17 +372,58 @@ func TestCreateFastFailingCommand(t *testing.T) {
 	}
 }
 
-// The session never appears and no evidence lands: the window closes and
-// the terminal reports missing rather than inventing an error.
+// The session never appears and no evidence lands: the window closes,
+// the client hears that the launch could not be verified along with the
+// terminal's id, and the terminal stays listed as missing — it may yet
+// turn up, and reconciliation would find it under this identity.
 func TestCreateNeverSettles(t *testing.T) {
 	f := newFixture(t)
 	f.driver.createErr = errors.New("session never settled")
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
-	if err != nil {
-		t.Fatal(err)
+	var unverified *UnverifiedLaunch
+	if !errors.As(err, &unverified) {
+		t.Fatalf("create = %v, want an UnverifiedLaunch", err)
 	}
-	if terminal.Status != api.TerminalMissing {
-		t.Errorf("status = %s, want missing", terminal.Status)
+	if unverified.TerminalID != terminal.ID || unverified.Status != api.TerminalMissing {
+		t.Errorf("unverified = %+v, want terminal %s missing", unverified, terminal.ID)
+	}
+	listed, getErr := f.service.Get(terminal.ID)
+	if getErr != nil || listed.Status != api.TerminalMissing {
+		t.Errorf("Get after unverified launch = %+v, %v; want the terminal listed missing", listed, getErr)
+	}
+}
+
+// A backend that never ran anything (ATC-319: its tooling missing, its
+// process placement refused) fails the create outright: no terminal is
+// left behind, the created event is answered by a deleted one, and the
+// cause reaches the client.
+func TestCreateNotLaunchedLeavesNothing(t *testing.T) {
+	f := newFixture(t)
+	f.driver.createErr = fmt.Errorf("%w: systemd user manager unreachable", ErrNotLaunched)
+	sub := f.hub.Subscribe(0, false)
+	defer sub.Close()
+	_, err := f.create(context.Background(), api.TerminalCreateParams{})
+	if !errors.Is(err, ErrNotLaunched) || !strings.Contains(err.Error(), "user manager unreachable") {
+		t.Fatalf("create = %v, want ErrNotLaunched carrying the cause", err)
+	}
+	if listed := f.service.List(""); len(listed) != 0 {
+		t.Errorf("List after failed launch = %+v, want none", listed)
+	}
+	records, err := f.store.Terminals().List(context.Background())
+	if err != nil || len(records) != 0 {
+		t.Errorf("records after failed launch = %+v, %v; want none", records, err)
+	}
+	var kinds []string
+	for len(kinds) < 2 {
+		select {
+		case change := <-sub.C:
+			kinds = append(kinds, change.Type)
+		case <-time.After(time.Second):
+			t.Fatalf("events = %v, want created then deleted", kinds)
+		}
+	}
+	if diff := cmp.Diff([]string{api.EventTerminalCreated, api.EventTerminalDeleted}, kinds); diff != "" {
+		t.Errorf("events (-want +got):\n%s", diff)
 	}
 }
 
@@ -562,6 +616,34 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	f.service.reconcile(ctx, true)
 	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup killed an unreachable session: %v", killed)
+	}
+
+	// Leftover processes of gone sessions (ATC-319): a recordless one is
+	// reaped by the background pass only; a recorded terminal's are its
+	// own. Unavailable leftovers reap nothing.
+	kept, err := f.create(ctx, api.TerminalCreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.driver.mu.Lock()
+	f.driver.leftovers = []string{"term-gonex", kept.ID}
+	f.driver.killed = nil
+	f.driver.mu.Unlock()
+	f.service.Reconcile(ctx)
+	if killed := f.driver.killedNames(); len(killed) != 0 {
+		t.Fatalf("request-path reconcile reaped leftovers: %v", killed)
+	}
+	f.service.reconcile(ctx, true)
+	if killed := f.driver.killedNames(); len(killed) != 1 || killed[0] != "term-gonex" {
+		t.Fatalf("leftover reaping killed %v, want term-gonex only", killed)
+	}
+	f.driver.mu.Lock()
+	f.driver.leftoversErr = errors.New("systemctl down")
+	f.driver.killed = nil
+	f.driver.mu.Unlock()
+	f.service.reconcile(ctx, true)
+	if killed := f.driver.killedNames(); len(killed) != 0 {
+		t.Fatalf("cleanup acted without a complete leftover listing: %v", killed)
 	}
 }
 

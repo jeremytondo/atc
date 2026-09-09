@@ -32,6 +32,21 @@ var ErrDirectoryInvalid = errors.New("terminal directory does not exist")
 // cleared.
 var ErrInvalidUpdate = errors.New("invalid update")
 
+// UnverifiedLaunch reports a create whose session was started but never
+// became reachable nor recorded an exit inside the verification window
+// (ATC-319). The terminal exists — its record is kept so the session,
+// should it turn up, is reconciled under its own identity — and the
+// client gets its id with the failure.
+type UnverifiedLaunch struct {
+	TerminalID string
+	Status     api.TerminalStatus
+}
+
+func (e *UnverifiedLaunch) Error() string {
+	return fmt.Sprintf("terminal %s was created but its session could not be verified (status %s); it remains listed for reconciliation",
+		e.TerminalID, e.Status)
+}
+
 // resource is the event-payload resource kind.
 const resource = "terminal"
 
@@ -262,6 +277,24 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 	s.mu.Unlock()
 
+	if reap && inventoryErr == nil {
+		// Processes a gone session left behind (ATC-319) are found by the
+		// backend, not the inventory; a recordless one is as provably
+		// abandoned as a recordless session. A recorded terminal's
+		// leftovers are its own until it is deleted.
+		leftovers, err := s.driver.Leftovers(ctx, inventory)
+		if err != nil {
+			s.logger.Warn("terminal leftovers unavailable", "error", err)
+		}
+		s.mu.Lock()
+		for _, name := range leftovers {
+			if _, claimed := s.view[name]; !claimed {
+				orphans = append(orphans, name)
+			}
+		}
+		s.mu.Unlock()
+	}
+
 	// Phase 2: report reads and evidence persistence, outside the view
 	// lock — a slow disk or a held SQLite writer must not block reads.
 	for i := range candidates {
@@ -360,8 +393,10 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // persists the record before starting the session (no orphan window),
 // starts it, and waits a short verification window so the common case
 // returns running and a fast-failing command returns exited with real
-// evidence. Failures after the record exists surface through the normal
-// status machinery — there is no separate launch-error path.
+// evidence. A session the backend could not start at all fails with the
+// backend's ErrNotLaunched and no terminal left behind; one that started
+// but settled as neither is an UnverifiedLaunch carrying the terminal
+// that remains.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
 	return s.create(ctx, params, AppLaunch{})
 }
@@ -436,7 +471,10 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 		}
 	}
 	terminal, err := s.commitCreate(ctx, params, space.ID, name, directory, launch)
-	if err != nil {
+	var unverified *UnverifiedLaunch
+	if err != nil && !errors.As(err, &unverified) {
+		// An unverified launch keeps its terminal, and with it whatever
+		// the preparation set up for the session that may yet appear.
 		abort()
 	}
 	return terminal, err
@@ -510,12 +548,33 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
 	s.ops.Unlock()
 
-	if err := s.driver.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: record.Command}); err != nil {
+	err := s.driver.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: record.Command})
+	if errors.Is(err, ErrNotLaunched) {
+		// Nothing ran, so nothing can turn up: the record goes and the
+		// client hears why.
+		s.logger.Warn("session not launched", "terminal", record.ID, "error", err)
+		if _, removeErr := s.removeRecord(context.WithoutCancel(ctx), record.ID); removeErr != nil {
+			// The record lingers as a missing terminal the user can
+			// delete; the failure says so.
+			s.logger.Error("discarding unlaunched terminal", "terminal", record.ID, "error", removeErr)
+			s.mu.Lock()
+			delete(s.settling, record.ID)
+			s.mu.Unlock()
+			return api.Terminal{}, fmt.Errorf("%w (terminal %s remains listed: %w)", err, record.ID, removeErr)
+		}
+		return api.Terminal{}, err
+	}
+	// The backend verified reachability itself, or the session shows up
+	// or records an exit inside the window: settled either way.
+	settled := err == nil
+	if err != nil {
 		// The record stays: the session may have been born after the
 		// client gave up, and the status machinery reports the truth.
 		s.logger.Warn("session create failed", "terminal", record.ID, "error", err)
 	}
-	s.awaitSettled(ctx, record.ID)
+	if s.awaitSettled(ctx, record.ID) {
+		settled = true
+	}
 
 	s.mu.Lock()
 	delete(s.settling, record.ID)
@@ -524,16 +583,21 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 	// a dead context, whose failed inventory would flip every terminal to
 	// unreachable until the next background pass.
 	s.Reconcile(context.WithoutCancel(ctx))
-	return s.Get(record.ID)
+	terminal, err := s.Get(record.ID)
+	if err != nil || settled {
+		return terminal, err
+	}
+	return terminal, &UnverifiedLaunch{TerminalID: record.ID, Status: terminal.Status}
 }
 
 // awaitSettled polls until the session is visibly running or its monitor
-// has recorded an exit, for up to VerifyPasses complete inventories.
-func (s *Service) awaitSettled(ctx context.Context, id string) {
+// has recorded an exit, for up to VerifyPasses complete inventories; false
+// when the window closes (or the caller gives up) with neither.
+func (s *Service) awaitSettled(ctx context.Context, id string) bool {
 	passes, failures := 0, 0
 	for passes < VerifyPasses && failures < VerifyFailureCap {
 		if rep, err := report.Read(s.reportDir, id); err == nil && rep.Exited() {
-			return
+			return true
 		}
 		inventory, err := s.driver.Inventory(ctx)
 		if err != nil {
@@ -543,16 +607,17 @@ func (s *Service) awaitSettled(ctx context.Context, id string) {
 			failures = 0 // the cap is on consecutive failures
 			for _, session := range inventory {
 				if session.Name == id && session.Reachable {
-					return
+					return true
 				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(s.verifyInterval):
 		}
 	}
+	return false
 }
 
 // Get serves one terminal from the in-memory view.
@@ -696,17 +761,29 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		s.logger.Warn("session kill unverified", "terminal", id, "error", err)
 	}
 
-	s.ops.Lock()
-	deleted, err := s.repository.Delete(detached, id)
+	deleted, err := s.removeRecord(detached, id)
 	if err != nil {
-		s.ops.Unlock()
 		return err
 	}
 	if !deleted {
 		// A concurrent delete won; for this caller the terminal no longer
 		// exists, same as any other absent id.
-		s.ops.Unlock()
 		return ErrNotFound
+	}
+	s.Reconcile(detached)
+	return nil
+}
+
+// removeRecord is the commit of a removal — the row, the view entry, the
+// report, and the deleted event, as one unit under the commit lock — for
+// a delete and for a create whose session never ran. false reports a
+// record already gone.
+func (s *Service) removeRecord(ctx context.Context, id string) (bool, error) {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	deleted, err := s.repository.Delete(ctx, id)
+	if err != nil || !deleted {
+		return deleted, err
 	}
 	s.mu.Lock()
 	delete(s.view, id)
@@ -716,10 +793,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		s.logger.Warn("removing report", "terminal", id, "error", err)
 	}
 	s.hub.Publish(api.EventTerminalDeleted, resource, id)
-	s.ops.Unlock()
-
-	s.Reconcile(detached)
-	return nil
+	return true, nil
 }
 
 // terminal converts the entry to its wire shape. Callers hold s.mu. An

@@ -83,6 +83,10 @@ func (a *fakeDriver) Create(_ context.Context, id string, spec terminals.CreateS
 	return nil
 }
 
+func (a *fakeDriver) Leftovers(context.Context, []terminals.Session) ([]string, error) {
+	return nil, nil
+}
+
 func (a *fakeDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -681,7 +685,7 @@ func TestTerminalCreateDocumentsBothStatuses(t *testing.T) {
 			t.Errorf("create %s schema = %v, want Terminal", status, ref)
 		}
 	}
-	for _, status := range []string{"409", "422", "500"} {
+	for _, status := range []string{"409", "422", "500", "503"} {
 		if ref := responses[status].Content["application/problem+json"].Schema["$ref"]; ref != "#/components/schemas/Problem" {
 			t.Errorf("create %s schema = %v, want Problem", status, ref)
 		}

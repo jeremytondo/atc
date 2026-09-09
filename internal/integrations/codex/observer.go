@@ -12,6 +12,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
+	"github.com/jeremytondo/atc/internal/placement"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -187,7 +188,7 @@ func NewObserver(opts ObserverOptions) *Observer {
 		held:               map[string]*pairing{},
 	}
 	if o.start == nil {
-		o.start = func(context.Context) error { return startServer(opts.CodexHome) }
+		o.start = func(context.Context) error { return startServer(opts.CodexHome, placement.Detect()) }
 	}
 	return o
 }

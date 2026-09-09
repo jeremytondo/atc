@@ -31,6 +31,8 @@ func (idleDriver) Create(context.Context, string, terminals.CreateSpec) error {
 }
 func (idleDriver) Kill(context.Context, string) error { return nil }
 
+func (idleDriver) Leftovers(context.Context, []terminals.Session) ([]string, error) { return nil, nil }
+
 // The user-visible flow over the real seams: the application coordinator
 // starts the Thread in a fake T3 Code environment through the T3 Code
 // Integration, T3's shell reports the turn, its response is recovered

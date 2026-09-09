@@ -61,7 +61,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, threadServi
 		Responses: map[string]*huma.Response{
 			"200": {Description: "An existing terminal reused for the thread."},
 		},
-		Errors:        []int{http.StatusConflict, http.StatusUnprocessableEntity, http.StatusInternalServerError},
+		Errors:        []int{http.StatusConflict, http.StatusUnprocessableEntity, http.StatusInternalServerError, http.StatusServiceUnavailable},
 		DefaultStatus: http.StatusCreated,
 	}
 	huma.Register(humaAPI, create, func(ctx context.Context, input *struct {
@@ -174,9 +174,20 @@ func mapCreateError(err error) error {
 }
 
 func mapError(err error) error {
+	var unverified *terminals.UnverifiedLaunch
 	switch {
 	case errors.Is(err, terminals.ErrNotFound):
 		return problem(http.StatusNotFound, api.CodeTerminalNotFound, "terminal not found")
+	case errors.Is(err, terminals.ErrNotLaunched):
+		// The backend could not start a session at all (ATC-319): the
+		// server's tooling or process placement, not the request.
+		return problem(http.StatusServiceUnavailable, api.CodeTerminalLaunchFailed, err.Error())
+	case errors.As(err, &unverified):
+		// The terminal exists but its session is unconfirmed: the id
+		// rides the problem so the client can watch it settle or delete it.
+		p := problem(http.StatusServiceUnavailable, api.CodeTerminalLaunchUnverified, err.Error())
+		p.Errors = []api.ErrorDetail{{Message: "terminal created", Location: "terminalId", Value: unverified.TerminalID}}
+		return p
 	case errors.Is(err, terminals.ErrDirectoryInvalid):
 		return problem(http.StatusUnprocessableEntity, api.CodeTerminalDirectoryInvalid, err.Error())
 	case errors.Is(err, terminals.ErrSpaceNotFound):

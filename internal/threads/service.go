@@ -1270,16 +1270,20 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 		close(done)
 		s.ops.Unlock()
 	}
-	if err != nil {
+	if err != nil && terminal.ID == "" {
 		finish()
 		return api.Terminal{}, false, err
 	}
+	// A terminal returned together with an error exists — its launch
+	// could not be verified — and is linked all the same, so the thread
+	// stays bound to the session that may yet appear; the error still
+	// reaches the caller with it.
 	s.ops.Lock()
 	linkErr := s.link(detached, id, terminal.ID)
 	s.ops.Unlock()
 	if linkErr == nil {
 		finish()
-		return terminal, true, nil
+		return terminal, true, err
 	}
 	// Compensation runs outside ops (the discard converges this view
 	// through its own lock) but before the opening mark clears.

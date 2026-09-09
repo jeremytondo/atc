@@ -56,6 +56,19 @@ intake unavailable, with the reason in status.
 `atc server start --help` documents how `--tailscale` and `--webhooks`
 behave across start, restart, and stop.
 
+Terminals outlive the server. On Linux each terminal session runs in its
+own systemd scope, outside the server's control group, so `atc server
+stop`, `restart`, `uninstall`, an upgrade, or a crash leaves every
+session running, and the next start finds each one under its original
+identity. Deleting a terminal ends everything its session started,
+background processes included. Surviving logout needs the systemd user
+manager to keep running (`atc server start` enables lingering for this);
+a reboot ends live processes and nothing restores them. Where systemd is
+absent, sessions launch directly and persist only as far as the platform's
+own session handling allows. ATC-issued start, stop, restart, and
+uninstall operations are recorded in `lifecycle.log` under the state
+directory.
+
 The Linear Integration receives its deliveries here: an `@atc` mention on
 an issue starts one T3 Code conversation and posts the answer back. Setup
 is manual; see

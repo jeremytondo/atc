@@ -47,6 +47,8 @@ const (
 	CodeValidationFailed          = "validation_failed"
 	CodeTerminalNotFound          = "terminal_not_found"
 	CodeTerminalDirectoryInvalid  = "terminal_directory_invalid"
+	CodeTerminalLaunchFailed      = "terminal_launch_failed"
+	CodeTerminalLaunchUnverified  = "terminal_launch_unverified"
 	CodeSpaceNotFound             = "space_not_found"
 	CodeSpaceDefault              = "space_default"
 	CodeSpaceDeleting             = "space_deleting"
