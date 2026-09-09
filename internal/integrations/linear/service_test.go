@@ -73,7 +73,8 @@ type fakeStarter struct {
 
 	mu       sync.Mutex
 	block    chan struct{}
-	fail     error
+	prepare  error
+	dispatch error
 	recorded error
 	calls    []api.ThreadCreateParams
 	// created maps each created ATC thread id to its provider id.
@@ -84,7 +85,7 @@ type fakeStarter struct {
 func (f *fakeStarter) StartThread(ctx context.Context, params api.ThreadCreateParams, recorded func(threadID, turnID string) error) (api.Thread, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, params)
-	block, fail, recordedErr := f.block, f.fail, f.recorded
+	block, prepareErr, dispatchErr, recordedErr := f.block, f.prepare, f.dispatch, f.recorded
 	f.nextID++
 	providerID := fmt.Sprintf("t3-thread-%d", f.nextID)
 	f.mu.Unlock()
@@ -94,6 +95,11 @@ func (f *fakeStarter) StartThread(ctx context.Context, params api.ThreadCreatePa
 		case <-ctx.Done():
 			return api.Thread{}, ctx.Err()
 		}
+	}
+	// Preparation failures happen before the coordinator records anything.
+	// Dispatch failures happen after the record and durability callback.
+	if prepareErr != nil {
+		return api.Thread{}, prepareErr
 	}
 	id, err := f.threads.ObserveExternal(ctx, threads.ExternalObservation{
 		IntegrationID: providerT3, ProviderID: providerID, InitialDirectory: f.dir, AgentID: params.Agent, Title: "T",
@@ -118,13 +124,13 @@ func (f *fakeStarter) StartThread(ctx context.Context, params api.ThreadCreatePa
 	f.mu.Lock()
 	f.created[id] = providerID
 	f.mu.Unlock()
-	if fail != nil {
+	if dispatchErr != nil {
 		// As the coordinator does: a recorded create whose dispatch went
 		// unanswered keeps its record; any other failure discards it.
-		if !errors.Is(fail, integrations.ErrThreadCreationUncertain) {
+		if !errors.Is(dispatchErr, integrations.ErrThreadCreationUncertain) {
 			discard()
 		}
-		return api.Thread{}, fail
+		return api.Thread{}, dispatchErr
 	}
 	return f.threads.Get(id)
 }

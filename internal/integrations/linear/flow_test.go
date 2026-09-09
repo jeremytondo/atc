@@ -190,17 +190,19 @@ func TestSessionsWithoutAPromptAreRefused(t *testing.T) {
 // Thread remains.
 func TestStartFailuresAreReportedHonestly(t *testing.T) {
 	cases := map[string]struct {
-		fail, recorded error
-		want           string
+		prepare  error
+		dispatch error
+		recorded error
+		want     string
 	}{
-		"T3 refused":      {fail: errT3Refused, want: "could not start the T3 Code conversation: thread creation failed: T3 Code rejected the command: no such project"},
+		"T3 refused":      {dispatch: errT3Refused, want: "could not start the T3 Code conversation: thread creation failed: T3 Code rejected the command: no such project"},
 		"record failed":   {recorded: errStorage, want: "recording the thread before dispatch"},
-		"project unknown": {fail: errProjectUnknown, want: "project not found"},
+		"project unknown": {prepare: errProjectUnknown, want: "project not found"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
-			f.starter.set(func(s *fakeStarter) { s.fail, s.recorded = tc.fail, tc.recorded })
+			f.starter.set(func(s *fakeStarter) { s.prepare, s.dispatch, s.recorded = tc.prepare, tc.dispatch, tc.recorded })
 			f.start()
 			f.process(t, "dlv-1", createdEvent("sess-1", f.clock.Now()))
 			session := f.waitSession("sess-1", "done", func(s store.LinearSession) bool { return s.State == stateDone })
@@ -228,7 +230,7 @@ func TestStartFailuresAreReportedHonestly(t *testing.T) {
 // answer.
 func TestUncertainStartKeepsWatching(t *testing.T) {
 	f := newFixture(t)
-	f.starter.set(func(s *fakeStarter) { s.fail = errT3Silent })
+	f.starter.set(func(s *fakeStarter) { s.dispatch = errT3Silent })
 	f.start()
 	f.process(t, "dlv-1", createdEvent("sess-1", f.clock.Now()))
 	threadID, providerID := f.startedThread("sess-1")
@@ -254,7 +256,7 @@ func TestUncertainStartKeepsWatching(t *testing.T) {
 // woken by the Integration's connection change, not just the poll.
 func TestStartWaitsForT3(t *testing.T) {
 	f := newFixture(t)
-	f.starter.set(func(s *fakeStarter) { s.fail = errNotConnected })
+	f.starter.set(func(s *fakeStarter) { s.prepare = errNotConnected })
 	f.start()
 	f.process(t, "dlv-1", createdEvent("sess-1", f.clock.Now()))
 	acts := f.waitActivities("sess-1", 2)
@@ -267,7 +269,7 @@ func TestStartWaitsForT3(t *testing.T) {
 	if threads := f.threads.List("", "", true); len(threads) != 0 {
 		t.Errorf("a deferred start left threads %+v", threads)
 	}
-	f.starter.set(func(s *fakeStarter) { s.fail = nil })
+	f.starter.set(func(s *fakeStarter) { s.prepare = nil })
 	f.hub.Publish(api.EventIntegrationUpdated, "integration", "t3code")
 	f.startedThread("sess-1")
 	acts = f.waitActivities("sess-1", 3)
