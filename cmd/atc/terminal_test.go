@@ -334,7 +334,7 @@ func TestTerminalListShowsApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsRow(stdout, "ID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY") {
+	if !containsRow(stdout, "#\tLABEL\tID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY") {
 		t.Fatalf("list output missing APP header:\n%s", stdout)
 	}
 	if got := tableColumn(t, stdout, plainID, "APP", "SPACE"); got != "" {
@@ -357,7 +357,7 @@ func tableColumn(t *testing.T, table, rowID, column, nextColumn string) string {
 		t.Fatalf("table header has no %s column before %s:\n%s", column, nextColumn, table)
 	}
 	for _, line := range lines[1:] {
-		if strings.HasPrefix(line, rowID) {
+		if strings.Contains(line, rowID) {
 			if len(line) < end {
 				return ""
 			}
@@ -366,6 +366,58 @@ func tableColumn(t *testing.T, table, rowID, column, nextColumn string) string {
 	}
 	t.Fatalf("table has no row %s:\n%s", rowID, table)
 	return ""
+}
+
+// The list is grouped by space, numbered from 1 in each group, and
+// labelled by name or process (ATC-317); get shows both apart, and
+// --clear-name returns a named terminal to its process.
+func TestTerminalListNumbersPerSpace(t *testing.T) {
+	startTestServer(t)
+	spaceOut, _, err := runCLI(t, "space", "create", canonical(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaceID := regexp.MustCompile(`spce-[a-z2-9]{5}`).FindString(spaceOut)
+	var ids []string
+	for _, args := range [][]string{
+		{"--command", "git log | less"},
+		{"--name", "api"},
+		{"--space", spaceID},
+	} {
+		out, _, err := runCLI(t, append([]string{"terminal", "create", "--detach"}, args...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(out))
+	}
+
+	stdout, _, err := runCLI(t, "terminal", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"1:git", "2:api", "1:shell"} {
+		if got := tableColumn(t, stdout, ids[i], "LABEL", "ID"); got != want {
+			t.Errorf("%s LABEL = %q, want %q\n%s", ids[i], got, want, stdout)
+		}
+	}
+	stdout, _, err = runCLI(t, "terminal", "list", "--space", spaceID)
+	if err != nil || !strings.Contains(stdout, ids[2]) || strings.Contains(stdout, ids[0]) {
+		t.Errorf("list --space = %q, %v", stdout, err)
+	}
+
+	stdout, _, err = runCLI(t, "terminal", "get", ids[1])
+	if err != nil || !containsRow(stdout, "name\tapi") || !containsRow(stdout, "process\tshell") {
+		t.Errorf("get = %q, %v; want name and process rows", stdout, err)
+	}
+	if stdout, _, err = runCLI(t, "terminal", "update", ids[1], "--clear-name"); err != nil || !regexp.MustCompile(`(?m)^name\s*$`).MatchString(stdout) {
+		t.Errorf("update --clear-name = %q, %v", stdout, err)
+	}
+	if _, _, err := runCLI(t, "terminal", "update", ids[1], "--name", ""); err == nil {
+		t.Error("update --name \"\" succeeded, want an error")
+	}
+	if _, _, err := runCLI(t, "terminal", "update", ids[1], "--name", "x", "--clear-name"); err == nil {
+		t.Error("--name with --clear-name succeeded, want an error")
+	}
 }
 
 func TestTerminalCreateHelpIsScannable(t *testing.T) {

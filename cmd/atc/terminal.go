@@ -99,7 +99,7 @@ reattach with ` + "`atc terminal attach <id>`" + `.`,
 // addPlacementFlags declares the flags every launching command shares:
 // where the terminal goes, what it is called, and --detach.
 func addPlacementFlags(cmd *cobra.Command) {
-	cmd.Flags().String("name", "", "display name (defaults to the directory's basename)")
+	cmd.Flags().String("name", "", "display name; optional — an unnamed terminal is labelled by the program in its foreground")
 	cmd.Flags().String("space", "", "space the terminal belongs to (defaults to the Default space)")
 	cmd.Flags().String("directory", "", "working directory (default: --space directory; otherwise local cwd or remote Default space)")
 	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
@@ -198,7 +198,12 @@ func newTerminalListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List terminals with their statuses",
 		Long: `List terminals in every space, including exited and missing terminals.
-Use --space to scope the list. Records remain until deleted.`,
+Use --space to scope the list. Records remain until deleted.
+
+Rows are grouped by space in creation order. The # column numbers each
+space's terminals from 1 — the same numbers the picker shows — and LABEL is
+that number with the terminal's name, or the program in its foreground when
+it has no name.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
 			space, err := cmd.Flags().GetString("space")
@@ -215,9 +220,12 @@ Use --space to scope the list. Records remain until deleted.`,
 				return err
 			}
 			w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY")
-			for _, terminal := range terminals {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.AppID, terminal.SpaceID, terminal.Directory)
+			_, _ = fmt.Fprintln(w, "#\tLABEL\tID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY")
+			for _, group := range cli.GroupBySpace(terminals) {
+				for i, terminal := range group {
+					_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", i+1, cli.Label(i+1, terminal), terminal.ID,
+						statusLabel(terminal), terminal.Name, terminal.AppID, terminal.SpaceID, terminal.Directory)
+				}
 			}
 			return w.Flush()
 		}),
@@ -232,7 +240,8 @@ func newTerminalUpdateCmd() *cobra.Command {
 		Short: "Rename a terminal or move it to another space",
 		Long: `Rename a terminal, or move it to another space with --space. A move changes
 nothing else: the session keeps running in its directory, with its app and
-its thread.`,
+its thread. --clear-name removes the name, so the terminal is labelled by the
+program in its foreground again.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			flags := cmd.Flags()
@@ -243,6 +252,11 @@ its thread.`,
 					return err
 				}
 				params.Name = api.Some(name)
+			}
+			if clear, err := flags.GetBool("clear-name"); err != nil {
+				return err
+			} else if clear {
+				params.Name = api.Clear[string]()
 			}
 			if flags.Changed("space") {
 				space, err := flags.GetString("space")
@@ -260,8 +274,10 @@ its thread.`,
 		}),
 	}
 	cmd.Flags().String("name", "", "new display name")
+	cmd.Flags().Bool("clear-name", false, "remove the display name; the foreground program labels the terminal")
 	cmd.Flags().String("space", "", "space to move the terminal to")
-	cmd.MarkFlagsOneRequired("name", "space")
+	cmd.MarkFlagsMutuallyExclusive("name", "clear-name")
+	cmd.MarkFlagsOneRequired("name", "clear-name", "space")
 	return cmd
 }
 
@@ -321,6 +337,7 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
 	_, _ = fmt.Fprintf(w, "id\t%s\n", terminal.ID)
 	_, _ = fmt.Fprintf(w, "name\t%s\n", terminal.Name)
+	_, _ = fmt.Fprintf(w, "process\t%s\n", terminal.Process)
 	_, _ = fmt.Fprintf(w, "status\t%s\n", statusLabel(terminal))
 	_, _ = fmt.Fprintf(w, "space\t%s\n", terminal.SpaceID)
 	_, _ = fmt.Fprintf(w, "directory\t%s\n", terminal.Directory)
