@@ -70,7 +70,10 @@ machine an ordinary ssh target names. The remote's server is started if
 needed and must expose the API on the tailnet (`tailscale = true` in its
 `config.toml`); control traffic uses that HTTPS endpoint, and ssh carries
 only the launch-time bootstrap and the interactive attach. Nothing is
-cached locally. `atc --help` and `?` inside the picker list the keys.
+cached locally. Terminal rows are numbered per space and labelled by the
+program in their foreground (`1:zsh`, `2:nvim`) or by a name you set
+(`3:api`); press a row's number to attach. `atc --help` and `?` inside the
+picker list the keys.
 
 ## Installing and upgrading
 

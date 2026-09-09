@@ -30,6 +30,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/cli"
 )
 
 const (
@@ -94,8 +95,8 @@ const (
 	screenDirectories
 )
 
-// confirmation is the pending delete: what, named for the prompt, and
-// for a Space how many Terminals go with it.
+// confirmation is the pending delete: what, named for the prompt (a
+// Terminal by its label), and for a Space how many Terminals go with it.
 type confirmation struct {
 	kind  string // "space" or "terminal"
 	id    string
@@ -108,6 +109,7 @@ type confirmation struct {
 // invalidates ticks and polls scheduled by an earlier attempt.
 type reconnect struct {
 	terminal   api.Terminal
+	label      string
 	delay      time.Duration
 	generation uint64
 }
@@ -402,6 +404,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = m.describe("creating terminal", msg.terminalErr)
 			return m, m.loadTerminals()
 		}
+		m.terminals = append(m.terminals, msg.terminal)
 		return m.startAttach(msg.terminal)
 	case terminalCreatedMsg:
 		if msg.seq != m.seq {
@@ -412,6 +415,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = m.describe("creating terminal", msg.err)
 			return m, m.loadTerminals()
 		}
+		// The new terminal is the newest, so it takes the next number
+		// until the list reloads.
+		m.terminals = append(m.terminals, msg.terminal)
 		return m.startAttach(msg.terminal)
 	case deletedMsg:
 		if msg.seq != m.seq {
@@ -552,8 +558,21 @@ func (m model) handleTerminalsKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		if terminal, ok := m.findTerminal(m.selectedTerminal); ok && !m.loading {
-			m.confirm = &confirmation{kind: "terminal", id: terminal.ID, name: terminal.Name}
+			m.confirm = &confirmation{kind: "terminal", id: terminal.ID, name: m.label(terminal)}
 		}
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// The number is the row's, as held in the current list: after a
+		// delete elsewhere since the last refresh the user still gets the
+		// terminal they were looking at.
+		if m.loading {
+			return m, nil
+		}
+		number := int(key[0] - '0')
+		if number > len(m.terminals) {
+			m.message = fmt.Sprintf("no terminal %d", number)
+			return m, nil
+		}
+		return m.startAttach(m.terminals[number-1])
 	}
 	return m, nil
 }
@@ -645,7 +664,7 @@ func (m model) showSpaces() (tea.Model, tea.Cmd) {
 func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 	m.selectedTerminal = terminal.ID
 	if terminal.Status != api.TerminalRunning {
-		m.message = refusal(terminal)
+		m.message = refusal(m.label(terminal), terminal)
 		return m, m.loadTerminals()
 	}
 	cmd, err := m.attach(m.ctx, terminal)
@@ -671,11 +690,12 @@ func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
 		m.message = ""
 	case m.transportLoss != nil && m.transportLoss(msg.err):
 		m.generation++
-		m.reconnect = &reconnect{terminal: msg.terminal, delay: reconnectMin, generation: m.generation}
-		m.message = fmt.Sprintf("connection lost, reconnecting to %s", msg.terminal.Name)
+		label := m.label(msg.terminal)
+		m.reconnect = &reconnect{terminal: msg.terminal, label: label, delay: reconnectMin, generation: m.generation}
+		m.message = "connection lost, reconnecting to " + label
 		return m, tea.Batch(requestWindowSize, m.tick(reconnectMin, m.generation))
 	default:
-		m.message = fmt.Sprintf("attachment to %s ended: %v", msg.terminal.Name, msg.err)
+		m.message = fmt.Sprintf("attachment to %s ended: %v", m.label(msg.terminal), msg.err)
 	}
 	return m, tea.Batch(requestWindowSize, m.loadTerminals())
 }
@@ -695,7 +715,7 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		if errors.As(msg.err, &problem) && (problem.Status == http.StatusNotFound || problem.Status == http.StatusUnauthorized) {
 			// The terminal is gone, or the token no longer works: neither
 			// heals by waiting.
-			return stop(m.describe("reconnecting to "+r.terminal.Name, msg.err))
+			return stop(m.describe("reconnecting to "+r.label, msg.err))
 		}
 		// Unreachable, or answering with a transient failure: wait
 		// longer, up to the cap.
@@ -704,7 +724,7 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		return m, m.tick(r.delay, r.generation)
 	}
 	if msg.terminal.Status != api.TerminalRunning {
-		return stop(refusal(msg.terminal))
+		return stop(refusal(r.label, msg.terminal))
 	}
 	m.reconnect = nil
 	return m.startAttach(msg.terminal)
@@ -721,11 +741,23 @@ func (m model) describe(action string, err error) string {
 	return action + ": " + err.Error()
 }
 
-func refusal(terminal api.Terminal) string {
+func refusal(label string, terminal api.Terminal) string {
 	if terminal.Status == api.TerminalExited && terminal.ExitCode != nil {
-		return fmt.Sprintf("%s has exited with code %d; only running terminals can be attached", terminal.Name, *terminal.ExitCode)
+		return fmt.Sprintf("%s has exited with code %d; only running terminals can be attached", label, *terminal.ExitCode)
 	}
-	return fmt.Sprintf("%s is %s; only running terminals can be attached", terminal.Name, terminal.Status)
+	return fmt.Sprintf("%s is %s; only running terminals can be attached", label, terminal.Status)
+}
+
+// label is the terminal's row label in the current list — `2:nvim`,
+// `4:api` — or its bare name or process when it is not listed (a
+// terminal the picker no longer shows).
+func (m model) label(terminal api.Terminal) string {
+	for i, listed := range m.terminals {
+		if listed.ID == terminal.ID {
+			return cli.Label(i+1, terminal)
+		}
+	}
+	return cli.DisplayName(terminal)
 }
 
 // setSpaces installs a loaded space list: the Default Space first, then
@@ -747,13 +779,14 @@ func (m *model) setSpaces(spaces []api.Space, terminals []api.Terminal) {
 	m.spaces, m.terminalCounts = spaces, counts
 }
 
-// setTerminals installs a loaded terminal list newest-first; on first
-// entry the newest is selected, afterwards the selection is kept by ID
-// or moved to the adjacent row.
+// setTerminals installs a loaded terminal list in number order — oldest
+// first, newest at the bottom, so row N is terminal N; on first entry
+// row one is selected, afterwards the selection is kept by ID or moved
+// to the adjacent row.
 func (m *model) setTerminals(terminals []api.Terminal) {
 	terminals = append([]api.Terminal(nil), terminals...)
 	sort.SliceStable(terminals, func(i, j int) bool {
-		return terminals[i].CreatedAt.After(terminals[j].CreatedAt)
+		return terminals[i].CreatedAt.Before(terminals[j].CreatedAt)
 	})
 	m.selectedTerminal = keepSelection(terminalIDs(m.terminals), terminalIDs(terminals), m.selectedTerminal)
 	m.terminals = terminals
