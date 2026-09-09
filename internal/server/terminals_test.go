@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/application"
+	"github.com/jeremytondo/atc/internal/artifacts"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
@@ -122,6 +123,25 @@ type fixture struct {
 	t3         *t3code.Service
 	t3Server   *t3codetest.Server
 	t3Home     string
+	artifacts  *artifacts.Service
+	// artifactRoot is the artifact content directory.
+	artifactRoot string
+	documents    *fakeDocuments
+}
+
+// fakeDocuments is the document origin's status seam and link bases.
+type fakeDocuments struct {
+	status api.Documents
+}
+
+func (d *fakeDocuments) Status(context.Context) api.Documents { return d.status }
+
+func (d *fakeDocuments) Bases() (string, string) {
+	tailnet := ""
+	if d.status.Tailnet.State == api.TailnetReady {
+		tailnet = d.status.Tailnet.URL
+	}
+	return d.status.URL, tailnet
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -227,6 +247,15 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	documents := &fakeDocuments{status: api.Documents{State: api.DocumentsReady, URL: "http://127.0.0.1:7332", Tailnet: api.DocumentsTailnet{State: api.TailnetDisabled}}}
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	artifactService, err := artifacts.New(context.Background(), artifacts.Options{
+		Repository: db.Artifacts(), Hub: hub, Root: artifactRoot, Bases: documents.Bases, Now: now,
+		Limits: artifacts.Limits{MaxFiles: 16, MaxFileBytes: 1 << 20, MaxTotalBytes: 4 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := NewHandler(Options{
 		Verify:         testVerify,
 		Version:        testVersion,
@@ -236,6 +265,8 @@ func newFixture(t *testing.T) *fixture {
 		Integrations:   catalog,
 		Threads:        threadService,
 		Events:         hub,
+		Artifacts:      artifactService,
+		Documents:      documents,
 		InternalRoutes: map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
 		Coordinator: application.New(application.Options{
 			Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog,
@@ -245,7 +276,8 @@ func newFixture(t *testing.T) *fixture {
 		HomeDir:           projectDir,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
-		binaries: binaries, reports: reports, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
+		binaries: binaries, reports: reports, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home,
+		artifacts: artifactService, artifactRoot: artifactRoot, documents: documents}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectID = "proj-fixtr"
