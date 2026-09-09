@@ -13,3 +13,7 @@
 * **Turn** — one execution on a Thread, from a prompt to the agent's final response. Part of the Threads domain.
 * **Client** — anything outside ATC that uses the API.
 * **API** — the contract through which Clients reach ATC's domains and capabilities.
+* **Artifact** — a published document: mutable metadata (title, Project) over a history of immutable Versions, read at one stable link that always shows the newest Version. Part of the Artifacts domain.
+* **Version** — one publication of an Artifact: a complete static build, the authoring source it came from, and its provenance, at a permanent link. Versions are appended, never changed; restoring an old one publishes it again as the newest.
+* **Working Copy** — an agent's local, editable project for one document on the shared authoring platform, kept outside project repositories until discarded. Once published, or started from a published Version, it records the Artifact and Version it revises; it is not a server-side draft.
+* **Document origin** — the unprivileged listener, on its own port and browser origin, that serves published Artifacts to readers without credentials. Distinct from the API.
