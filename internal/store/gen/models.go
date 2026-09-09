@@ -16,6 +16,12 @@ type Artifact struct {
 	UpdatedAt string
 }
 
+type ArtifactPublication struct {
+	PublicationID string
+	ArtifactID    string
+	Number        int64
+}
+
 type ArtifactVersion struct {
 	ArtifactID    string
 	Number        int64

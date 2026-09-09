@@ -82,6 +82,7 @@ func Status(ctx context.Context, opts Options) error {
 		// holds — so it is asked whenever it answers, whatever config and
 		// unit predict about it.
 		info.webhookStatus, info.webhookErr = probeWebhooks(ctx, opts, token)
+		info.documentsStatus, info.documentsErr = probeDocuments(ctx, opts, token)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -183,6 +184,10 @@ type statusInfo struct {
 	// webhookErr is why it could not be fetched.
 	webhookStatus api.Webhooks
 	webhookErr    error
+	// documentsStatus is the server's document origin report when it is
+	// healthy; documentsErr is why it could not be fetched.
+	documentsStatus api.DocumentOrigin
+	documentsErr    error
 }
 
 // renderStatus formats the report and picks the exit code. Pure and fully
@@ -226,6 +231,9 @@ func renderStatus(s statusInfo) (string, int) {
 		fmt.Fprintf(&b, "  %s\n", url)
 	}
 	if s.healthy {
+		for _, line := range renderDocuments(s.documentsStatus, s.documentsErr) {
+			fmt.Fprintf(&b, "  %s\n", line)
+		}
 		for _, line := range renderWebhooks(s.webhookStatus, s.webhookErr) {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
@@ -315,6 +323,45 @@ func renderWebhooks(status api.Webhooks, err error) []string {
 		lines = append(lines, fmt.Sprintf("webhook processing failures: %d since start (last: %s)", status.ProcessingFailures, status.LastProcessingFailure))
 	}
 	return lines
+}
+
+// renderDocuments formats the server's document origin report: the local
+// base URL (or why it is not serving) and the tailnet exposure when the
+// launch has one. err is the failure to fetch the report at all.
+func renderDocuments(status api.DocumentOrigin, err error) []string {
+	if err != nil {
+		return []string{fmt.Sprintf("documents: unknown (%s)", err)}
+	}
+	var lines []string
+	switch status.State {
+	case "":
+		return nil
+	case api.OriginReady:
+		lines = append(lines, "documents: "+status.URL)
+	case api.OriginStarting:
+		lines = append(lines, "documents: starting ("+status.Reason+")")
+	case api.OriginUnavailable:
+		lines = append(lines, "documents: unavailable ("+status.Reason+"); publishing still works, and the listener is retried")
+	default:
+		lines = append(lines, "documents: "+string(status.State))
+	}
+	switch tailnet := status.Tailnet; tailnet.State {
+	case api.TailnetReady:
+		lines = append(lines, "documents (tailnet): "+tailnet.URL)
+	case api.TailnetStarting:
+		lines = append(lines, "documents (tailnet): "+renderPending(tailnet.URL, tailnet.Reason))
+		if tailnet.Action != "" {
+			lines = append(lines, "documents action: "+strings.Join(strings.Fields(tailnet.Action), " "))
+		}
+	}
+	return lines
+}
+
+func renderPending(endpoint, problem string) string {
+	if endpoint != "" {
+		return fmt.Sprintf("pending at %s (%s)", endpoint, problem)
+	}
+	return fmt.Sprintf("unavailable (%s)", problem)
 }
 
 // apiURLs builds the ready-to-paste URLs the configuration serves: loopback

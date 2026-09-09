@@ -23,9 +23,11 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/application"
+	"github.com/jeremytondo/atc/internal/artifacts"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
+	"github.com/jeremytondo/atc/internal/documents"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
@@ -106,11 +108,12 @@ started if needed and must expose the API on the tailnet.
 For ` + "`atc server run`" + `, configuration precedence is:
   flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
 
-Keys: port, bind, tailscale, tailscale_executable, webhooks, webhooks_port. Set
-tailscale = true to expose the API on the tailnet by default; webhooks = true
-to receive webhooks publicly through Tailscale Funnel. Supervised server
-commands read config.toml and defaults; their exposure flags apply to the
-launch they start.`,
+Keys: port, bind, tailscale, tailscale_executable, webhooks, webhooks_port,
+documents_port. Set tailscale = true to expose the API (and the document
+origin) on the tailnet by default; webhooks = true to receive webhooks
+publicly through Tailscale Funnel. Supervised server commands read
+config.toml and defaults; their exposure flags apply to the launch they
+start.`,
 		// Errors surface once, prefixed "atc:" in main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -118,7 +121,7 @@ launch they start.`,
 		RunE:          runRoot,
 	}
 	addPickerFlags(root)
-	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newDirectoryCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newArtifactCmd(), newDirectoryCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd(), newBootstrapCmd())
 	return root
 }
@@ -414,6 +417,7 @@ stderr. This is the primitive the supervised unit execs; most users want
 	cmd.Flags().String("bind", "", "bind address (overrides ATC_BIND and config.toml)")
 	cmd.Flags().Bool("tailscale", false, "expose on the tailnet (overrides ATC_TAILSCALE and config.toml)")
 	cmd.Flags().Bool("webhooks", false, "run the webhook receiver behind Tailscale Funnel (overrides ATC_WEBHOOKS and config.toml)")
+	cmd.Flags().Int("documents-port", 0, "document origin port (overrides ATC_DOCUMENTS_PORT and config.toml)")
 	return cmd
 }
 
@@ -513,6 +517,11 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	}
 	if flags.Changed("webhooks") {
 		if cfg.Webhooks, err = flags.GetBool("webhooks"); err != nil {
+			return err
+		}
+	}
+	if flags.Changed("documents-port") {
+		if cfg.DocumentsPort, err = flags.GetInt("documents-port"); err != nil {
 			return err
 		}
 	}
@@ -777,16 +786,48 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Artifacts (ATC-318): published documents, indexed in the database
+	// and stored under the artifact directory, served to browsers by the
+	// document origin — a second listener on its own port, exposed on the
+	// tailnet exactly when the API is. The API renders reader links from
+	// the origin's report.
+	artifactRoot, err := paths.ArtifactDir()
+	if err != nil {
+		return err
+	}
+	artifactService, err := artifacts.New(ctx, artifacts.Options{
+		Repository: database.Artifacts(),
+		Hub:        hub,
+		Root:       artifactRoot,
+		Logger:     logger,
+	})
+	if err != nil {
+		return err
+	}
+	var documentsTailscale string
+	if cfg.Tailscale {
+		documentsTailscale = tailscaleExecutable
+	}
+	documentService := documents.New(documents.Options{
+		Resolver:            artifactService,
+		Bind:                cfg.Bind,
+		Port:                cfg.DocumentsPort,
+		TailscaleExecutable: documentsTailscale,
+		Logger:              logger,
+	})
+
 	handler := server.NewHandler(server.Options{
-		Verify:       tokens.Verify,
-		Version:      versionValue,
-		Logger:       logger,
-		Terminals:    terminalService,
-		Projects:     projectService,
-		Integrations: catalog,
-		Threads:      threadService,
-		Events:       hub,
-		Webhooks:     webhookService,
+		Verify:         tokens.Verify,
+		Version:        versionValue,
+		Logger:         logger,
+		Terminals:      terminalService,
+		Projects:       projectService,
+		Integrations:   catalog,
+		Threads:        threadService,
+		Events:         hub,
+		Webhooks:       webhookService,
+		Artifacts:      artifactService,
+		DocumentOrigin: documentService,
 		InternalRoutes: map[string]http.Handler{
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 		},
@@ -807,6 +848,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	background.Go(func() { t3Service.Run(loopCtx) })
 	background.Go(func() { webhookService.Run(loopCtx) })
 	background.Go(func() { linearService.Run(loopCtx) })
+	background.Go(func() { documentService.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

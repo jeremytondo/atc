@@ -37,17 +37,18 @@ type ArtifactVersion struct {
 	PublishedAt time.Time `json:"publishedAt"`
 	// RestoredFrom names the version whose snapshots this one reuses; zero
 	// for an uploaded build.
-	RestoredFrom int            `json:"restoredFrom,omitempty" doc:"Version this one restores, when it is a restoration rather than an upload."`
-	Source       ArtifactSource `json:"source" doc:"Source context recorded at publication."`
-	URL          string         `json:"url" doc:"Permanent reader link for this version."`
-	TailnetURL   string         `json:"tailnetUrl,omitempty" doc:"Permanent reader link on the tailnet, when the document origin is exposed there."`
+	RestoredFrom int                `json:"restoredFrom,omitempty" doc:"Version this one restores, when it is a restoration rather than an upload."`
+	Provenance   ArtifactProvenance `json:"provenance" doc:"Where the version's content was authored, as recorded at publication."`
+	URL          string             `json:"url" doc:"Permanent reader link for this version."`
+	TailnetURL   string             `json:"tailnetUrl,omitempty" doc:"Permanent reader link on the tailnet, when the document origin is exposed there."`
 }
 
-// ArtifactSource is the provenance a publication records: where the
-// document was authored. Everything is optional and preserved verbatim —
-// history outlives the thread, project, or revision it names.
-type ArtifactSource struct {
-	Thread   string   `json:"thread,omitempty" maxLength:"100" doc:"ATC Thread the document was authored in."`
+// ArtifactProvenance is where a version's content was authored. Everything
+// is optional and preserved verbatim — history outlives the thread,
+// project, or revision it names. A restoration carries the restored
+// version's provenance unless the request records its own.
+type ArtifactProvenance struct {
+	ThreadID string   `json:"threadId,omitempty" maxLength:"100" doc:"ATC Thread the document was authored in."`
 	Revision string   `json:"revision,omitempty" maxLength:"200" doc:"Repository revision the document describes."`
 	Links    []string `json:"links,omitempty" maxItems:"20" doc:"Related issue, research, or reference links."`
 }
@@ -59,7 +60,9 @@ type ArtifactSource struct {
 // current version. RestoreFrom names a stored version to republish in
 // place of uploaded archives.
 type ArtifactPublishParams struct {
-	Title string `json:"title" minLength:"1" maxLength:"200" doc:"Title recorded on the version and set as the artifact's current title."`
+	// Title is required for an upload; a restoration defaults to the
+	// restored version's title.
+	Title string `json:"title,omitempty" maxLength:"200" doc:"Title recorded on the version and set as the artifact's current title; a restoration defaults to the restored version's."`
 	// BaseVersion is the version the publisher's working copy was based
 	// on. It must be the current version, or publication fails with a
 	// conflict naming the current one.
@@ -70,9 +73,9 @@ type ArtifactPublishParams struct {
 	PublicationID string `json:"publicationId" minLength:"1" maxLength:"128" doc:"Publisher-chosen retry identity; repeating a completed publication returns its result."`
 	// RestoreFrom republishes a stored version's build and source as the
 	// new current version; the archives are omitted.
-	RestoreFrom int            `json:"restoreFrom,omitempty" minimum:"0" doc:"Stored version to republish instead of uploading archives."`
-	Platform    string         `json:"platform,omitempty" maxLength:"200" doc:"Authoring platform identity."`
-	Source      ArtifactSource `json:"source,omitzero" doc:"Source context to record."`
+	RestoreFrom int                `json:"restoreFrom,omitempty" minimum:"0" doc:"Stored version to republish instead of uploading archives."`
+	Platform    string             `json:"platform,omitempty" maxLength:"200" doc:"Authoring platform identity."`
+	Provenance  ArtifactProvenance `json:"provenance,omitzero" doc:"Where the content was authored."`
 }
 
 // ArtifactUpdateParams is a JSON Merge Patch of the mutable metadata.

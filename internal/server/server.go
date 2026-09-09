@@ -57,9 +57,10 @@ type Options struct {
 	// unmounted.
 	Webhooks WebhookReporter
 	// Artifacts serves the Artifacts resource (ATC-318); nil leaves it
-	// unmounted. Documents reports the document origin that serves them.
-	Artifacts *artifacts.Service
-	Documents DocumentsReporter
+	// unmounted. DocumentOrigin reports the origin that serves them and
+	// supplies the reader links; required with Artifacts.
+	Artifacts      *artifacts.Service
+	DocumentOrigin DocumentOriginReporter
 	// InternalRoutes are handlers mounted outside the public /v1 contract
 	// and outside bearer auth (ATC-255): each authenticates itself — the
 	// Claude hook route validates its per-launch secret, and the bearer
@@ -144,10 +145,13 @@ func NewHandler(opts Options) http.Handler {
 		registerWebhooks(humaAPI, opts.Webhooks)
 	}
 	if opts.Artifacts != nil {
-		registerArtifacts(humaAPI, opts.Artifacts)
+		if opts.DocumentOrigin == nil {
+			panic("server.NewHandler: DocumentOrigin must accompany Artifacts")
+		}
+		registerArtifacts(humaAPI, opts.Artifacts, opts.DocumentOrigin)
 	}
-	if opts.Documents != nil {
-		registerDocuments(humaAPI, opts.Documents)
+	if opts.DocumentOrigin != nil {
+		registerDocumentOrigin(humaAPI, opts.DocumentOrigin)
 	}
 	if opts.HomeDir != "" {
 		registerDirectories(humaAPI, opts.HomeDir)

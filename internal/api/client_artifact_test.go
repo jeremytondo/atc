@@ -93,8 +93,8 @@ func TestArtifactMethods(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(ArtifactVersionList{Versions: []ArtifactVersion{{Number: 1}}})
 		case strings.HasPrefix(r.URL.Path, "/v1/artifacts/artf-x7k2f/versions/"):
 			_ = json.NewEncoder(w).Encode(ArtifactVersion{Number: 3})
-		case r.URL.Path == "/v1/documents":
-			_ = json.NewEncoder(w).Encode(Documents{State: DocumentsReady, URL: "http://127.0.0.1:7332"})
+		case r.URL.Path == "/v1/document-origin":
+			_ = json.NewEncoder(w).Encode(DocumentOrigin{State: OriginReady, URL: "http://127.0.0.1:7332"})
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -141,7 +141,7 @@ func TestArtifactMethods(t *testing.T) {
 	if string(body) != "GZ" || got.Path != "/v1/artifacts/artf-x7k2f/versions/3/source" {
 		t.Errorf("ArtifactSource = %q; call %+v", body, got)
 	}
-	if status, err := client.Documents(ctx); err != nil || status.State != DocumentsReady {
-		t.Errorf("Documents = %+v, %v", status, err)
+	if status, err := client.DocumentOrigin(ctx); err != nil || status.State != OriginReady {
+		t.Errorf("DocumentOrigin = %+v, %v", status, err)
 	}
 }

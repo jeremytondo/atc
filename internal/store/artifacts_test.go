@@ -79,12 +79,12 @@ func TestArtifactsRoundTrip(t *testing.T) {
 	if _, ok, err := artifacts.Version(ctx, "artf-aaaaa", 3); err != nil || ok {
 		t.Errorf("Version(3) = %v, %v; want false", ok, err)
 	}
-	byPublication, ok, err := artifacts.VersionByPublication(ctx, "pub-1")
-	if err != nil || !ok || byPublication.Number != 1 {
-		t.Errorf("VersionByPublication = %+v, %v, %v; want version 1", byPublication, ok, err)
+	byPublication, found, deleted, err := artifacts.Publication(ctx, "pub-1")
+	if err != nil || !found || deleted || byPublication.Number != 1 {
+		t.Errorf("Publication = %+v, %v, %v, %v; want version 1", byPublication, found, deleted, err)
 	}
-	if _, ok, err := artifacts.VersionByPublication(ctx, "pub-never"); err != nil || ok {
-		t.Errorf("VersionByPublication(unknown) = %v, %v; want false", ok, err)
+	if _, found, deleted, err := artifacts.Publication(ctx, "pub-never"); err != nil || found || deleted {
+		t.Errorf("Publication(unknown) = %v, %v, %v; want neither", found, deleted, err)
 	}
 
 	// The append set the current title and updated_at; the current
@@ -127,6 +127,10 @@ func TestArtifactsRoundTrip(t *testing.T) {
 	}
 	if versions, err := artifacts.Versions(ctx, "artf-aaaaa"); err != nil || len(versions) != 0 {
 		t.Errorf("Versions after delete = %v, %v; want none (cascade)", versions, err)
+	}
+	// The publication ids outlive the artifact.
+	if _, found, deleted, err := artifacts.Publication(ctx, "pub-1"); err != nil || found || !deleted {
+		t.Errorf("Publication after delete = %v, %v, %v; want deleted", found, deleted, err)
 	}
 }
 

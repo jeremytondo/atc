@@ -2,11 +2,13 @@
 // as an artifact of mutable metadata over a history of immutable
 // versions. Metadata and history live in the store; each version's
 // static build and source snapshot live on disk under Root, placed
-// complete before the version row that makes them visible exists, so a
-// crash at any point leaves the previous current version intact and the
-// leftovers reconciled on the next start. Mutations are serialized so
-// the base-version check and the append cannot interleave; the content
-// upload itself is validated and staged outside the lock.
+// complete and synced before the version row that makes them visible
+// exists, so a crash at any point leaves the previous current version
+// intact and the leftovers reconciled on the next start. Mutations are
+// serialized so the base-version check and the append cannot interleave;
+// the content upload itself is validated and staged outside the lock.
+// Reader links are the document origin's to render: the domain reports
+// paths (ReaderPath) and knows nothing about listeners.
 package artifacts
 
 import (
@@ -14,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -37,8 +40,9 @@ const (
 	// buildDir and sourceFile are a version's two snapshots.
 	buildDir   = "build"
 	sourceFile = "source.tar.gz"
-	// indexFile is what a build must contain to be servable.
-	indexFile = "index.html"
+	// IndexFile is what a build must contain at its root to be servable;
+	// the reader serves it as the page.
+	IndexFile = "index.html"
 )
 
 var (
@@ -52,9 +56,16 @@ var (
 	// ErrInvalidUpdate refuses a merge patch that changes nothing or sets
 	// a field to a value it cannot take (422).
 	ErrInvalidUpdate = errors.New("invalid update")
+	// ErrInvalidPublication refuses a publication whose parameters do not
+	// make sense together (422): a blank title, no retry identity,
+	// archives with a restoration, a restoration of nothing.
+	ErrInvalidPublication = errors.New("invalid publication")
 	// ErrPublicationTaken refuses a publication id already committed to a
 	// different artifact (409).
 	ErrPublicationTaken = errors.New("publication id belongs to another artifact")
+	// ErrPublicationDeleted refuses repeating a publication whose artifact
+	// has since been deleted (410): nothing is recreated.
+	ErrPublicationDeleted = errors.New("the publication's artifact was deleted")
 )
 
 // StaleBaseError refuses a publication based on a version that is no
@@ -76,16 +87,19 @@ type PackageError struct {
 
 func (e *PackageError) Error() string { return e.Detail }
 
-// Limits bound what one publication may contain, per archive.
+// Limits bound what one publication may contain, per archive. MaxEntries
+// counts every archive member, directories included; MaxTotalBytes
+// bounds the decompressed stream, headers included, so a compressed
+// archive cannot expand without limit.
 type Limits struct {
-	MaxFiles      int
+	MaxEntries    int
 	MaxFileBytes  int64
 	MaxTotalBytes int64
 }
 
 // DefaultLimits are the production bounds: generous for a static site,
 // far below anything that could exhaust the host.
-var DefaultLimits = Limits{MaxFiles: 4096, MaxFileBytes: 64 << 20, MaxTotalBytes: 256 << 20}
+var DefaultLimits = Limits{MaxEntries: 8192, MaxFileBytes: 64 << 20, MaxTotalBytes: 256 << 20}
 
 // Options wires the service.
 type Options struct {
@@ -94,10 +108,6 @@ type Options struct {
 	// Root is the content directory (paths.ArtifactDir); created if
 	// missing.
 	Root string
-	// Bases reports the document origin's local and tailnet base URLs
-	// (tailnet "" when not exposed) for the reader links on every
-	// artifact and version; nil renders paths only.
-	Bases func() (local, tailnet string)
 	// Limits zero means DefaultLimits.
 	Limits Limits
 	// Now is the clock; nil means time.Now.
@@ -110,7 +120,6 @@ type Service struct {
 	repository *store.Artifacts
 	hub        *events.Hub
 	root       string
-	bases      func() (string, string)
 	limits     Limits
 	now        func() time.Time
 	logger     *slog.Logger
@@ -127,9 +136,6 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	if opts.Bases == nil {
-		opts.Bases = func() (string, string) { return "", "" }
-	}
 	if opts.Limits == (Limits{}) {
 		opts.Limits = DefaultLimits
 	}
@@ -137,7 +143,7 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 	s := &Service{
-		repository: opts.Repository, hub: opts.Hub, root: opts.Root, bases: opts.Bases,
+		repository: opts.Repository, hub: opts.Hub, root: opts.Root,
 		limits: opts.Limits, now: opts.Now, logger: opts.Logger,
 	}
 	if err := os.MkdirAll(filepath.Join(s.root, stagingDir), 0o700); err != nil {
@@ -166,20 +172,18 @@ func ReaderPath(artifactID string, version int) string {
 // committed returns that result with replayed true and changes nothing.
 func (s *Service) Publish(ctx context.Context, artifactID string, params api.ArtifactPublishParams, build, source io.Reader) (api.ArtifactPublication, bool, error) {
 	params.Title = strings.TrimSpace(params.Title)
-	if params.Title == "" {
-		return api.ArtifactPublication{}, false, &PackageError{Detail: "title must not be blank"}
-	}
-	if params.PublicationID == "" {
-		return api.ArtifactPublication{}, false, &PackageError{Detail: "publicationId is required"}
-	}
 	restore := params.RestoreFrom > 0
 	switch {
+	case params.PublicationID == "":
+		return api.ArtifactPublication{}, false, fmt.Errorf("%w: publicationId is required", ErrInvalidPublication)
 	case restore && artifactID == "":
-		return api.ArtifactPublication{}, false, &PackageError{Detail: "restoreFrom needs an existing artifact"}
+		return api.ArtifactPublication{}, false, fmt.Errorf("%w: restoreFrom needs an existing artifact", ErrInvalidPublication)
 	case restore && (build != nil || source != nil):
-		return api.ArtifactPublication{}, false, &PackageError{Detail: "a restoration takes no archives"}
+		return api.ArtifactPublication{}, false, fmt.Errorf("%w: a restoration takes no archives", ErrInvalidPublication)
+	case !restore && params.Title == "":
+		return api.ArtifactPublication{}, false, fmt.Errorf("%w: title must not be blank", ErrInvalidPublication)
 	case !restore && (build == nil || source == nil):
-		return api.ArtifactPublication{}, false, &PackageError{Detail: "build and source archives are required"}
+		return api.ArtifactPublication{}, false, fmt.Errorf("%w: build and source archives are required", ErrInvalidPublication)
 	}
 
 	// A completed publication answers without touching the upload.
@@ -224,7 +228,7 @@ func (s *Service) Publish(ctx context.Context, artifactID string, params api.Art
 	now := s.now()
 	version := store.ArtifactVersionRecord{
 		Title: params.Title, Platform: params.Platform, PublishedAt: now, PublicationID: params.PublicationID,
-		Thread: params.Source.Thread, Revision: params.Source.Revision, Links: params.Source.Links,
+		Thread: params.Provenance.ThreadID, Revision: params.Provenance.Revision, Links: params.Provenance.Links,
 	}
 	if artifactID == "" {
 		return s.create(ctx, version, staged, now)
@@ -247,9 +251,16 @@ func (s *Service) Publish(ctx context.Context, artifactID string, params api.Art
 		if !ok {
 			return api.ArtifactPublication{}, false, ErrVersionNotFound
 		}
-		// The frozen snapshots and the platform that produced them come
-		// along unchanged; only the publication itself is new.
+		// The frozen snapshots come along with what describes them: the
+		// platform that built them, the title, and the provenance, unless
+		// the request records its own.
 		version.RestoredFrom, version.Platform = params.RestoreFrom, restored.Platform
+		if version.Title == "" {
+			version.Title = restored.Title
+		}
+		if p := params.Provenance; p.ThreadID == "" && p.Revision == "" && len(p.Links) == 0 {
+			version.Thread, version.Revision, version.Links = restored.Thread, restored.Revision, restored.Links
+		}
 		if staged, err = s.copyVersion(artifactID, params.RestoreFrom); err != nil {
 			return api.ArtifactPublication{}, false, err
 		}
@@ -308,13 +319,18 @@ func (s *Service) create(ctx context.Context, version store.ArtifactVersionRecor
 }
 
 // replay answers a repeated publication id with the version it
-// committed; a publication id committed to another artifact is refused.
+// committed. One committed to another artifact is refused, and one
+// whose artifact was deleted since fails instead of recreating it.
 func (s *Service) replay(ctx context.Context, artifactID, publicationID string) (api.ArtifactPublication, bool, error) {
-	version, ok, err := s.repository.VersionByPublication(ctx, publicationID)
-	if err != nil || !ok {
+	version, found, deleted, err := s.repository.Publication(ctx, publicationID)
+	switch {
+	case err != nil:
 		return api.ArtifactPublication{}, false, err
-	}
-	if artifactID != "" && version.ArtifactID != artifactID {
+	case deleted:
+		return api.ArtifactPublication{}, false, ErrPublicationDeleted
+	case !found:
+		return api.ArtifactPublication{}, false, nil
+	case artifactID != "" && version.ArtifactID != artifactID:
 		return api.ArtifactPublication{}, false, ErrPublicationTaken
 	}
 	result, _, err := s.publication(ctx, version.ArtifactID, version.Number)
@@ -336,7 +352,7 @@ func (s *Service) publication(ctx context.Context, artifactID string, number int
 	if !ok {
 		return api.ArtifactPublication{}, false, ErrVersionNotFound
 	}
-	return api.ArtifactPublication{Artifact: s.artifact(artifact), Version: s.version(version)}, false, nil
+	return api.ArtifactPublication{Artifact: toArtifact(artifact), Version: toVersion(version)}, false, nil
 }
 
 // Get returns one artifact.
@@ -348,7 +364,7 @@ func (s *Service) Get(ctx context.Context, id string) (api.Artifact, error) {
 	if !ok {
 		return api.Artifact{}, ErrNotFound
 	}
-	return s.artifact(record), nil
+	return toArtifact(record), nil
 }
 
 // List returns every artifact in creation order, or projectID's only.
@@ -359,7 +375,7 @@ func (s *Service) List(ctx context.Context, projectID string) ([]api.Artifact, e
 	}
 	artifacts := make([]api.Artifact, 0, len(records))
 	for _, record := range records {
-		artifacts = append(artifacts, s.artifact(record))
+		artifacts = append(artifacts, toArtifact(record))
 	}
 	return artifacts, nil
 }
@@ -407,7 +423,7 @@ func (s *Service) Update(ctx context.Context, id string, params api.ArtifactUpda
 		return api.Artifact{}, ErrNotFound
 	}
 	s.hub.Publish(api.EventArtifactUpdated, resource, id)
-	return s.artifact(updated), nil
+	return toArtifact(updated), nil
 }
 
 // Delete removes an artifact, its history, and its content; its reader
@@ -434,20 +450,27 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 
 // Versions returns an artifact's history, oldest first.
 func (s *Service) Versions(ctx context.Context, id string) ([]api.ArtifactVersion, error) {
-	if _, ok, err := s.repository.Get(ctx, id); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, ErrNotFound
-	}
-	records, err := s.repository.Versions(ctx, id)
+	records, err := s.versions(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	versions := make([]api.ArtifactVersion, 0, len(records))
 	for _, record := range records {
-		versions = append(versions, s.version(record))
+		versions = append(versions, toVersion(record))
 	}
 	return versions, nil
+}
+
+func (s *Service) versions(ctx context.Context, id string) ([]store.ArtifactVersionRecord, error) {
+	records, err := s.repository.Versions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		// Every artifact has a version; none means no artifact.
+		return nil, ErrNotFound
+	}
+	return records, nil
 }
 
 // Version returns one version.
@@ -464,26 +487,36 @@ func (s *Service) Version(ctx context.Context, id string, number int) (api.Artif
 		}
 		return api.ArtifactVersion{}, ErrVersionNotFound
 	}
-	return s.version(record), nil
+	return toVersion(record), nil
 }
 
-// SourcePath is the path of a version's source snapshot (a tar.gz).
-func (s *Service) SourcePath(ctx context.Context, id string, number int) (string, error) {
+// OpenSource opens a version's source snapshot (a gzip tar) for reading.
+// A version deleted between the lookup and the open is reported as not
+// found.
+func (s *Service) OpenSource(ctx context.Context, id string, number int) (io.ReadCloser, error) {
 	if _, err := s.Version(ctx, id, number); err != nil {
-		return "", err
+		return nil, err
 	}
-	return filepath.Join(s.versionDir(id, number), sourceFile), nil
+	file, err := os.Open(filepath.Join(s.versionDir(id, number), sourceFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrVersionNotFound
+	}
+	return file, err
 }
 
 // Document is what the reader serves for one artifact at one version:
-// the version's build directory plus the current metadata and history
-// the reader header shows.
+// the version's build plus the current metadata and history the reader
+// header shows. History and the current version come from one read of
+// the version rows, so they agree with each other even while a
+// publication is committing.
 type Document struct {
 	Artifact api.Artifact
 	Version  api.ArtifactVersion
 	// Versions is the artifact's history, oldest first.
 	Versions []api.ArtifactVersion
-	BuildDir string
+	// Build is the version's static build; IndexFile at its root is the
+	// page.
+	Build fs.FS
 }
 
 // Latest reports whether the document is the artifact's current version.
@@ -496,16 +529,20 @@ func (s *Service) Document(ctx context.Context, id string, number int) (Document
 	if err != nil {
 		return Document{}, err
 	}
-	if number == 0 {
-		number = artifact.CurrentVersion
-	}
 	versions, err := s.Versions(ctx, id)
 	if err != nil {
 		return Document{}, err
 	}
+	artifact.CurrentVersion = versions[len(versions)-1].Number
+	if number == 0 {
+		number = artifact.CurrentVersion
+	}
 	for _, version := range versions {
 		if version.Number == number {
-			return Document{Artifact: artifact, Version: version, Versions: versions, BuildDir: filepath.Join(s.versionDir(id, number), buildDir)}, nil
+			return Document{
+				Artifact: artifact, Version: version, Versions: versions,
+				Build: os.DirFS(filepath.Join(s.versionDir(id, number), buildDir)),
+			}, nil
 		}
 	}
 	return Document{}, ErrVersionNotFound
@@ -519,29 +556,19 @@ func (s *Service) versionDir(id string, number int) string {
 	return filepath.Join(s.root, id, strconv.Itoa(number))
 }
 
-func (s *Service) artifact(record store.ArtifactRecord) api.Artifact {
-	local, tailnet := s.bases()
-	artifact := api.Artifact{
+// toArtifact maps a record to the wire; reader links are the transport's
+// to fill in.
+func toArtifact(record store.ArtifactRecord) api.Artifact {
+	return api.Artifact{
 		ID: record.ID, Title: record.Title, ProjectID: record.ProjectID, CurrentVersion: record.CurrentVersion,
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
-		URL: local + ReaderPath(record.ID, 0),
 	}
-	if tailnet != "" {
-		artifact.TailnetURL = tailnet + ReaderPath(record.ID, 0)
-	}
-	return artifact
 }
 
-func (s *Service) version(record store.ArtifactVersionRecord) api.ArtifactVersion {
-	local, tailnet := s.bases()
-	version := api.ArtifactVersion{
+func toVersion(record store.ArtifactVersionRecord) api.ArtifactVersion {
+	return api.ArtifactVersion{
 		ArtifactID: record.ArtifactID, Number: record.Number, Title: record.Title, Platform: record.Platform,
 		PublishedAt: record.PublishedAt, RestoredFrom: record.RestoredFrom,
-		Source: api.ArtifactSource{Thread: record.Thread, Revision: record.Revision, Links: record.Links},
-		URL:    local + ReaderPath(record.ArtifactID, record.Number),
+		Provenance: api.ArtifactProvenance{ThreadID: record.Thread, Revision: record.Revision, Links: record.Links},
 	}
-	if tailnet != "" {
-		version.TailnetURL = tailnet + ReaderPath(record.ArtifactID, record.Number)
-	}
-	return version
 }

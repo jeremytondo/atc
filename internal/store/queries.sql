@@ -208,16 +208,15 @@ ON CONFLICT (id) DO NOTHING;
 SELECT artifacts.*, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
 FROM artifacts WHERE id = ?;
 
+-- A NULL project lists every artifact.
 -- name: ListArtifacts :many
 SELECT artifacts.*, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
-FROM artifacts ORDER BY created_at, id;
+FROM artifacts WHERE sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id) ORDER BY created_at, id;
 
--- name: ListArtifactsByProject :many
-SELECT artifacts.*, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
-FROM artifacts WHERE project_id = ? ORDER BY created_at, id;
-
--- name: UpdateArtifact :execrows
-UPDATE artifacts SET title = ?, project_id = ?, updated_at = ? WHERE id = ?;
+-- name: UpdateArtifact :one
+UPDATE artifacts SET title = ?, project_id = ?, updated_at = ? WHERE id = ?
+RETURNING id, title, project_id, created_at, updated_at,
+    CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version;
 
 -- A publication sets the artifact's current title along with its version.
 -- name: RetitleArtifact :execrows
@@ -236,6 +235,12 @@ SELECT * FROM artifact_versions WHERE artifact_id = ? AND number = ?;
 
 -- name: GetArtifactVersionByPublication :one
 SELECT * FROM artifact_versions WHERE publication_id = ?;
+
+-- name: InsertArtifactPublication :execrows
+INSERT INTO artifact_publications (publication_id, artifact_id, number) VALUES (?, ?, ?);
+
+-- name: GetArtifactPublication :one
+SELECT * FROM artifact_publications WHERE publication_id = ?;
 
 -- name: ListArtifactVersions :many
 SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY number;

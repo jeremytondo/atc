@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -26,10 +25,11 @@ import (
 // decompressed contents are bounded separately by the service's limits.
 const maxUploadBytes = 512 << 20
 
-// DocumentsReporter is the document origin's status seam
-// (documents.Service in production).
-type DocumentsReporter interface {
-	Status(ctx context.Context) api.Documents
+// DocumentOriginReporter is the document origin's status seam
+// (documents.Service in production). Its report also carries the base
+// URLs the reader links on every artifact and version are built from.
+type DocumentOriginReporter interface {
+	Status(ctx context.Context) api.DocumentOrigin
 }
 
 // publishForm is the multipart body of a publication: JSON params plus
@@ -70,13 +70,14 @@ type artifactVersionInput struct {
 	Number int    `path:"number" minimum:"1" doc:"Version number."`
 }
 
-type documentsOutput struct {
-	Body api.Documents
+type documentOriginOutput struct {
+	Body api.DocumentOrigin
 }
 
 const publishDescription = "A multipart upload: `params` (JSON), `build` (gzip tar of the static build, index.html at its root), and `source` (gzip tar of the authoring snapshot). Archives may contain only regular files and directories at safe relative paths, within bounded counts and sizes. The version becomes visible only once both snapshots are stored; a repeated `publicationId` returns the version it committed (200) instead of publishing again."
 
-func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
+func registerArtifacts(humaAPI huma.API, service *artifacts.Service, origin DocumentOriginReporter) {
+	links := linker{origin: origin}
 	create := huma.Operation{
 		OperationID:   "create-artifact",
 		Method:        http.MethodPost,
@@ -85,14 +86,14 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		Description:   "Creates an artifact whose first version is the uploaded publication. " + publishDescription,
 		DefaultStatus: http.StatusCreated,
 		Responses:     map[string]*huma.Response{"200": {Description: "The publication had already completed; its result."}},
-		Errors:        []int{http.StatusUnprocessableEntity, http.StatusConflict},
+		Errors:        []int{http.StatusUnprocessableEntity, http.StatusConflict, http.StatusGone},
 		MaxBodyBytes:  maxUploadBytes,
 		Middlewares:   huma.Middlewares{limitBody},
 	}
 	huma.Register(humaAPI, create, func(ctx context.Context, input *struct {
 		RawBody huma.MultipartFormFiles[publishForm]
 	}) (*publicationOutput, error) {
-		return publish(ctx, service, "", input.RawBody.Data())
+		return publish(ctx, service, links, "", input.RawBody.Data())
 	})
 	create.Responses["200"].Content = create.Responses["201"].Content
 
@@ -109,6 +110,10 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		if err != nil {
 			return nil, mapArtifactError(err)
 		}
+		local, tailnet := links.bases(ctx)
+		for i := range list {
+			link(&list[i].URL, &list[i].TailnetURL, local, tailnet, artifacts.ReaderPath(list[i].ID, 0))
+		}
 		return &artifactListOutput{Body: api.ArtifactList{Artifacts: list}}, nil
 	})
 
@@ -122,6 +127,7 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		if err != nil {
 			return nil, mapArtifactError(err)
 		}
+		links.artifact(ctx, &artifact)
 		return &artifactOutput{Body: artifact}, nil
 	})
 
@@ -139,6 +145,7 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		if err != nil {
 			return nil, mapArtifactError(err)
 		}
+		links.artifact(ctx, &artifact)
 		return &artifactOutput{Body: artifact}, nil
 	})
 
@@ -164,7 +171,7 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		Description:   "Appends a version and makes it current; `baseVersion` must be the current version or the request fails with a conflict naming it (nothing is merged or overwritten). With `restoreFrom`, the named version's stored build and source are republished unchanged as the new current version and the archives are omitted. " + publishDescription,
 		DefaultStatus: http.StatusCreated,
 		Responses:     map[string]*huma.Response{"200": {Description: "The publication had already completed; its result."}},
-		Errors:        []int{http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusConflict},
+		Errors:        []int{http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusConflict, http.StatusGone},
 		MaxBodyBytes:  maxUploadBytes,
 		Middlewares:   huma.Middlewares{limitBody},
 	}
@@ -172,7 +179,7 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		ID      string `path:"id" doc:"Artifact identifier."`
 		RawBody huma.MultipartFormFiles[publishForm]
 	}) (*publicationOutput, error) {
-		return publish(ctx, service, input.ID, input.RawBody.Data())
+		return publish(ctx, service, links, input.ID, input.RawBody.Data())
 	})
 	publishVersion.Responses["200"].Content = publishVersion.Responses["201"].Content
 
@@ -187,6 +194,10 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		if err != nil {
 			return nil, mapArtifactError(err)
 		}
+		local, tailnet := links.bases(ctx)
+		for i := range versions {
+			link(&versions[i].URL, &versions[i].TailnetURL, local, tailnet, artifacts.ReaderPath(versions[i].ArtifactID, versions[i].Number))
+		}
 		return &artifactVersionListOutput{Body: api.ArtifactVersionList{Versions: versions}}, nil
 	})
 
@@ -200,6 +211,7 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		if err != nil {
 			return nil, mapArtifactError(err)
 		}
+		links.version(ctx, &version)
 		return &artifactVersionOutput{Body: version}, nil
 	})
 
@@ -215,34 +227,61 @@ func registerArtifacts(humaAPI huma.API, service *artifacts.Service) {
 		}},
 		Errors: []int{http.StatusNotFound},
 	}, func(ctx context.Context, input *artifactVersionInput) (*huma.StreamResponse, error) {
-		path, err := service.SourcePath(ctx, input.ID, input.Number)
+		source, err := service.OpenSource(ctx, input.ID, input.Number)
 		if err != nil {
 			return nil, mapArtifactError(err)
 		}
-		file, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
 		return &huma.StreamResponse{Body: func(ctx huma.Context) {
-			defer func() { _ = file.Close() }()
+			defer func() { _ = source.Close() }()
 			ctx.SetHeader("Content-Type", "application/gzip")
 			ctx.SetHeader("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-v%d-source.tar.gz"`, input.ID, input.Number))
-			_, _ = io.Copy(ctx.BodyWriter(), file)
+			_, _ = io.Copy(ctx.BodyWriter(), source)
 		}}, nil
 	})
 }
 
-// registerDocuments mounts the document origin's status resource.
-func registerDocuments(humaAPI huma.API, reporter DocumentsReporter) {
+// registerDocumentOrigin mounts the document origin's status resource.
+func registerDocumentOrigin(humaAPI huma.API, reporter DocumentOriginReporter) {
 	huma.Register(humaAPI, huma.Operation{
-		OperationID: "get-documents",
+		OperationID: "get-document-origin",
 		Method:      http.MethodGet,
-		Path:        "/v1/documents",
+		Path:        "/v1/document-origin",
 		Summary:     "Document origin status",
 		Description: "Readiness of the listener that serves published artifacts to browsers, its local base URL, its tailnet exposure (which follows the API's), and the reason for any failure. Publishing, metadata, and source retrieval work here whatever this reports.",
-	}, func(ctx context.Context, _ *struct{}) (*documentsOutput, error) {
-		return &documentsOutput{Body: reporter.Status(ctx)}, nil
+	}, func(ctx context.Context, _ *struct{}) (*documentOriginOutput, error) {
+		return &documentOriginOutput{Body: reporter.Status(ctx)}, nil
 	})
+}
+
+// linker fills in reader links from the document origin's current
+// bases: the local one always, the tailnet one while it is serving.
+type linker struct {
+	origin DocumentOriginReporter
+}
+
+func (l linker) bases(ctx context.Context) (local, tailnet string) {
+	status := l.origin.Status(ctx)
+	if status.Tailnet.State == api.TailnetReady {
+		tailnet = status.Tailnet.URL
+	}
+	return status.URL, tailnet
+}
+
+func (l linker) artifact(ctx context.Context, artifact *api.Artifact) {
+	local, tailnet := l.bases(ctx)
+	link(&artifact.URL, &artifact.TailnetURL, local, tailnet, artifacts.ReaderPath(artifact.ID, 0))
+}
+
+func (l linker) version(ctx context.Context, version *api.ArtifactVersion) {
+	local, tailnet := l.bases(ctx)
+	link(&version.URL, &version.TailnetURL, local, tailnet, artifacts.ReaderPath(version.ArtifactID, version.Number))
+}
+
+func link(url, tailnetURL *string, local, tailnet, path string) {
+	*url = local + path
+	if tailnet != "" {
+		*tailnetURL = tailnet + path
+	}
 }
 
 // limitBody caps the request body before the multipart parser reads it;
@@ -255,7 +294,7 @@ func limitBody(ctx huma.Context, next func(huma.Context)) {
 
 // publish runs one publication from the parsed form, closing the
 // uploaded files.
-func publish(ctx context.Context, service *artifacts.Service, artifactID string, form *publishForm) (*publicationOutput, error) {
+func publish(ctx context.Context, service *artifacts.Service, links linker, artifactID string, form *publishForm) (*publicationOutput, error) {
 	var build, source io.Reader
 	if form.Build.IsSet {
 		defer func() { _ = form.Build.Close() }()
@@ -269,6 +308,8 @@ func publish(ctx context.Context, service *artifacts.Service, artifactID string,
 	if err != nil {
 		return nil, mapArtifactError(err)
 	}
+	links.artifact(ctx, &result.Artifact)
+	links.version(ctx, &result.Version)
 	status := http.StatusCreated
 	if replayed {
 		status = http.StatusOK
@@ -292,10 +333,12 @@ func mapArtifactError(err error) error {
 		return problem(http.StatusUnprocessableEntity, api.CodeArtifactPackageInvalid, err.Error())
 	case errors.Is(err, artifacts.ErrProjectUnknown):
 		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
-	case errors.Is(err, artifacts.ErrInvalidUpdate):
+	case errors.Is(err, artifacts.ErrInvalidUpdate), errors.Is(err, artifacts.ErrInvalidPublication):
 		return problem(http.StatusUnprocessableEntity, api.CodeValidationFailed, err.Error())
 	case errors.Is(err, artifacts.ErrPublicationTaken):
 		return problem(http.StatusConflict, api.CodeValidationFailed, err.Error())
+	case errors.Is(err, artifacts.ErrPublicationDeleted):
+		return problem(http.StatusGone, api.CodeArtifactDeleted, err.Error())
 	}
 	return err
 }

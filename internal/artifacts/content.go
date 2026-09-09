@@ -5,7 +5,9 @@ package artifacts
 // restoration, and reconciling the content directory against the store
 // after a restart. Archives are gzip-compressed tar with only regular
 // files and directories at safe relative paths, bounded by Limits, and a
-// build must carry index.html at its root.
+// build must carry index.html at its root. Staged content is synced to
+// disk before it is placed, and its directories after, so the version
+// row that follows never outlives the content it names.
 
 import (
 	"archive/tar"
@@ -21,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/jeremytondo/atc/internal/ids"
 )
@@ -45,7 +48,10 @@ func (s *Service) stageInto(dir string, build, source io.Reader) error {
 	if err := extractBuild(build, filepath.Join(dir, buildDir), s.limits); err != nil {
 		return err
 	}
-	return copySource(source, filepath.Join(dir, sourceFile), s.limits)
+	if err := copySource(source, filepath.Join(dir, sourceFile), s.limits); err != nil {
+		return err
+	}
+	return syncDirs(dir)
 }
 
 // extractBuild writes the build archive's files under dir.
@@ -57,19 +63,37 @@ func extractBuild(archive io.Reader, dir string, limits Limits) error {
 	err := walkArchive("build", archive, limits, func(name string, header *tar.Header, content io.Reader) error {
 		target := filepath.Join(dir, filepath.FromSlash(name))
 		if header.Typeflag == tar.TypeDir {
-			return os.MkdirAll(target, 0o700)
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, fs.ErrExist) {
+					return &PackageError{Detail: fmt.Sprintf("build archive: directory %q conflicts with a file of the same name", name)}
+				}
+				return err
+			}
+			return nil
 		}
-		if name == indexFile {
+		if name == IndexFile {
 			hasIndex = true
 		}
+		// Names that collide within the archive — a file twice, a file
+		// where a directory is needed — are the package's fault.
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, fs.ErrExist) {
+				return &PackageError{Detail: fmt.Sprintf("build archive: %q conflicts with a file of the same name", name)}
+			}
 			return err
 		}
 		file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
+			if errors.Is(err, fs.ErrExist) || errors.Is(err, syscall.EISDIR) {
+				return &PackageError{Detail: fmt.Sprintf("build archive: %q appears more than once", name)}
+			}
 			return err
 		}
 		if _, err := io.Copy(file, content); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Sync(); err != nil {
 			_ = file.Close()
 			return err
 		}
@@ -79,7 +103,7 @@ func extractBuild(archive io.Reader, dir string, limits Limits) error {
 		return err
 	}
 	if !hasIndex {
-		return &PackageError{Detail: "build archive has no index.html at its root"}
+		return &PackageError{Detail: "build archive has no " + IndexFile + " at its root"}
 	}
 	return nil
 }
@@ -107,11 +131,6 @@ func copySource(archive io.Reader, path string, limits Limits) error {
 	if files == 0 {
 		return &PackageError{Detail: "source archive has no files"}
 	}
-	// The tar reader stops at the end-of-archive marker; the gzip trailer
-	// still has to reach the file.
-	if _, err := io.Copy(io.Discard, tee); err != nil {
-		return err
-	}
 	if err := file.Sync(); err != nil {
 		return err
 	}
@@ -120,7 +139,10 @@ func copySource(archive io.Reader, path string, limits Limits) error {
 
 // walkArchive reads a gzip tar, refusing anything but regular files and
 // directories at safe relative paths within limits, and hands each entry
-// to visit with a reader bounded to the entry's declared size.
+// to visit with a reader bounded to the entry's declared size. Every
+// member counts against MaxEntries and every decompressed byte against
+// MaxTotalBytes, headers included, and the gzip stream is read to its
+// end so a corrupt trailer or checksum refuses the archive.
 func walkArchive(kind string, archive io.Reader, limits Limits, visit func(name string, header *tar.Header, content io.Reader) error) error {
 	invalid := func(format string, args ...any) error {
 		return &PackageError{Detail: kind + " archive: " + fmt.Sprintf(format, args...)}
@@ -130,16 +152,23 @@ func walkArchive(kind string, archive io.Reader, limits Limits, visit func(name 
 		return invalid("not gzip: %v", err)
 	}
 	defer func() { _ = gz.Close() }()
-	reader := tar.NewReader(gz)
-	var files int
-	var total int64
+	bounded := &boundedReader{r: gz, remaining: limits.MaxTotalBytes}
+	reader := tar.NewReader(bounded)
+	var entries int
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			break
+		}
+		if errors.Is(err, errTooLarge) {
+			return invalid("decompressed size exceeds %d bytes", limits.MaxTotalBytes)
 		}
 		if err != nil {
 			return invalid("not a tar archive: %v", err)
+		}
+		entries++
+		if entries > limits.MaxEntries {
+			return invalid("more than %d entries", limits.MaxEntries)
 		}
 		switch header.Typeflag {
 		case tar.TypeXGlobalHeader, tar.TypeXHeader, tar.TypeGNULongName, tar.TypeGNULongLink:
@@ -161,21 +190,48 @@ func walkArchive(kind string, archive io.Reader, limits Limits, visit func(name 
 			}
 			continue
 		}
-		files++
-		if files > limits.MaxFiles {
-			return invalid("more than %d files", limits.MaxFiles)
-		}
 		if header.Size > limits.MaxFileBytes {
 			return invalid("%q exceeds %d bytes", header.Name, limits.MaxFileBytes)
 		}
-		total += header.Size
-		if total > limits.MaxTotalBytes {
-			return invalid("total size exceeds %d bytes", limits.MaxTotalBytes)
-		}
 		if err := visit(name, header, reader); err != nil {
+			if errors.Is(err, errTooLarge) {
+				return invalid("decompressed size exceeds %d bytes", limits.MaxTotalBytes)
+			}
 			return err
 		}
 	}
+	// Past the end-of-archive marker: the gzip trailer carries the
+	// checksum, verified only when the stream is read to EOF.
+	if _, err := io.Copy(io.Discard, bounded); err != nil {
+		if errors.Is(err, errTooLarge) {
+			return invalid("decompressed size exceeds %d bytes", limits.MaxTotalBytes)
+		}
+		return invalid("corrupt gzip stream: %v", err)
+	}
+	return nil
+}
+
+var errTooLarge = errors.New("too large")
+
+// boundedReader fails once more than remaining bytes have been read.
+type boundedReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (b *boundedReader) Read(p []byte) (int, error) {
+	if b.remaining < 0 {
+		return 0, errTooLarge
+	}
+	if int64(len(p)) > b.remaining+1 {
+		p = p[:b.remaining+1]
+	}
+	n, err := b.r.Read(p)
+	b.remaining -= int64(n)
+	if b.remaining < 0 {
+		return n, errTooLarge
+	}
+	return n, err
 }
 
 // safeName reduces an archive member name to a clean relative slash path
@@ -196,7 +252,9 @@ func safeName(name string) (string, bool) {
 }
 
 // commit places a staged (or copied) version under its artifact: one
-// rename, so the version's content is complete or absent, never partial.
+// rename, so the version's content is complete or absent, never partial,
+// with the directories synced so the placement is durable before the
+// row that names it commits.
 func (s *Service) commit(staged, artifactID string, number int) (string, error) {
 	if err := os.MkdirAll(s.artifactDir(artifactID), 0o700); err != nil {
 		return "", err
@@ -204,6 +262,11 @@ func (s *Service) commit(staged, artifactID string, number int) (string, error) 
 	target := s.versionDir(artifactID, number)
 	if err := os.Rename(staged, target); err != nil {
 		return "", err
+	}
+	for _, dir := range []string{s.artifactDir(artifactID), s.root} {
+		if err := syncDir(dir); err != nil {
+			return "", err
+		}
 	}
 	return target, nil
 }
@@ -216,7 +279,61 @@ func (s *Service) copyVersion(artifactID string, number int) (string, error) {
 		_ = os.RemoveAll(dir)
 		return "", fmt.Errorf("copying version %d: %w", number, err)
 	}
+	if err := syncTree(dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
 	return dir, nil
+}
+
+// syncTree syncs every file and directory under dir; syncDirs only the
+// directories (for content whose files were synced as written).
+func syncTree(dir string) error {
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		err = file.Sync()
+		_ = file.Close()
+		return err
+	}); err != nil {
+		return err
+	}
+	return syncDirs(dir)
+}
+
+func syncDirs(dir string) error {
+	var dirs []string
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return err
+	}); err != nil {
+		return err
+	}
+	// Children before parents: a directory's entry is durable once the
+	// directory it lives in is synced after it.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := syncDir(dirs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = handle.Sync()
+	_ = handle.Close()
+	return err
 }
 
 // reconcile makes the content directory match the store: stagings are
@@ -274,7 +391,7 @@ func (s *Service) reconcile(ctx context.Context) error {
 	}
 	for artifactID, numbers := range keys {
 		for _, number := range numbers {
-			if _, err := os.Stat(filepath.Join(s.versionDir(artifactID, number), buildDir, indexFile)); err != nil {
+			if _, err := os.Stat(filepath.Join(s.versionDir(artifactID, number), buildDir, IndexFile)); err != nil {
 				s.logger.Warn("artifact version content missing", "artifact", artifactID, "version", number, "error", err)
 			}
 		}

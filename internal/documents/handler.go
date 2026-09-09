@@ -16,8 +16,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -46,13 +45,13 @@ type Metadata struct {
 
 // Version is one history entry.
 type Version struct {
-	Number       int                `json:"number"`
-	Title        string             `json:"title"`
-	PublishedAt  time.Time          `json:"publishedAt"`
-	Platform     string             `json:"platform,omitempty"`
-	RestoredFrom int                `json:"restoredFrom,omitempty"`
-	Source       api.ArtifactSource `json:"source,omitzero"`
-	Path         string             `json:"path"`
+	Number       int                    `json:"number"`
+	Title        string                 `json:"title"`
+	PublishedAt  time.Time              `json:"publishedAt"`
+	Platform     string                 `json:"platform,omitempty"`
+	RestoredFrom int                    `json:"restoredFrom,omitempty"`
+	Provenance   api.ArtifactProvenance `json:"provenance,omitzero"`
+	Path         string                 `json:"path"`
 }
 
 // policy is the browser response policy on every response: only the
@@ -94,7 +93,7 @@ type handler struct {
 }
 
 // withPolicy sets the response policy headers on every response, error
-// pages included, and turns the mux's own text errors into ours.
+// pages and redirects included.
 func withPolicy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
@@ -151,7 +150,12 @@ func (h *handler) page(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) servePage(w http.ResponseWriter, r *http.Request, doc artifacts.Document) {
-	raw, err := os.ReadFile(path.Join(doc.BuildDir, "index.html"))
+	raw, err := fs.ReadFile(doc.Build, artifacts.IndexFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Deleted between resolution and the read: gone, not broken.
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
 		h.logger.Error("reading document page", "artifact", doc.Artifact.ID, "version", doc.Version.Number, "error", err)
 		http.Error(w, "document content missing", http.StatusInternalServerError)
@@ -180,11 +184,11 @@ func (h *handler) asset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if name == "index.html" {
+	if name == artifacts.IndexFile {
 		h.servePage(w, r, doc)
 		return
 	}
-	file, err := os.DirFS(doc.BuildDir).Open(name)
+	file, err := doc.Build.Open(name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -206,10 +210,14 @@ func (h *handler) asset(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, info.ModTime(), seeker)
 }
 
+// headEnd finds the closing head tag, whatever its case.
+var headEnd = regexp.MustCompile(`(?i)</head\s*>`)
+
 // Render produces the page served for doc from its build's index.html:
-// relative asset references pinned to the version's permanent path and
-// the metadata script injected at the end of <head>. Exported so the
-// platform's own tests can render exactly what the server would.
+// relative asset references (the "./" form the platform's build emits)
+// pinned to the version's permanent path, and the metadata script
+// injected at the end of <head>. Exported so the platform's own tests can
+// render exactly what the server would.
 func Render(index []byte, doc artifacts.Document) (string, error) {
 	metadata := Metadata{
 		ArtifactID:     doc.Artifact.ID,
@@ -230,11 +238,12 @@ func Render(index []byte, doc artifacts.Document) (string, error) {
 	}
 	base := artifacts.ReaderPath(doc.Artifact.ID, doc.Version.Number)
 	page := string(index)
-	page = strings.ReplaceAll(page, `src="./`, `src="`+base)
-	page = strings.ReplaceAll(page, `href="./`, `href="`+base)
+	for _, attribute := range []string{`src="./`, `href="./`, `src='./`, `href='./`} {
+		page = strings.ReplaceAll(page, attribute, attribute[:len(attribute)-2]+base)
+	}
 	script := `<script id="` + MetadataID + `" type="application/json">` + string(encoded) + `</script>`
-	if at := strings.Index(strings.ToLower(page), "</head>"); at >= 0 {
-		return page[:at] + script + page[at:], nil
+	if at := headEnd.FindStringIndex(page); at != nil {
+		return page[:at[0]] + script + page[at[0]:], nil
 	}
 	return script + page, nil
 }
@@ -242,6 +251,6 @@ func Render(index []byte, doc artifacts.Document) (string, error) {
 func version(v api.ArtifactVersion) Version {
 	return Version{
 		Number: v.Number, Title: v.Title, PublishedAt: v.PublishedAt, Platform: v.Platform,
-		RestoredFrom: v.RestoredFrom, Source: v.Source, Path: artifacts.ReaderPath(v.ArtifactID, v.Number),
+		RestoredFrom: v.RestoredFrom, Provenance: v.Provenance, Path: artifacts.ReaderPath(v.ArtifactID, v.Number),
 	}
 }

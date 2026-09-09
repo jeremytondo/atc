@@ -91,11 +91,7 @@ func (a *Artifacts) Create(ctx context.Context, record ArtifactRecord, version A
 	if n == 0 {
 		return false, nil
 	}
-	params, err := insertVersionParams(version)
-	if err != nil {
-		return false, err
-	}
-	if _, err := queries.InsertArtifactVersion(ctx, params); err != nil {
+	if err := insertVersion(ctx, queries, version); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
@@ -128,11 +124,7 @@ func (a *Artifacts) AppendVersion(ctx context.Context, version ArtifactVersionRe
 	if int(row.CurrentVersion) != base {
 		return &StaleBaseError{Current: int(row.CurrentVersion)}
 	}
-	params, err := insertVersionParams(version)
-	if err != nil {
-		return err
-	}
-	if _, err := queries.InsertArtifactVersion(ctx, params); err != nil {
+	if err := insertVersion(ctx, queries, version); err != nil {
 		return err
 	}
 	if _, err := queries.RetitleArtifact(ctx, gen.RetitleArtifactParams{
@@ -159,27 +151,17 @@ func (a *Artifacts) Get(ctx context.Context, id string) (ArtifactRecord, bool, e
 // List returns every artifact in creation order, or only projectID's
 // when it is set.
 func (a *Artifacts) List(ctx context.Context, projectID string) ([]ArtifactRecord, error) {
-	var rows []gen.GetArtifactRow
-	if projectID == "" {
-		all, err := a.reads.ListArtifacts(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range all {
-			rows = append(rows, gen.GetArtifactRow(row))
-		}
-	} else {
-		some, err := a.reads.ListArtifactsByProject(ctx, nullString(projectID))
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range some {
-			rows = append(rows, gen.GetArtifactRow(row))
-		}
+	var filter any
+	if projectID != "" {
+		filter = projectID
+	}
+	rows, err := a.reads.ListArtifacts(ctx, filter)
+	if err != nil {
+		return nil, err
 	}
 	records := make([]ArtifactRecord, 0, len(rows))
 	for _, row := range rows {
-		record, err := artifactFrom(row)
+		record, err := artifactFrom(gen.GetArtifactRow(row))
 		if err != nil {
 			return nil, err
 		}
@@ -189,33 +171,24 @@ func (a *Artifacts) List(ctx context.Context, projectID string) ([]ArtifactRecor
 }
 
 // Update writes the title and project association and returns the
-// committed artifact; false means no such artifact. A project that does
-// not exist surfaces as ErrForeignKeyViolation.
+// committed artifact in the same statement (RETURNING); false means no
+// such artifact. A project that does not exist surfaces as
+// ErrForeignKeyViolation.
 func (a *Artifacts) Update(ctx context.Context, id, title, projectID string, at time.Time) (ArtifactRecord, bool, error) {
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ArtifactRecord{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	queries := gen.New(tx)
-	n, err := queries.UpdateArtifact(ctx, gen.UpdateArtifactParams{
+	row, err := a.writes.UpdateArtifact(ctx, gen.UpdateArtifactParams{
 		Title: title, ProjectID: nullString(projectID), UpdatedAt: formatTime(at), ID: id,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArtifactRecord{}, false, nil
+	}
 	if err != nil {
 		return ArtifactRecord{}, false, foreignKeyError(err)
 	}
-	if n == 0 {
-		return ArtifactRecord{}, false, nil
-	}
-	row, err := queries.GetArtifact(ctx, id)
-	if err != nil {
-		return ArtifactRecord{}, false, err
-	}
-	record, err := artifactFrom(row)
-	if err != nil {
-		return ArtifactRecord{}, false, err
-	}
-	return record, true, tx.Commit()
+	// sqlc names the derived column positionally in RETURNING.
+	record, err := artifactFrom(gen.GetArtifactRow{
+		ID: row.ID, Title: row.Title, ProjectID: row.ProjectID, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CurrentVersion: row.Column6,
+	})
+	return record, err == nil, err
 }
 
 // Delete removes the artifact and, by the schema, every version row;
@@ -238,18 +211,24 @@ func (a *Artifacts) Version(ctx context.Context, artifactID string, number int) 
 	return record, err == nil, err
 }
 
-// VersionByPublication finds the version a publication id committed;
-// false means the publication never completed.
-func (a *Artifacts) VersionByPublication(ctx context.Context, publicationID string) (ArtifactVersionRecord, bool, error) {
+// Publication reports what a publication id committed: the version when
+// it still exists, deleted when its artifact has since been removed, and
+// neither when the publication never completed.
+func (a *Artifacts) Publication(ctx context.Context, publicationID string) (version ArtifactVersionRecord, found, deleted bool, err error) {
 	row, err := a.reads.GetArtifactVersionByPublication(ctx, publicationID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ArtifactVersionRecord{}, false, nil
+	if err == nil {
+		version, err = versionFrom(row)
+		return version, err == nil, false, err
 	}
-	if err != nil {
-		return ArtifactVersionRecord{}, false, err
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ArtifactVersionRecord{}, false, false, err
 	}
-	record, err := versionFrom(row)
-	return record, err == nil, err
+	if _, err := a.reads.GetArtifactPublication(ctx, publicationID); err == nil {
+		return ArtifactVersionRecord{}, false, true, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return ArtifactVersionRecord{}, false, false, err
+	}
+	return ArtifactVersionRecord{}, false, false, nil
 }
 
 // Versions returns an artifact's versions in number order; empty for an
@@ -284,16 +263,19 @@ func (a *Artifacts) VersionKeys(ctx context.Context) (map[string][]int, error) {
 	return keys, nil
 }
 
-func insertVersionParams(v ArtifactVersionRecord) (gen.InsertArtifactVersionParams, error) {
+// insertVersion writes the version row and its publication record, which
+// outlives the version so a repeated publication id is recognized even
+// after the artifact is deleted.
+func insertVersion(ctx context.Context, queries *gen.Queries, v ArtifactVersionRecord) error {
 	links := v.Links
 	if links == nil {
 		links = []string{}
 	}
 	encoded, err := json.Marshal(links)
 	if err != nil {
-		return gen.InsertArtifactVersionParams{}, err
+		return err
 	}
-	return gen.InsertArtifactVersionParams{
+	if _, err := queries.InsertArtifactVersion(ctx, gen.InsertArtifactVersionParams{
 		ArtifactID:    v.ArtifactID,
 		Number:        int64(v.Number),
 		Title:         v.Title,
@@ -304,7 +286,13 @@ func insertVersionParams(v ArtifactVersionRecord) (gen.InsertArtifactVersionPara
 		ThreadID:      nullString(v.Thread),
 		Revision:      nullString(v.Revision),
 		Links:         string(encoded),
-	}, nil
+	}); err != nil {
+		return err
+	}
+	_, err = queries.InsertArtifactPublication(ctx, gen.InsertArtifactPublicationParams{
+		PublicationID: v.PublicationID, ArtifactID: v.ArtifactID, Number: int64(v.Number),
+	})
+	return err
 }
 
 func artifactFrom(row gen.GetArtifactRow) (ArtifactRecord, error) {

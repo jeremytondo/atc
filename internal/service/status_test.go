@@ -312,6 +312,72 @@ func TestRenderWebhooks(t *testing.T) {
 	}
 }
 
+func TestRenderDocuments(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status api.DocumentOrigin
+		err    error
+		want   []string
+	}{
+		"no report is silent": {},
+		"ready locally": {
+			status: api.DocumentOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332", Tailnet: api.DocumentOriginTailnet{State: api.TailnetDisabled}},
+			want:   []string{"documents: http://127.0.0.1:7332"},
+		},
+		"ready with tailnet": {
+			status: api.DocumentOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332",
+				Tailnet: api.DocumentOriginTailnet{State: api.TailnetReady, URL: "https://machine.tail1234.ts.net:7332"}},
+			want: []string{"documents: http://127.0.0.1:7332", "documents (tailnet): https://machine.tail1234.ts.net:7332"},
+		},
+		"tailnet converging": {
+			status: api.DocumentOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332",
+				Tailnet: api.DocumentOriginTailnet{State: api.TailnetStarting, URL: "https://machine.tail1234.ts.net:7332", Reason: "tailscale is logged out", Action: "run:\n  tailscale up"}},
+			want: []string{"documents: http://127.0.0.1:7332",
+				"documents (tailnet): pending at https://machine.tail1234.ts.net:7332 (tailscale is logged out)",
+				"documents action: run: tailscale up"},
+		},
+		"tailnet without node name": {
+			status: api.DocumentOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332", Tailnet: api.DocumentOriginTailnet{State: api.TailnetStarting, Reason: "tailscaled is not running"}},
+			want:   []string{"documents: http://127.0.0.1:7332", "documents (tailnet): unavailable (tailscaled is not running)"},
+		},
+		"listener unavailable": {
+			status: api.DocumentOrigin{State: api.OriginUnavailable, URL: "http://127.0.0.1:7332", Reason: "cannot bind the document listener: address already in use"},
+			want:   []string{"documents: unavailable (cannot bind the document listener: address already in use); publishing still works, and the listener is retried"},
+		},
+		"starting": {
+			status: api.DocumentOrigin{State: api.OriginStarting, Reason: "starting"},
+			want:   []string{"documents: starting (starting)"},
+		},
+		"unreachable report": {
+			err:  errors.New("connection refused"),
+			want: []string{"documents: unknown (connection refused)"},
+		},
+	} {
+		if diff := cmp.Diff(tc.want, renderDocuments(tc.status, tc.err)); diff != "" {
+			t.Errorf("%s: renderDocuments mismatch (-want +got):\n%s", name, diff)
+		}
+	}
+}
+
+// A healthy server's document origin and webhook reports ride along in
+// the status output, documents first.
+func TestRenderStatusIncludesDocumentsReport(t *testing.T) {
+	s := healthyInfo()
+	s.documentsStatus = api.DocumentOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332"}
+	s.webhookStatus = api.Webhooks{State: api.WebhooksReady, URL: "https://machine.tail1234.ts.net"}
+	got, _ := renderStatus(s)
+	want := "atc.server: running and healthy\n" +
+		"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+		"  client: v1.2.3\n" +
+		"  server: v1.2.3\n" +
+		"  api: http://127.0.0.1:7331\n" +
+		"  documents: http://127.0.0.1:7332\n" +
+		"  webhooks: https://machine.tail1234.ts.net (0 pending)\n" +
+		"  token: `atc server token` prints the bearer token remote clients use\n"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("renderStatus mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // A healthy server's webhook report rides along in the status output.
 func TestRenderStatusIncludesWebhookReport(t *testing.T) {
 	s := healthyInfo()

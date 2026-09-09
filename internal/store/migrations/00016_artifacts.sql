@@ -44,3 +44,12 @@ CREATE TABLE artifact_versions (
     links TEXT NOT NULL,
     PRIMARY KEY (artifact_id, number)
 ) STRICT;
+
+-- Every publication id ever committed, surviving the artifact's deletion:
+-- a repeat of a publication whose artifact was since deleted must fail
+-- rather than create anything. No reference — the artifact may be gone.
+CREATE TABLE artifact_publications (
+    publication_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL,
+    number INTEGER NOT NULL
+) STRICT;

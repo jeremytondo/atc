@@ -68,6 +68,7 @@ const (
 	CodeArtifactVersionNotFound   = "artifact_version_not_found"
 	CodeArtifactBaseStale         = "artifact_base_stale"
 	CodeArtifactPackageInvalid    = "artifact_package_invalid"
+	CodeArtifactDeleted           = "artifact_deleted"
 	CodeIntegrationNotConnected   = "integration_not_connected"
 	CodePersistenceFailed         = "persistence_failed"
 	CodeCompensationFailed        = "compensation_failed"

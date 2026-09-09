@@ -54,7 +54,7 @@ type Service struct {
 	logger  *slog.Logger
 
 	mu     sync.Mutex
-	status api.Documents
+	status api.DocumentOrigin
 }
 
 // New builds the service; Run serves it.
@@ -66,11 +66,11 @@ func New(opts Options) *Service {
 		opts.listen = net.Listen
 	}
 	s := &Service{opts: opts, handler: Handler(opts.Resolver, opts.Logger), logger: opts.Logger}
-	s.status = api.Documents{State: api.DocumentsStarting, Reason: "starting", URL: s.localURL(opts.Port)}
+	s.status = api.DocumentOrigin{State: api.OriginStarting, Reason: "starting", URL: s.localURL(opts.Port)}
 	if opts.TailscaleExecutable != "" {
-		s.status.Tailnet = api.DocumentsTailnet{State: api.TailnetStarting, Reason: "starting"}
+		s.status.Tailnet = api.DocumentOriginTailnet{State: api.TailnetStarting, Reason: "starting"}
 	} else {
-		s.status.Tailnet = api.DocumentsTailnet{State: api.TailnetDisabled}
+		s.status.Tailnet = api.DocumentOriginTailnet{State: api.TailnetDisabled}
 	}
 	return s
 }
@@ -85,14 +85,14 @@ func (s *Service) Run(ctx context.Context) {
 		started := time.Now()
 		err := s.serve(ctx)
 		if ctx.Err() != nil {
-			s.set(func(d *api.Documents) {
-				d.State, d.Reason = api.DocumentsStarting, "stopped"
+			s.set(func(d *api.DocumentOrigin) {
+				d.State, d.Reason = api.OriginStarting, "stopped"
 			})
 			return
 		}
 		s.logger.Warn("document origin failed", "error", err)
-		s.set(func(d *api.Documents) {
-			d.State, d.Reason = api.DocumentsUnavailable, err.Error()
+		s.set(func(d *api.DocumentOrigin) {
+			d.State, d.Reason = api.OriginUnavailable, err.Error()
 		})
 		if time.Since(started) > healthyRunReset {
 			delay = bindRetryBase
@@ -114,8 +114,8 @@ func (s *Service) serve(ctx context.Context) error {
 		return fmt.Errorf("cannot bind the document listener: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	s.set(func(d *api.Documents) {
-		d.State, d.Reason, d.URL = api.DocumentsReady, "", s.localURL(port)
+	s.set(func(d *api.DocumentOrigin) {
+		d.State, d.Reason, d.URL = api.OriginReady, "", s.localURL(port)
 	})
 	s.logger.Info("document origin serving", "addr", listener.Addr().String())
 
@@ -147,16 +147,16 @@ func (s *Service) serve(ctx context.Context) error {
 
 // observe maps exposure reports onto the tailnet status.
 func (s *Service) observe(report tailscale.Report) {
-	s.set(func(d *api.Documents) {
+	s.set(func(d *api.DocumentOrigin) {
 		if report.Serving {
-			d.Tailnet = api.DocumentsTailnet{State: api.TailnetReady, URL: report.URL}
+			d.Tailnet = api.DocumentOriginTailnet{State: api.TailnetReady, URL: report.URL}
 			return
 		}
-		d.Tailnet = api.DocumentsTailnet{State: api.TailnetStarting, URL: report.URL, Reason: report.Problem, Action: report.Action}
+		d.Tailnet = api.DocumentOriginTailnet{State: api.TailnetStarting, URL: report.URL, Reason: report.Problem, Action: report.Action}
 	})
 }
 
-func (s *Service) set(update func(*api.Documents)) {
+func (s *Service) set(update func(*api.DocumentOrigin)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	before := s.status
@@ -168,7 +168,7 @@ func (s *Service) set(update func(*api.Documents)) {
 }
 
 // Status is the origin's current report.
-func (s *Service) Status(context.Context) api.Documents {
+func (s *Service) Status(context.Context) api.DocumentOrigin {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status

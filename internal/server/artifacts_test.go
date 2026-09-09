@@ -84,7 +84,7 @@ func TestArtifactPublicationOverTheWire(t *testing.T) {
 
 	first, err := client.PublishArtifact(ctx, api.ArtifactPublishParams{
 		Title: "Design", PublicationID: "pub-1", Platform: "atc test",
-		Source: api.ArtifactSource{Thread: "thrd-aaaaa", Revision: "abc", Links: []string{"https://linear.app/x"}},
+		Provenance: api.ArtifactProvenance{ThreadID: "thrd-aaaaa", Revision: "abc", Links: []string{"https://linear.app/x"}},
 	}, bytes.NewReader(build1), bytes.NewReader(source1))
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestArtifactPublicationOverTheWire(t *testing.T) {
 	if first.Artifact.CurrentVersion != 1 || first.Version.Number != 1 || first.Artifact.URL != "http://127.0.0.1:7332/a/"+id+"/" || first.Version.URL != "http://127.0.0.1:7332/a/"+id+"/v/1/" {
 		t.Errorf("first = %+v", first)
 	}
-	if first.Version.Source.Thread != "thrd-aaaaa" || first.Version.Platform != "atc test" {
+	if first.Version.Provenance.ThreadID != "thrd-aaaaa" || first.Version.Platform != "atc test" {
 		t.Errorf("provenance = %+v", first.Version)
 	}
 	if got, err := os.ReadFile(filepath.Join(f.artifactRoot, id, "1", "build", "assets", "a.js")); err != nil || string(got) != "1" {
@@ -134,7 +134,7 @@ func TestArtifactPublicationOverTheWire(t *testing.T) {
 		t.Errorf("missing source: %d %s", rec.Code, rec.Body)
 	}
 	rec = f.multipartRequest(t, "/v1/artifacts", api.ArtifactPublishParams{PublicationID: "pub-6"}, build1, source1)
-	if rec.Code != http.StatusUnprocessableEntity {
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"validation_failed"`) {
 		t.Errorf("missing title: %d %s", rec.Code, rec.Body)
 	}
 	rec = f.multipartRequest(t, "/v1/artifacts/artf-nope1/versions", api.ArtifactPublishParams{Title: "x", PublicationID: "pub-7"}, build2, source1)
@@ -147,11 +147,11 @@ func TestArtifactPublicationOverTheWire(t *testing.T) {
 
 	// Restore version 1 as version 3 via the client, then read history,
 	// one version, and the source download.
-	restored, err := client.PublishArtifactVersion(ctx, id, api.ArtifactPublishParams{Title: "Design", PublicationID: "pub-8", BaseVersion: 2, RestoreFrom: 1}, nil, nil)
+	restored, err := client.PublishArtifactVersion(ctx, id, api.ArtifactPublishParams{PublicationID: "pub-8", BaseVersion: 2, RestoreFrom: 1}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Version.Number != 3 || restored.Version.RestoredFrom != 1 || restored.Version.Platform != "atc test" {
+	if restored.Version.Number != 3 || restored.Version.RestoredFrom != 1 || restored.Version.Platform != "atc test" || restored.Version.Title != "Design" || restored.Version.Provenance.ThreadID != "thrd-aaaaa" {
 		t.Errorf("restored = %+v", restored.Version)
 	}
 	versions, err := client.ArtifactVersions(ctx, id)
@@ -220,6 +220,9 @@ func TestArtifactPublicationOverTheWire(t *testing.T) {
 	if err := client.DeleteArtifact(ctx, id); !isProblem(err, http.StatusNotFound, api.CodeArtifactNotFound) {
 		t.Errorf("second delete = %v", err)
 	}
+	if rec := f.multipartRequest(t, "/v1/artifacts", api.ArtifactPublishParams{Title: "Design", PublicationID: "pub-1"}, build1, source1); rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), `"code":"artifact_deleted"`) {
+		t.Errorf("replay after delete: %d %s", rec.Code, rec.Body)
+	}
 	if _, err := os.Stat(filepath.Join(f.artifactRoot, id)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("content after delete: %v", err)
 	}
@@ -231,7 +234,7 @@ func TestArtifactPublicationOverTheWire(t *testing.T) {
 func TestArtifactLinksFollowTailnetExposure(t *testing.T) {
 	f := newFixture(t)
 	client := f.client(t)
-	f.documents.status.Tailnet = api.DocumentsTailnet{State: api.TailnetReady, URL: "https://node.ts.net:7332"}
+	f.origin.status.Tailnet = api.DocumentOriginTailnet{State: api.TailnetReady, URL: "https://node.ts.net:7332"}
 	published, err := client.PublishArtifact(context.Background(), api.ArtifactPublishParams{Title: "t", PublicationID: "pub-1"},
 		bytes.NewReader(tarGz(t, map[string]string{"index.html": "x"})), bytes.NewReader(tarGz(t, map[string]string{"a": "b"})))
 	if err != nil {
@@ -241,9 +244,12 @@ func TestArtifactLinksFollowTailnetExposure(t *testing.T) {
 	if published.Artifact.TailnetURL != "https://node.ts.net:7332/a/"+id+"/" || published.Version.TailnetURL != "https://node.ts.net:7332/a/"+id+"/v/1/" {
 		t.Errorf("tailnet links = %q, %q", published.Artifact.TailnetURL, published.Version.TailnetURL)
 	}
-	status, err := client.Documents(context.Background())
-	if err != nil || status.State != api.DocumentsReady || status.Tailnet.URL != "https://node.ts.net:7332" {
-		t.Errorf("documents status = %+v, %v", status, err)
+	status, err := client.DocumentOrigin(context.Background())
+	if err != nil || status.State != api.OriginReady || status.Tailnet.URL != "https://node.ts.net:7332" {
+		t.Errorf("document origin status = %+v, %v", status, err)
+	}
+	if list, err := client.Artifacts(context.Background(), ""); err != nil || len(list) != 1 || list[0].TailnetURL != published.Artifact.TailnetURL {
+		t.Errorf("listed links = %+v, %v", list, err)
 	}
 }
 
@@ -264,7 +270,7 @@ func TestArtifactsInOpenAPI(t *testing.T) {
 	}
 	for path, method := range map[string]string{
 		"/v1/artifacts": "post", "/v1/artifacts/{id}": "patch", "/v1/artifacts/{id}/versions": "post",
-		"/v1/artifacts/{id}/versions/{number}": "get", "/v1/artifacts/{id}/versions/{number}/source": "get", "/v1/documents": "get",
+		"/v1/artifacts/{id}/versions/{number}": "get", "/v1/artifacts/{id}/versions/{number}/source": "get", "/v1/document-origin": "get",
 	} {
 		if _, ok := doc.Paths[path][method]; !ok {
 			t.Errorf("openapi lacks %s %s", method, path)
@@ -273,7 +279,7 @@ func TestArtifactsInOpenAPI(t *testing.T) {
 	if raw := string(doc.Paths["/v1/artifacts"]["post"]); !strings.Contains(raw, "multipart/form-data") {
 		t.Errorf("create-artifact request body: %s", raw)
 	}
-	for _, schema := range []string{"ArtifactPublication", "ArtifactVersionList", "Documents"} {
+	for _, schema := range []string{"ArtifactPublication", "ArtifactVersionList", "DocumentOrigin"} {
 		if _, ok := doc.Components.Schemas[schema]; !ok {
 			t.Errorf("openapi lacks schema %s", schema)
 		}

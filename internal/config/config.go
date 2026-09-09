@@ -174,7 +174,7 @@ func (c Config) ValidateExposure(tailnet, webhooks bool) error {
 	if tailnet && webhooks && c.WebhooksPort == c.Port {
 		return fmt.Errorf("webhooks_port and port are both %d: the public webhook endpoint and the private tailnet API cannot share a Tailscale port", c.Port)
 	}
-	if tailnet && webhooks && c.WebhooksPort == c.DocumentsPort {
+	if tailnet && webhooks && c.DocumentsPort != 0 && c.WebhooksPort == c.DocumentsPort {
 		return fmt.Errorf("webhooks_port and documents_port are both %d: the public webhook endpoint and the private document origin cannot share a Tailscale port", c.DocumentsPort)
 	}
 	return nil

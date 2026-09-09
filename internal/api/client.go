@@ -372,11 +372,11 @@ func (c *Client) ArtifactSource(ctx context.Context, id string, number int) (io.
 	return resp.Body, nil
 }
 
-// Documents reports the document origin: readiness, local base URL, and
-// tailnet exposure.
-func (c *Client) Documents(ctx context.Context) (Documents, error) {
-	var status Documents
-	err := c.do(ctx, http.MethodGet, "/v1/documents", nil, &status)
+// DocumentOrigin reports the document origin: readiness, local base URL,
+// and tailnet exposure.
+func (c *Client) DocumentOrigin(ctx context.Context) (DocumentOrigin, error) {
+	var status DocumentOrigin
+	err := c.do(ctx, http.MethodGet, "/v1/document-origin", nil, &status)
 	return status, err
 }
 

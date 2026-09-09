@@ -67,14 +67,14 @@ func (f *fakeResolver) Document(_ context.Context, id string, number int) (artif
 	}
 	at := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	versions := []api.ArtifactVersion{
-		{ArtifactID: id, Number: 1, Title: "One", PublishedAt: at, Platform: "atc v1", Source: api.ArtifactSource{Thread: "thrd-aaaaa"}},
+		{ArtifactID: id, Number: 1, Title: "One", PublishedAt: at, Platform: "atc v1", Provenance: api.ArtifactProvenance{ThreadID: "thrd-aaaaa"}},
 		{ArtifactID: id, Number: 2, Title: "Two", PublishedAt: at.Add(time.Hour), RestoredFrom: 1},
 	}
 	return artifacts.Document{
 		Artifact: api.Artifact{ID: id, Title: f.title, CurrentVersion: 2},
 		Version:  versions[number-1],
 		Versions: versions,
-		BuildDir: filepath.Join(f.root, map[int]string{1: "1", 2: "2"}[number]),
+		Build:    os.DirFS(filepath.Join(f.root, map[int]string{1: "1", 2: "2"}[number])),
 	}, nil
 }
 
@@ -120,7 +120,7 @@ func TestReaderServesVersionsWithPinnedAssets(t *testing.T) {
 		ArtifactID: "artf-aaaaa", Title: "Renamed", CurrentVersion: 2, LatestPath: "/a/artf-aaaaa/", Latest: true,
 		Version: Version{Number: 2, Title: "Two", PublishedAt: time.Date(2026, 9, 9, 13, 0, 0, 0, time.UTC), RestoredFrom: 1, Path: "/a/artf-aaaaa/v/2/"},
 		Versions: []Version{
-			{Number: 1, Title: "One", PublishedAt: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC), Platform: "atc v1", Source: api.ArtifactSource{Thread: "thrd-aaaaa"}, Path: "/a/artf-aaaaa/v/1/"},
+			{Number: 1, Title: "One", PublishedAt: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC), Platform: "atc v1", Provenance: api.ArtifactProvenance{ThreadID: "thrd-aaaaa"}, Path: "/a/artf-aaaaa/v/1/"},
 			{Number: 2, Title: "Two", PublishedAt: time.Date(2026, 9, 9, 13, 0, 0, 0, time.UTC), RestoredFrom: 1, Path: "/a/artf-aaaaa/v/2/"},
 		},
 	}
@@ -213,6 +213,14 @@ func TestRenderEscapesAndFallsBack(t *testing.T) {
 	if m := metadata(t, page); m.Title != `</script><script>alert(1)</script>` {
 		t.Errorf("title round trip = %q", m.Title)
 	}
+	// Multibyte text before the head end and single-quoted references.
+	page, err = Render([]byte("<html><head><title>K\u212a ünïcode</title><script src='./a.js'></script></HEAD><body></body></html>"), doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page, `<script src='/a/artf-aaaaa/v/1/a.js'></script><script id="atc-document"`) || !strings.Contains(page, "ünïcode") {
+		t.Errorf("page:\n%s", page)
+	}
 }
 
 // The listener's failure is a reported state, retried, never a crash;
@@ -232,30 +240,30 @@ func TestServiceReportsBindFailureAndRecovers(t *testing.T) {
 			return net.Listen(network, address)
 		},
 	})
-	if status := s.Status(context.Background()); status.State != api.DocumentsStarting || status.URL != "http://127.0.0.1:0" || status.Tailnet.State != api.TailnetDisabled {
+	if status := s.Status(context.Background()); status.State != api.OriginStarting || status.URL != "http://127.0.0.1:0" || status.Tailnet.State != api.TailnetDisabled {
 		t.Fatalf("initial status = %+v", status)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { s.Run(ctx); close(done) }()
 
-	var status api.Documents
+	var status api.DocumentOrigin
 	sawUnavailable := false
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		status = s.Status(ctx)
-		if status.State == api.DocumentsUnavailable {
+		if status.State == api.OriginUnavailable {
 			sawUnavailable = true
 			if !strings.Contains(status.Reason, "address already in use") {
 				t.Errorf("unavailable reason = %q", status.Reason)
 			}
 		}
-		if status.State == api.DocumentsReady {
+		if status.State == api.OriginReady {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if status.State != api.DocumentsReady || !sawUnavailable {
+	if status.State != api.OriginReady || !sawUnavailable {
 		t.Fatalf("status = %+v, sawUnavailable=%v", status, sawUnavailable)
 	}
 	local, tailnet := s.Bases()
@@ -278,7 +286,7 @@ func TestServiceReportsBindFailureAndRecovers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancel")
 	}
-	if status := s.Status(context.Background()); status.State != api.DocumentsStarting || status.Reason != "stopped" {
+	if status := s.Status(context.Background()); status.State != api.OriginStarting || status.Reason != "stopped" {
 		t.Errorf("status after stop = %+v", status)
 	}
 	if _, err := http.Get(status.URL + "/"); err == nil {
@@ -295,7 +303,7 @@ func TestTailnetObservation(t *testing.T) {
 	}
 	s.observe(tailscale.Report{URL: "https://node.ts.net:7332", Problem: "tailscale is logged out", Action: "run tailscale up"})
 	status := s.Status(context.Background())
-	want := api.DocumentsTailnet{State: api.TailnetStarting, URL: "https://node.ts.net:7332", Reason: "tailscale is logged out", Action: "run tailscale up"}
+	want := api.DocumentOriginTailnet{State: api.TailnetStarting, URL: "https://node.ts.net:7332", Reason: "tailscale is logged out", Action: "run tailscale up"}
 	if diff := cmp.Diff(want, status.Tailnet); diff != "" {
 		t.Errorf("tailnet mismatch (-want +got):\n%s", diff)
 	}

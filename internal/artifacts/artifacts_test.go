@@ -6,7 +6,9 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,7 +30,6 @@ type entry struct {
 	body    string
 	typ     byte // 0 means regular file
 	link    string
-	mode    int64
 	rawSize int64 // when set, the header lies about the size
 }
 
@@ -84,7 +85,6 @@ type fixture struct {
 	root    string
 	clock   time.Time
 	mu      sync.Mutex
-	tailnet string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -106,12 +106,7 @@ func (f *fixture) open() *Service {
 	f.t.Helper()
 	service, err := New(context.Background(), Options{
 		Repository: f.store.Artifacts(), Hub: f.hub, Root: f.root,
-		Bases: func() (string, string) {
-			f.mu.Lock()
-			defer f.mu.Unlock()
-			return "http://127.0.0.1:7332", f.tailnet
-		},
-		Limits: Limits{MaxFiles: 8, MaxFileBytes: 4096, MaxTotalBytes: 8192},
+		Limits: Limits{MaxEntries: 12, MaxFileBytes: 4096, MaxTotalBytes: 16384},
 		Now: func() time.Time {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -126,6 +121,7 @@ func (f *fixture) open() *Service {
 }
 
 func (f *fixture) publish(artifactID string, params api.ArtifactPublishParams, build, source []byte) (api.ArtifactPublication, bool, error) {
+	f.t.Helper()
 	var b, s io.Reader
 	if build != nil {
 		b = bytes.NewReader(build)
@@ -185,7 +181,7 @@ func TestPublishLifecycle(t *testing.T) {
 
 	first := f.mustPublish("", api.ArtifactPublishParams{
 		Title: "  Design  ", PublicationID: "pub-1", Platform: "atc v1",
-		Source: api.ArtifactSource{Thread: "thrd-aaaaa", Revision: "abc", Links: []string{"https://linear.app/x"}},
+		Provenance: api.ArtifactProvenance{ThreadID: "thrd-aaaaa", Revision: "abc", Links: []string{"https://linear.app/x"}},
 	}, build("<h1>one</h1>"), source("one"))
 	id := first.Artifact.ID
 	if !strings.HasPrefix(id, "artf-") || len(id) != 10 {
@@ -193,12 +189,10 @@ func TestPublishLifecycle(t *testing.T) {
 	}
 	wantArtifact := api.Artifact{
 		ID: id, Title: "Design", CurrentVersion: 1, CreatedAt: first.Artifact.CreatedAt, UpdatedAt: first.Artifact.CreatedAt,
-		URL: "http://127.0.0.1:7332/a/" + id + "/",
 	}
 	wantVersion := api.ArtifactVersion{
 		ArtifactID: id, Number: 1, Title: "Design", Platform: "atc v1", PublishedAt: first.Artifact.CreatedAt,
-		Source: api.ArtifactSource{Thread: "thrd-aaaaa", Revision: "abc", Links: []string{"https://linear.app/x"}},
-		URL:    "http://127.0.0.1:7332/a/" + id + "/v/1/",
+		Provenance: api.ArtifactProvenance{ThreadID: "thrd-aaaaa", Revision: "abc", Links: []string{"https://linear.app/x"}},
 	}
 	if diff := cmp.Diff(api.ArtifactPublication{Artifact: wantArtifact, Version: wantVersion}, first); diff != "" {
 		t.Errorf("first publication mismatch (-want +got):\n%s", diff)
@@ -209,12 +203,16 @@ func TestPublishLifecycle(t *testing.T) {
 	if got := readFile(t, filepath.Join(f.root, id, "1", "build", "assets", "app.js")); got != "console.log(1)" {
 		t.Errorf("stored asset = %q", got)
 	}
-	sourcePath, err := f.service.SourcePath(ctx, id, 1)
+	stored, err := f.service.OpenSource(ctx, id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := readFile(t, sourcePath); got != string(source("one")) {
+	if got, _ := io.ReadAll(stored); string(got) != string(source("one")) {
 		t.Error("stored source differs from the upload")
+	}
+	_ = stored.Close()
+	if _, err := f.service.OpenSource(ctx, id, 2); !errors.Is(err, ErrVersionNotFound) {
+		t.Errorf("OpenSource(2) = %v, want ErrVersionNotFound", err)
 	}
 
 	// A repeat of the same publication replays the result.
@@ -226,17 +224,11 @@ func TestPublishLifecycle(t *testing.T) {
 		t.Errorf("replay mismatch (-want +got):\n%s", diff)
 	}
 
-	// A correction on the current base appends version 2; the reader
-	// links point at it, the old link and title stay.
-	f.mu.Lock()
-	f.tailnet = "https://node.ts.net:7332"
-	f.mu.Unlock()
+	// A correction on the current base appends version 2 and sets the
+	// current title; the old version keeps its own.
 	second := f.mustPublish(id, api.ArtifactPublishParams{Title: "Design v2", PublicationID: "pub-2", BaseVersion: 1}, build("<h1>two</h1>"), source("two"))
 	if second.Artifact.CurrentVersion != 2 || second.Version.Number != 2 || second.Artifact.Title != "Design v2" {
 		t.Errorf("second publication = %+v", second)
-	}
-	if second.Artifact.TailnetURL != "https://node.ts.net:7332/a/"+id+"/" || second.Version.TailnetURL != "https://node.ts.net:7332/a/"+id+"/v/2/" {
-		t.Errorf("tailnet links = %q, %q", second.Artifact.TailnetURL, second.Version.TailnetURL)
 	}
 	if !second.Artifact.UpdatedAt.After(first.Artifact.UpdatedAt) {
 		t.Errorf("updatedAt not advanced: %v -> %v", first.Artifact.UpdatedAt, second.Artifact.UpdatedAt)
@@ -267,10 +259,14 @@ func TestPublishLifecycle(t *testing.T) {
 		t.Errorf("foreign publication id = %v, want ErrPublicationTaken", err)
 	}
 
-	// Restoring version 1 republishes its frozen snapshots as version 3.
-	third := f.mustPublish(id, api.ArtifactPublishParams{Title: "Design again", PublicationID: "pub-4", BaseVersion: 2, RestoreFrom: 1}, nil, nil)
-	if third.Version.Number != 3 || third.Version.RestoredFrom != 1 || third.Version.Platform != "atc v1" || third.Version.Title != "Design again" {
-		t.Errorf("restoration = %+v", third.Version)
+	// Restoring version 1 republishes its frozen snapshots as version 3,
+	// with its provenance, platform, and (absent a new one) its title.
+	third := f.mustPublish(id, api.ArtifactPublishParams{PublicationID: "pub-4", BaseVersion: 2, RestoreFrom: 1}, nil, nil)
+	if third.Version.Number != 3 || third.Version.RestoredFrom != 1 || third.Version.Platform != "atc v1" || third.Version.Title != "Design" || third.Artifact.Title != "Design" {
+		t.Errorf("restoration = %+v", third)
+	}
+	if diff := cmp.Diff(wantVersion.Provenance, third.Version.Provenance); diff != "" {
+		t.Errorf("restored provenance mismatch (-want +got):\n%s", diff)
 	}
 	if got := readFile(t, filepath.Join(f.root, id, "3", "build", "index.html")); got != "<h1>one</h1>" {
 		t.Errorf("restored index = %q", got)
@@ -281,8 +277,14 @@ func TestPublishLifecycle(t *testing.T) {
 	if _, _, err := f.publish(id, api.ArtifactPublishParams{Title: "x", PublicationID: "pub-5", BaseVersion: 3, RestoreFrom: 9}, nil, nil); !errors.Is(err, ErrVersionNotFound) {
 		t.Errorf("restore unknown version = %v, want ErrVersionNotFound", err)
 	}
-	if _, _, err := f.publish(id, api.ArtifactPublishParams{Title: "x", PublicationID: "pub-6", BaseVersion: 3, RestoreFrom: 1}, build("<p>x</p>"), source("x")); err == nil {
-		t.Error("restore with archives accepted")
+	if _, _, err := f.publish(id, api.ArtifactPublishParams{Title: "x", PublicationID: "pub-6", BaseVersion: 3, RestoreFrom: 1}, build("<p>x</p>"), source("x")); !errors.Is(err, ErrInvalidPublication) {
+		t.Errorf("restore with archives = %v, want ErrInvalidPublication", err)
+	}
+	// A restoration with its own title and provenance records those.
+	fourth := f.mustPublish(id, api.ArtifactPublishParams{Title: "Design again", PublicationID: "pub-4b", BaseVersion: 3, RestoreFrom: 2,
+		Provenance: api.ArtifactProvenance{Revision: "def"}}, nil, nil)
+	if fourth.Version.Title != "Design again" || fourth.Version.Provenance.Revision != "def" || fourth.Version.Provenance.ThreadID != "" {
+		t.Errorf("restoration with provenance = %+v", fourth.Version)
 	}
 
 	// The reader resolves the current version by default, any version by
@@ -291,14 +293,17 @@ func TestPublishLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Version.Number != 3 || !doc.Latest() || len(doc.Versions) != 3 || doc.BuildDir != filepath.Join(f.root, id, "3", "build") {
+	if doc.Version.Number != 4 || !doc.Latest() || len(doc.Versions) != 4 {
 		t.Errorf("Document(latest) = %+v", doc)
+	}
+	if page, err := fs.ReadFile(doc.Build, IndexFile); err != nil || string(page) != "<h1>two</h1>" {
+		t.Errorf("latest build page = %q, %v; want version 2's (restored as 4)", page, err)
 	}
 	if old, err := f.service.Document(ctx, id, 1); err != nil || old.Latest() || old.Version.Title != "Design" || old.Artifact.Title != "Design again" {
 		t.Errorf("Document(1) = %+v, %v", old, err)
 	}
-	if _, err := f.service.Document(ctx, id, 4); !errors.Is(err, ErrVersionNotFound) {
-		t.Errorf("Document(4) = %v, want ErrVersionNotFound", err)
+	if _, err := f.service.Document(ctx, id, 5); !errors.Is(err, ErrVersionNotFound) {
+		t.Errorf("Document(5) = %v, want ErrVersionNotFound", err)
 	}
 	if _, err := f.service.Document(ctx, "artf-nope1", 0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Document(unknown) = %v, want ErrNotFound", err)
@@ -318,15 +323,19 @@ func TestPublishLifecycle(t *testing.T) {
 	if err := f.service.Delete(ctx, id); !errors.Is(err, ErrNotFound) {
 		t.Errorf("second Delete = %v", err)
 	}
-	if _, _, err := f.publish(id, api.ArtifactPublishParams{Title: "x", PublicationID: "pub-7", BaseVersion: 3}, build("<p>x</p>"), source("x")); !errors.Is(err, ErrNotFound) {
+	if _, _, err := f.publish(id, api.ArtifactPublishParams{Title: "x", PublicationID: "pub-7", BaseVersion: 4}, build("<p>x</p>"), source("x")); !errors.Is(err, ErrNotFound) {
 		t.Errorf("publish to deleted = %v, want ErrNotFound", err)
+	}
+	// Repeating the creation after the deletion recreates nothing.
+	if _, _, err := f.publish("", api.ArtifactPublishParams{Title: "Design", PublicationID: "pub-1"}, build("<h1>one</h1>"), source("one")); !errors.Is(err, ErrPublicationDeleted) {
+		t.Errorf("replay after delete = %v, want ErrPublicationDeleted", err)
 	}
 	if list, err := f.service.List(ctx, ""); err != nil || len(list) != 1 || list[0].ID != other.Artifact.ID {
 		t.Errorf("List after delete = %+v, %v", list, err)
 	}
 
 	var got []string
-	for len(got) < 5 {
+	for len(got) < 6 {
 		select {
 		case change := <-sub.C:
 			got = append(got, change.Type+" "+change.ID)
@@ -337,7 +346,7 @@ func TestPublishLifecycle(t *testing.T) {
 	want := []string{
 		api.EventArtifactCreated + " " + id, api.EventArtifactUpdated + " " + id,
 		api.EventArtifactCreated + " " + other.Artifact.ID, api.EventArtifactUpdated + " " + id,
-		api.EventArtifactDeleted + " " + id,
+		api.EventArtifactUpdated + " " + id, api.EventArtifactDeleted + " " + id,
 	}
 	// The replayed publication and refused publications emit nothing.
 	if diff := cmp.Diff(want, got); diff != "" {
@@ -350,9 +359,17 @@ func TestPublishRefusesBadPackages(t *testing.T) {
 	good := build("<p>ok</p>")
 	big := strings.Repeat("x", 5000)
 	many := []entry{{name: "index.html", body: "i"}}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 12; i++ {
 		many = append(many, entry{name: "f" + string(rune('a'+i)), body: "x"})
 	}
+	var dirs []entry
+	for i := 0; i < 13; i++ {
+		dirs = append(dirs, entry{name: fmt.Sprintf("d%d/", i), typ: tar.TypeDir})
+	}
+	corrupt := build("<p>ok</p>")
+	corrupt = append([]byte(nil), corrupt...)
+	corrupt[len(corrupt)-5] ^= 0xff // inside the CRC trailer
+	truncated := build("<p>ok</p>")[:len(build("<p>ok</p>"))-8]
 	for name, tc := range map[string]struct {
 		build, source []byte
 		detail        string
@@ -363,14 +380,21 @@ func TestPublishRefusesBadPackages(t *testing.T) {
 		"hardlink":       {archive(entry{name: "index.html", body: "x"}, entry{name: "link", typ: tar.TypeLink, link: "index.html"}), source("s"), "symlinks"},
 		"no index":       {archive(entry{name: "main.html", body: "x"}), source("s"), "index.html"},
 		"nested index":   {archive(entry{name: "dist/index.html", body: "x"}), source("s"), "index.html"},
-		"too many files": {archive(many...), source("s"), "more than 8 files"},
+		"too many files": {archive(many...), source("s"), "more than 12 entries"},
+		"directory bomb": {archive(dirs...), source("s"), "more than 12 entries"},
 		"file too large": {archive(entry{name: "index.html", body: big}), source("s"), "exceeds 4096 bytes"},
 		"total too large": {archive(entry{name: "index.html", body: strings.Repeat("a", 4000)}, entry{name: "b", body: strings.Repeat("b", 4000)},
-			entry{name: "c", body: strings.Repeat("c", 4000)}), source("s"), "total size"},
-		"not gzip":     {[]byte("<html>"), source("s"), "not gzip"},
-		"empty source": {good, archive(entry{name: "dir/", typ: tar.TypeDir}), "no files"},
-		"source escape": {good, archive(entry{name: "../../x", body: "x"}), "safe relative path"},
-		"source symlink": {good, archive(entry{name: "x", typ: tar.TypeSymlink, link: "y"}), "symlinks"},
+			entry{name: "c", body: strings.Repeat("c", 4000)}, entry{name: "d", body: strings.Repeat("d", 4000)}, entry{name: "e", body: strings.Repeat("e", 4000)}), source("s"), "decompressed size"},
+		"duplicate name":  {archive(entry{name: "index.html", body: "a"}, entry{name: "index.html", body: "b"}), source("s"), "more than once"},
+		"file then dir":   {archive(entry{name: "index.html", body: "a"}, entry{name: "a", body: "x"}, entry{name: "a/b", body: "y"}), source("s"), "conflicts"},
+		"dir then file":   {archive(entry{name: "index.html", body: "a"}, entry{name: "a/", typ: tar.TypeDir}, entry{name: "a", body: "y"}), source("s"), "more than once"},
+		"not gzip":        {[]byte("<html>"), source("s"), "not gzip"},
+		"corrupt trailer": {corrupt, source("s"), "corrupt gzip"},
+		"truncated":       {truncated, source("s"), "corrupt gzip"},
+		"corrupt source":  {good, corrupt, "corrupt gzip"},
+		"empty source":    {good, archive(entry{name: "dir/", typ: tar.TypeDir}), "no files"},
+		"source escape":   {good, archive(entry{name: "../../x", body: "x"}), "safe relative path"},
+		"source symlink":  {good, archive(entry{name: "x", typ: tar.TypeSymlink, link: "y"}), "symlinks"},
 	} {
 		var pkg *PackageError
 		_, _, err := f.publish("", api.ArtifactPublishParams{Title: "t", PublicationID: "pub-" + name}, tc.build, tc.source)
@@ -395,14 +419,12 @@ func TestPublishRefusesBadPackages(t *testing.T) {
 		"no publication": {Title: "t"},
 		"restore on new": {Title: "t", PublicationID: "p", RestoreFrom: 1},
 	} {
-		var pkg *PackageError
-		if _, _, err := f.publish("", params, good, source("s")); !errors.As(err, &pkg) {
-			t.Errorf("%s: err = %v, want PackageError", name, err)
+		if _, _, err := f.publish("", params, good, source("s")); !errors.Is(err, ErrInvalidPublication) {
+			t.Errorf("%s: err = %v, want ErrInvalidPublication", name, err)
 		}
 	}
-	var pkg *PackageError
-	if _, _, err := f.publish("", api.ArtifactPublishParams{Title: "t", PublicationID: "p"}, good, nil); !errors.As(err, &pkg) {
-		t.Errorf("missing source: err = %v, want PackageError", err)
+	if _, _, err := f.publish("", api.ArtifactPublishParams{Title: "t", PublicationID: "p"}, good, nil); !errors.Is(err, ErrInvalidPublication) {
+		t.Errorf("missing source: err = %v, want ErrInvalidPublication", err)
 	}
 }
 
@@ -414,7 +436,7 @@ func TestUpdateMetadata(t *testing.T) {
 	id := published.Artifact.ID
 
 	renamed, err := f.service.Update(ctx, id, api.ArtifactUpdateParams{Title: api.Some(" Renamed ")})
-	if err != nil || renamed.Title != "Renamed" || renamed.URL != published.Artifact.URL {
+	if err != nil || renamed.Title != "Renamed" || renamed.CurrentVersion != 1 {
 		t.Fatalf("rename = %+v, %v", renamed, err)
 	}
 	if version, err := f.service.Version(ctx, id, 1); err != nil || version.Title != "Design" {
@@ -539,5 +561,20 @@ func TestConcurrentPublishers(t *testing.T) {
 	}
 	if names := f.stagings(); len(names) != 0 {
 		t.Errorf("stagings left behind: %v", names)
+	}
+}
+
+// An archive whose decompressed size is exactly the limit passes; one
+// byte more fails. A tar of one 512-byte file is 2048 bytes: a header
+// block, a body block, and the two end-of-archive blocks.
+func TestArchiveSizeBoundary(t *testing.T) {
+	limits := Limits{MaxEntries: 8, MaxFileBytes: 1 << 20, MaxTotalBytes: 2048}
+	visit := func(string, *tar.Header, io.Reader) error { return nil }
+	if err := walkArchive("build", bytes.NewReader(archive(entry{name: "index.html", body: strings.Repeat("x", 512)})), limits, visit); err != nil {
+		t.Errorf("exactly at the limit: %v", err)
+	}
+	var pkg *PackageError
+	if err := walkArchive("build", bytes.NewReader(archive(entry{name: "index.html", body: strings.Repeat("x", 513)})), limits, visit); !errors.As(err, &pkg) || !strings.Contains(pkg.Detail, "decompressed size") {
+		t.Errorf("over the limit: %v", err)
 	}
 }

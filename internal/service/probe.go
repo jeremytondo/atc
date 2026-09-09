@@ -78,6 +78,14 @@ var probeWebhooks = func(ctx context.Context, opts Options, token string) (api.W
 	return client.Webhooks(ctx)
 }
 
+// probeDocuments asks the running server for its document origin report.
+// A seam variable so lifecycle tests script it.
+var probeDocuments = func(ctx context.Context, opts Options, token string) (api.DocumentOrigin, error) {
+	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
+		&http.Client{Timeout: probeTimeout}, nil)
+	return client.DocumentOrigin(ctx)
+}
+
 // Probe reports whether a server answers on the configured address and the
 // version it claims. Tokenless: the Atc-Server-Version header rides every
 // response, 401s included. This is `atc upgrade`'s post-swap check.

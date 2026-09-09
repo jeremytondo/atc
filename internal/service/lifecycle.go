@@ -352,6 +352,13 @@ func lifecycleSuccess(ctx context.Context, headline string, opts Options, token 
 		}
 		fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
 	}
+	documents, err := probeDocuments(ctx, opts, token)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	for _, line := range renderDocuments(documents, err) {
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
 	status, err := probeWebhooks(ctx, opts, token)
 	if ctx.Err() != nil {
 		return "", ctx.Err()
