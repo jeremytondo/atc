@@ -86,6 +86,15 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 		{"artifact", "restore", "artf-aaaaa", "one"},
 		{"artifact", "source"},
 		{"artifact", "source", "artf-aaaaa", "one"},
+		{"artifact", "new", "extra"},
+		{"artifact", "new", "--example", "demo", "--from", "artf-aaaaa"},
+		{"artifact", "open"},
+		{"artifact", "copies", "extra"},
+		{"artifact", "discard"},
+		{"artifact", "check"},
+		{"artifact", "build"},
+		{"artifact", "preview"},
+		{"artifact", "publish"},
 	} {
 		var stdout, stderr strings.Builder
 		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {

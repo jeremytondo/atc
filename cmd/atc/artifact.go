@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,8 +17,8 @@ import (
 
 // The artifact command group (ATC-318): the published side — listing,
 // inspecting, renaming, organizing, restoring, deleting, and retrieving
-// source — over the API. Authoring (working copies, preview, build,
-// publish) joins this group with the authoring platform.
+// source — over the API, and the authoring side (artifact_authoring.go):
+// working copies, preview, build, and publish.
 
 func newArtifactCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -28,11 +29,17 @@ static build and its authoring source as an immutable version, served to
 browsers from the document origin. The main link always shows the newest
 version; every version keeps a permanent link.`,
 		Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc artifact <list|get|versions|update|delete|restore|source>")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var names []string
+			for _, sub := range cmd.Commands() {
+				names = append(names, sub.Name())
+			}
+			return fmt.Errorf("usage: atc artifact <%s>", strings.Join(names, "|"))
 		},
 	}
-	cmd.AddCommand(newArtifactListCmd(), newArtifactGetCmd(), newArtifactVersionsCmd(), newArtifactUpdateCmd(),
+	cmd.AddCommand(newArtifactNewCmd(), newArtifactOpenCmd(), newArtifactCopiesCmd(), newArtifactDiscardCmd(),
+		newArtifactCheckCmd(), newArtifactBuildCmd(), newArtifactPreviewCmd(), newArtifactPublishCmd(),
+		newArtifactListCmd(), newArtifactGetCmd(), newArtifactVersionsCmd(), newArtifactUpdateCmd(),
 		newArtifactDeleteCmd(), newArtifactRestoreCmd(), newArtifactSourceCmd())
 	return cmd
 }
@@ -95,13 +102,13 @@ func newArtifactVersionsCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "VERSION\tPUBLISHED\tTITLE\tRESTORED\tURL")
+			_, _ = fmt.Fprintln(w, "VERSION\tPUBLISHED\tTITLE\tRESTORED\tURL\tURL (TAILNET)")
 			for _, version := range versions {
 				restored := ""
 				if version.RestoredFrom != 0 {
 					restored = "from " + strconv.Itoa(version.RestoredFrom)
 				}
-				_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", version.Number, version.PublishedAt.Local().Format("2006-01-02 15:04"), version.Title, restored, version.URL)
+				_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n", version.Number, version.PublishedAt.Local().Format("2006-01-02 15:04"), version.Title, restored, version.URL, version.TailnetURL)
 			}
 			return w.Flush()
 		}),
@@ -204,6 +211,10 @@ is no longer current, as any publication would.`,
 			}
 			result, err := client.PublishArtifactVersion(cmd.Context(), args[0], params, nil, nil)
 			if err != nil {
+				var problem *api.Problem
+				if errors.As(err, &problem) && problem.Code == api.CodeArtifactBaseStale {
+					return fmt.Errorf("%w\nsomeone published since that base; check atc artifact versions %s and restore again with --base <current>", err, args[0])
+				}
 				return err
 			}
 			printPublication(cmd.OutOrStdout(), result)

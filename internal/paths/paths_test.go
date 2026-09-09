@@ -18,6 +18,7 @@ func TestXDGOverridesHonored(t *testing.T) {
 		"log":       {LogFile, "/custom/state/atc/atc.log"},
 		"database":  {DatabaseFile, "/custom/data/atc/atc.db"},
 		"artifacts": {ArtifactDir, "/custom/data/atc/artifacts"},
+		"authoring": {AuthoringDir, "/custom/data/atc/authoring"},
 		"terminals": {TerminalSocketDir, "/custom/state/atc/terminals"},
 		"exits":     {ReportDir, "/custom/state/atc/exits"},
 		"lifecycle": {LifecycleLogFile, "/custom/state/atc/lifecycle.log"},

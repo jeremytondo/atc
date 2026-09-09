@@ -1,0 +1,160 @@
+/* The ATC artifact theme: system typography, a restrained neutral palette
+   with one accent, light and dark appearance, and readable defaults for
+   prose. Tokens follow the shadcn/ui convention so its components drop in. */
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.99 0.002 90);
+  --foreground: oklch(0.2 0.01 260);
+  --muted: oklch(0.955 0.005 90);
+  --muted-foreground: oklch(0.5 0.015 260);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+  --border: oklch(0.9 0.006 90);
+  --input: var(--border);
+  --ring: oklch(0.6 0.12 250);
+  --primary: oklch(0.45 0.14 255);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0.008 250);
+  --secondary-foreground: oklch(0.3 0.02 255);
+  --accent: oklch(0.94 0.02 250);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.55 0.2 25);
+  --success: oklch(0.55 0.15 150);
+  --warning: oklch(0.7 0.16 70);
+  --code: oklch(0.965 0.004 90);
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: oklch(0.17 0.01 260);
+  --foreground: oklch(0.93 0.005 90);
+  --muted: oklch(0.23 0.01 260);
+  --muted-foreground: oklch(0.7 0.01 260);
+  --card: oklch(0.2 0.01 260);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.21 0.01 260);
+  --popover-foreground: var(--foreground);
+  --border: oklch(0.3 0.012 260);
+  --input: var(--border);
+  --ring: oklch(0.65 0.12 250);
+  --primary: oklch(0.75 0.12 250);
+  --primary-foreground: oklch(0.15 0.02 260);
+  --secondary: oklch(0.27 0.015 255);
+  --secondary-foreground: oklch(0.9 0.01 250);
+  --accent: oklch(0.3 0.03 250);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.7 0.18 25);
+  --success: oklch(0.72 0.14 150);
+  --warning: oklch(0.8 0.14 75);
+  --code: oklch(0.21 0.01 260);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-code: var(--code);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply scroll-smooth;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    @apply bg-primary/20;
+  }
+}
+
+/* Prose: the default look of document text. The document body carries the
+   `prose` class; a block marked `not-prose` (every platform component that
+   manages its own layout does) is left alone, descendants included. */
+@layer components {
+  .prose {
+    @apply text-[15.5px] leading-7 text-foreground;
+    max-width: 72ch;
+  }
+  .prose > * + * {
+    @apply mt-4;
+  }
+  .prose h1:not(:where(.not-prose, .not-prose *)) {
+    @apply text-3xl font-semibold tracking-tight leading-tight;
+  }
+  .prose h2:not(:where(.not-prose, .not-prose *)) {
+    @apply text-2xl font-semibold tracking-tight leading-tight mt-10;
+  }
+  .prose h3:not(:where(.not-prose, .not-prose *)) {
+    @apply text-lg font-semibold mt-8;
+  }
+  .prose h4:not(:where(.not-prose, .not-prose *)) {
+    @apply text-base font-semibold mt-6;
+  }
+  .prose p:not(:where(.not-prose, .not-prose *)) {
+    @apply text-foreground/90;
+  }
+  .prose a:not(:where(.not-prose, .not-prose *)) {
+    @apply text-primary underline underline-offset-4 decoration-primary/40 hover:decoration-primary;
+  }
+  .prose strong:not(:where(.not-prose, .not-prose *)) {
+    @apply font-semibold;
+  }
+  .prose ul:not(:where(.not-prose, .not-prose *)) {
+    @apply list-disc pl-6 space-y-1.5;
+  }
+  .prose ol:not(:where(.not-prose, .not-prose *)) {
+    @apply list-decimal pl-6 space-y-1.5;
+  }
+  .prose li > ul:not(:where(.not-prose, .not-prose *)),
+  .prose li > ol:not(:where(.not-prose, .not-prose *)) {
+    @apply mt-1.5;
+  }
+  .prose blockquote:not(:where(.not-prose, .not-prose *)) {
+    @apply border-l-2 border-border pl-4 text-muted-foreground italic;
+  }
+  .prose code:not(pre code):not(:where(.not-prose, .not-prose *)) {
+    @apply rounded-sm bg-code px-1.5 py-0.5 font-mono text-[0.9em] text-foreground;
+  }
+  .prose hr:not(:where(.not-prose, .not-prose *)) {
+    @apply my-8 border-border;
+  }
+  .prose img:not(:where(.not-prose, .not-prose *)),
+  .prose svg.figure {
+    @apply max-w-full;
+  }
+  .prose small:not(:where(.not-prose, .not-prose *)) {
+    @apply text-sm text-muted-foreground;
+  }
+}

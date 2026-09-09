@@ -9,6 +9,7 @@
 //	data    $XDG_DATA_HOME/atc/t3code-session.json
 //	data    $XDG_DATA_HOME/atc/linear.json
 //	data    $XDG_DATA_HOME/atc/artifacts     (~/.local/share/atc/artifacts)
+//	data    $XDG_DATA_HOME/atc/authoring     (~/.local/share/atc/authoring)
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
@@ -96,6 +97,14 @@ func LinearSetupFile() (string, error) {
 // so it lives in the data dir beside the database that indexes them.
 func ArtifactDir() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "artifacts")
+}
+
+// AuthoringDir holds the artifact authoring environment (ATC-318): the
+// installed platform with its private Node runtime and dependencies, and
+// the working copies agents edit. Persistent local state of the authoring
+// machine, never of a project repository.
+func AuthoringDir() (string, error) {
+	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "authoring")
 }
 
 // TerminalSocketDir is ATC's private zmx socket directory (ATC-251).
