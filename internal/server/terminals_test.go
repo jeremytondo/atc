@@ -31,7 +31,7 @@ import (
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -112,7 +112,7 @@ type fixture struct {
 	service    *terminals.Service
 	threads    *threads.Service
 	binaries   map[string]bool
-	markers    string
+	reports    string
 	projectID  string
 	projectDir string
 	t3         *t3code.Service
@@ -137,7 +137,7 @@ func newFixture(t *testing.T) *fixture {
 		now time.Time
 	}
 	clock.now = time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	markers := t.TempDir()
+	reports := t.TempDir()
 	now := func() time.Time {
 		clock.Lock()
 		defer clock.Unlock()
@@ -150,7 +150,7 @@ func newFixture(t *testing.T) *fixture {
 		Driver:     driver,
 		Spaces:     db.Spaces(),
 		HomeDir:    projectDir,
-		MarkerDir:  markers,
+		ReportDir:  reports,
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        now,
@@ -241,7 +241,7 @@ func newFixture(t *testing.T) *fixture {
 		HomeDir:           projectDir,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
-		binaries: binaries, markers: markers, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
+		binaries: binaries, reports: reports, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectID = "proj-fixtr"
@@ -331,7 +331,7 @@ func TestTerminalCRUDOverTheWire(t *testing.T) {
 		t.Fatalf("create: got %d, want 201; body %s", rec.Code, rec.Body)
 	}
 	created := decodeTerminal(t, rec)
-	if created.Status != api.TerminalRunning || created.Name != filepath.Base(f.projectDir) ||
+	if created.Status != api.TerminalRunning || created.Name != "" || created.Process != "hx" ||
 		created.SpaceID != f.defaultSpace(t).ID || created.Directory != f.projectDir {
 		t.Fatalf("created = %+v", created)
 	}
@@ -370,8 +370,8 @@ func TestTerminalCRUDOverTheWire(t *testing.T) {
 	}
 }
 
-// Update accepts only name: unknown and immutable fields are rejected by
-// schema, so the contract cannot silently widen.
+// Update accepts name and spaceId: unknown and immutable fields are
+// rejected by schema, so the contract cannot silently widen.
 func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	f := newFixture(t)
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
@@ -380,7 +380,9 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 		"immutable command":   `{"command":"vim"}`,
 		"immutable app":       `{"name":"x","appId":"claude/tui"}`,
 		"unknown field":       `{"name":"x","frobnicate":true}`,
-		"null name":           `{"name":null}`,
+		"empty name":          `{"name":""}`,
+		"blank name":          `{"name":"  "}`,
+		"null space":          `{"spaceId":null}`,
 	} {
 		rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, body)
 		if rec.Code != http.StatusUnprocessableEntity {
@@ -393,10 +395,28 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	}
 }
 
+// name on the wire: a value sets the user's name beside the observed
+// process, null clears it (ATC-317).
+func TestUpdateNameSetsAndClears(t *testing.T) {
+	f := newFixture(t)
+	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
+	rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, `{"name":"api"}`)
+	if named := decodeTerminal(t, rec); rec.Code != http.StatusOK || named.Name != "api" || named.Process != "shell" {
+		t.Fatalf("set name: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, `{"name":null}`)
+	if cleared := decodeTerminal(t, rec); rec.Code != http.StatusOK || cleared.Name != "" || cleared.Process != "shell" {
+		t.Fatalf("clear name: got %d; body %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"name":""`) || !strings.Contains(rec.Body.String(), `"process":"shell"`) {
+		t.Errorf("wire shape: %s", rec.Body)
+	}
+}
+
 func TestCreateWithFailingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.driver.onCreate = func(id string, _ terminals.CreateSpec) error {
-		writeExitMarker(t, f.markers, id, 127)
+		writeReport(t, f.reports, id, 127)
 		return errors.New("client exited before the session settled")
 	}
 	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Command: "no-such-tool"}))
@@ -425,10 +445,10 @@ func TestDeleteUnderUnreachableBackend(t *testing.T) {
 	}
 }
 
-func writeExitMarker(t *testing.T, dir, id string, code int) {
+func writeReport(t *testing.T, dir, id string, code int) {
 	t.Helper()
 	now := time.Now().UTC()
-	err := exitmarker.Write(exitmarker.Path(dir, id), exitmarker.Marker{
+	err := report.Write(report.Path(dir, id), report.Report{
 		TerminalID: id, StartedAt: now.Add(-time.Second), ExitedAt: &now, Code: &code,
 	})
 	if err != nil {

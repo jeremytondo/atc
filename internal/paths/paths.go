@@ -96,9 +96,9 @@ func TerminalSocketDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "terminals")
 }
 
-// ExitMarkerDir holds the wrapper's exit-evidence marker files, one
+// ReportDir holds the monitor's per-terminal report files, one
 // <terminal-id>.json per session (ATC-251).
-func ExitMarkerDir() (string, error) {
+func ReportDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "exits")
 }
 

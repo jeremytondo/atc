@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/cli"
 )
 
 // Rendering is plain text: a status line, the current screen's rows with
@@ -110,7 +111,7 @@ func (m model) terminalsView() string {
 		if terminal.ID == m.selectedTerminal {
 			selected = i
 		}
-		rows[i] = fmt.Sprintf("%-24s %s", safeText(terminal.Name), statusLabel(terminal))
+		rows[i] = fmt.Sprintf("%-24s %s", safeText(cli.Label(i+1, terminal)), statusLabel(terminal))
 	}
 	return header + m.rowsView(rows, selected)
 }
@@ -152,7 +153,7 @@ func (m model) directoriesView() string {
 }
 
 func (m model) reconnectingView() string {
-	return fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)\n", safeText(m.reconnect.terminal.Name), m.reconnect.delay)
+	return fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)\n", safeText(m.label(m.reconnect.terminal)), m.reconnect.delay)
 }
 
 func (m model) confirmText() string {
@@ -192,7 +193,7 @@ func (m model) rowsView(rows []string, selected int) string {
 // and the help overlay shows them all.
 const (
 	spacesKeys       = "j/k move  enter open  n new space  d delete  r refresh  ? help  q quit"
-	terminalsKeys    = "j/k move  enter attach (ctrl-\\ detaches)  n new shell  d delete  esc/h back  r refresh  ? help  q quit"
+	terminalsKeys    = "j/k move  enter attach (ctrl-\\ detaches)  1-9 attach by number  n new shell  d delete  esc/h back  r refresh  ? help  q quit"
 	directoriesKeys  = "type to filter, or /an/absolute/path  ↑/↓ move  enter descend  backspace up  . choose this directory  esc back  ctrl+r refresh"
 	reconnectingKeys = "esc cancel and return to the terminal list"
 )

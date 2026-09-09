@@ -25,11 +25,12 @@ const (
 // project.
 type Terminal struct {
 	ID        string `json:"id" doc:"Server-minted identifier; also the zmx session name."`
-	Name      string `json:"name" doc:"Display name; mutable."`
+	Name      string `json:"name" doc:"User-set display name; mutable, empty when the terminal is labelled by its foreground program instead."`
 	SpaceID   string `json:"spaceId" doc:"Space the terminal belongs to; mutable — moving a terminal changes nothing but this."`
 	Directory string `json:"directory" doc:"Working directory the session started in: the one supplied at creation, else the space's directory at that moment — never a thread's own directory. Immutable."`
 	Command   string `json:"command,omitempty" doc:"User-supplied command launched in the session; empty means a plain shell or an App launch (an App's resolved command is Integration-private and never exposed). Immutable."`
 	AppID     string `json:"appId,omitempty" doc:"Integration-qualified App id (integration/app) the terminal was launched with; omitted for plain terminals. Server-set launch intent only, immutable, no liveness meaning."`
+	Process   string `json:"process" doc:"Short name of the program last observed in the terminal's foreground, kept after exit. Before the first observation: the App's short name, else the launch command's first word, else shell. Never empty; server-observed, not user-set."`
 	// ActiveThreadID is a projection from the threads domain (ATC-255),
 	// not terminal state: the terminals domain never sets it.
 	ActiveThreadID string         `json:"activeThreadId,omitempty" doc:"Thread whose conversation is currently open in this terminal; omitted when no conversation is observed."`
@@ -43,22 +44,22 @@ type Terminal struct {
 // launch surface (ATC-297): a plain shell, a command, an App, or a
 // thread resumed through the App that started it. command, appId, and
 // threadId are mutually exclusive. Placement is optional in every mode:
-// the space defaults to the Default space, the directory to the space's,
-// the name to the directory's basename.
+// the space defaults to the Default space, the directory to the space's;
+// an unnamed terminal is labelled by its foreground program.
 type TerminalCreateParams struct {
 	SpaceID   string `json:"spaceId,omitempty" doc:"Space the terminal belongs to; defaults to the Default space."`
 	Directory string `json:"directory,omitempty" doc:"Working directory the session starts in; defaults to the space's directory. Must exist on the server's machine."`
-	Name      string `json:"name,omitempty" doc:"Display name; defaults to the basename of the resolved directory."`
+	Name      string `json:"name,omitempty" doc:"User-set display name; optional. An unnamed terminal is labelled by the program in its foreground."`
 	Command   string `json:"command,omitempty" doc:"Free-form command run through the user's shell; empty starts a plain interactive shell. Mutually exclusive with appId and threadId."`
 	AppID     string `json:"appId,omitempty" doc:"Integration-qualified App id (integration/app) to launch; the Integration privately composes the command and the id is recorded on the terminal. Mutually exclusive with command and threadId."`
 	ThreadID  string `json:"threadId,omitempty" doc:"Thread to resume through the App that started it. A terminal already running (or unreachable) for the thread is reused and returned with 200; otherwise a new terminal runs the exact resume and is returned with 201. Placement options are ignored on reuse. Mutually exclusive with command and appId."`
 }
 
 // TerminalUpdateParams is the PATCH /v1/terminals/{id} request body, a
-// JSON Merge Patch: an omitted field is unchanged; neither field accepts
-// null.
+// JSON Merge Patch: an omitted field is unchanged; null clears the name
+// and is refused for spaceId.
 type TerminalUpdateParams struct {
-	Name    Optional[string] `json:"name,omitzero" minLength:"1" nullable:"false" doc:"New display name."`
+	Name    Optional[string] `json:"name,omitzero" minLength:"1" doc:"New display name; null clears it, returning the terminal to its foreground program's label."`
 	SpaceID Optional[string] `json:"spaceId,omitzero" minLength:"1" nullable:"false" doc:"Space to move the terminal to. The session, directory, app, and thread are untouched."`
 }
 

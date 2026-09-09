@@ -46,7 +46,7 @@ type Session struct {
 
 // CreateSpec is what the backend needs to start a session.
 type CreateSpec struct {
-	// Directory the workload starts in (the wrapper chdirs; a bad
+	// Directory the workload starts in (the monitor chdirs; a bad
 	// directory surfaces as launch-failure evidence, not a create error).
 	Directory string
 	// Command is the free-form command run through the user's shell; empty
@@ -56,7 +56,7 @@ type CreateSpec struct {
 
 // Driver is the session backend seam. Implementations own every backend
 // detail — commands, inventory parsing, environment traps, attach
-// mechanics — and start each session with the ATC wrapper as its root
+// mechanics — and start each session with the ATC monitor as its root
 // task.
 type Driver interface {
 	// Inventory returns the complete session inventory. An error means the

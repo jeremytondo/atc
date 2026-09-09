@@ -107,7 +107,7 @@ func TestTerminalsInSpacesOverTheWire(t *testing.T) {
 	if inDefault.SpaceID != f.defaultSpace(t).ID || inDefault.Directory != f.projectDir {
 		t.Errorf("default placement = %+v", inDefault)
 	}
-	if inSpace.SpaceID != space.ID || inSpace.Directory != dir || inSpace.Name != filepath.Base(dir) {
+	if inSpace.SpaceID != space.ID || inSpace.Directory != dir || inSpace.Name != "" {
 		t.Errorf("space placement = %+v", inSpace)
 	}
 	if explicit.SpaceID != space.ID || explicit.Directory != f.projectDir || explicit.Name != "named" {

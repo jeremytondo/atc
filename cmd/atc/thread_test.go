@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -242,8 +241,8 @@ func TestTerminalCreateAppCLI(t *testing.T) {
 	if id == "" || !strings.Contains(stdout, "running") {
 		t.Fatalf("create output has no running terminal:\n%s", stdout)
 	}
-	if !regexp.MustCompile(`(?m)^app\s+claude/tui$`).MatchString(stdout) || !regexp.MustCompile(`(?m)^name\s+`+filepath.Base(projectDir)+`$`).MatchString(stdout) {
-		t.Errorf("create output missing the app or the directory-basename name:\n%s", stdout)
+	if !regexp.MustCompile(`(?m)^app\s+claude/tui$`).MatchString(stdout) || !regexp.MustCompile(`(?m)^name\s*$`).MatchString(stdout) {
+		t.Errorf("create output missing the app or has a name it was not given:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "thrd-") || strings.Contains(stdout, "--settings") {
 		t.Errorf("create printed a thread id or the private command:\n%s", stdout)

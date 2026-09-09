@@ -34,7 +34,7 @@ type TerminalRecord struct {
 	// attempted).
 	StopRequestedAt *time.Time
 	// ExitedAt and ExitCode are the recorded exit evidence. ExitCode is nil
-	// when the stop was ATC-initiated or the marker carried no code.
+	// when the stop was ATC-initiated or the report carried no code.
 	ExitedAt *time.Time
 	ExitCode *int
 }
@@ -100,9 +100,9 @@ func (t *Terminals) RecordStopIntent(ctx context.Context, id string, at time.Tim
 	return n > 0, err
 }
 
-// RecordExit persists exit evidence: exitedAt is the wrapper's recorded
+// RecordExit persists exit evidence: exitedAt is the monitor's recorded
 // exit time, observedAt the reconciliation time stamping updated_at (so a
-// late-observed marker never rewinds the record). The first observation
+// late-observed report never rewinds the record). The first observation
 // wins: a row that already carries evidence is left untouched.
 func (t *Terminals) RecordExit(ctx context.Context, id string, exitedAt, observedAt time.Time, code *int) error {
 	var exitCode sql.NullInt64

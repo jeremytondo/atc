@@ -15,7 +15,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 // ErrNotFound reports an id with no record; the API layer maps it to 404.
@@ -44,8 +44,8 @@ type Options struct {
 	// HomeDir is the server user's home directory: the Default space's
 	// directory, and the default for a space created without one.
 	HomeDir string
-	// MarkerDir is where wrappers record exit evidence.
-	MarkerDir string
+	// ReportDir is where monitors write their reports.
+	ReportDir string
 	Hub       *events.Hub
 	Logger    *slog.Logger
 	Now       func() time.Time
@@ -71,7 +71,7 @@ type Service struct {
 	driver     Driver
 	spaces     *store.Spaces
 	homeDir    string
-	markerDir  string
+	reportDir  string
 	hub        *events.Hub
 	logger     *slog.Logger
 	now        func() time.Time
@@ -98,6 +98,11 @@ type Service struct {
 type entry struct {
 	record store.TerminalRecord
 	status api.TerminalStatus
+	// process is the program the monitor last observed in the foreground
+	// (ATC-317), seeded with the creation-time fallback so it is never
+	// empty: not stored, rebuilt from the report on every reconcile pass,
+	// and never reverting to the fallback once observed.
+	process string
 }
 
 func NewService(opts Options) *Service {
@@ -118,7 +123,7 @@ func NewService(opts Options) *Service {
 		driver:         opts.Driver,
 		spaces:         opts.Spaces,
 		homeDir:        opts.HomeDir,
-		markerDir:      opts.MarkerDir,
+		reportDir:      opts.ReportDir,
 		hub:            opts.Hub,
 		logger:         opts.Logger,
 		now:            opts.Now,
@@ -134,7 +139,7 @@ func NewService(opts Options) *Service {
 // minting the Default space when none exists. Statuses start from
 // durable evidence alone (exited where recorded, unreachable otherwise)
 // and settle in the startup Reconcile that must follow before reads are
-// served.
+// served; the same pass restores each observed process from its report.
 func (s *Service) Load(ctx context.Context) error {
 	if err := s.loadSpaces(ctx); err != nil {
 		return err
@@ -150,7 +155,7 @@ func (s *Service) Load(ctx context.Context) error {
 		if record.ExitedAt != nil {
 			status = api.TerminalExited
 		}
-		s.view[record.ID] = &entry{record: record, status: status}
+		s.view[record.ID] = &entry{record: record, status: status, process: fallbackProcess(record)}
 	}
 	return nil
 }
@@ -176,13 +181,16 @@ func (s *Service) Run(ctx context.Context) {
 //	inventory unavailable             → unreachable
 //	present and reachable             → running
 //	present but unresponsive          → unreachable
-//	absent with marker exit evidence  → exited (evidence recorded now)
+//	absent with report exit evidence  → exited (evidence recorded now)
 //	absent without evidence           → missing
 //
-// Absence from the inventory is never by itself an exit. Reconcile is
-// status-only — it is called on the request path (startup, mutations), and
-// orphan reaping means bounded kill verification (~seconds per orphan)
-// that must never block an HTTP handler. The background loop reaps.
+// Absence from the inventory is never by itself an exit. Every pass also
+// reads every terminal's report for the observed foreground process; a
+// process change refreshes the view but publishes nothing, since only
+// status changes are events. Reconcile is otherwise status-only — it is
+// called on the request path (startup, mutations), and orphan reaping
+// means bounded kill verification (~seconds per orphan) that must never
+// block an HTTP handler. The background loop reaps.
 func (s *Service) Reconcile(ctx context.Context) {
 	s.reconcile(ctx, false)
 }
@@ -203,41 +211,47 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		present[session.Name] = session.Reachable
 	}
 
-	// Phase 1: decide everything decidable without IO, under the view
-	// lock; absent sessions leave with a snapshot for the evidence phase.
-	type absentTerminal struct {
+	// Each pass carries one candidate per terminal through its phases:
+	// the identity snapshot, the status decided so far, the process the
+	// report observed, and any exit evidence recorded this pass.
+	type candidate struct {
 		id            string
 		createdAt     time.Time
 		stopRequested bool
+		absent        bool
+		status        api.TerminalStatus // empty: leave untouched this pass
+		process       string
+		exit          *store.TerminalRecord // ExitedAt, ExitCode, UpdatedAt
 	}
-	statuses := make(map[string]api.TerminalStatus)
-	var absent []absentTerminal
+
+	// Phase 1: decide everything decidable without IO, under the view
+	// lock. Absent sessions are the ones whose report may be exit
+	// evidence.
+	var candidates []candidate
 	var orphans []string
 	s.mu.Lock()
 	for id, e := range s.view {
 		if _, ok := s.settling[id]; ok {
 			continue
 		}
+		c := candidate{id: id, createdAt: e.record.CreatedAt, stopRequested: e.record.StopRequestedAt != nil}
 		switch {
 		case e.record.ExitedAt != nil:
-			statuses[id] = api.TerminalExited
+			c.status = api.TerminalExited
 		case inventoryErr != nil:
-			statuses[id] = api.TerminalUnreachable
+			c.status = api.TerminalUnreachable
 		default:
 			if reachable, ok := present[id]; ok {
 				if reachable {
-					statuses[id] = api.TerminalRunning
+					c.status = api.TerminalRunning
 				} else {
-					statuses[id] = api.TerminalUnreachable
+					c.status = api.TerminalUnreachable
 				}
 			} else {
-				absent = append(absent, absentTerminal{
-					id:            id,
-					createdAt:     e.record.CreatedAt,
-					stopRequested: e.record.StopRequestedAt != nil,
-				})
+				c.absent = true
 			}
 		}
+		candidates = append(candidates, c)
 	}
 	if reap && inventoryErr == nil {
 		for _, session := range inventory {
@@ -248,73 +262,81 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 	s.mu.Unlock()
 
-	// Phase 2: marker reads and evidence persistence, outside the view
+	// Phase 2: report reads and evidence persistence, outside the view
 	// lock — a slow disk or a held SQLite writer must not block reads.
-	type exitEvidence struct {
-		id                   string
-		exitedAt, observedAt time.Time
-		code                 *int
-	}
-	var exits []exitEvidence
-	for _, terminal := range absent {
-		marker, err := exitmarker.Read(s.markerDir, terminal.id)
+	for i := range candidates {
+		c := &candidates[i]
+		rep, err := report.Read(s.reportDir, c.id)
 		if err != nil {
-			// Unreadable evidence is no evidence; the honest answer for an
-			// absent session without valid evidence is missing.
-			s.logger.Warn("unreadable exit marker", "terminal", terminal.id, "error", err)
-			statuses[terminal.id] = api.TerminalMissing
+			if c.absent {
+				// Unreadable evidence is no evidence; the honest answer for
+				// an absent session without valid evidence is missing.
+				s.logger.Warn("unreadable report", "terminal", c.id, "error", err)
+				c.status = api.TerminalMissing
+			}
 			continue
 		}
-		if !marker.Exited() {
-			statuses[terminal.id] = api.TerminalMissing
+		if rep != nil && rep.StartedAt.Before(c.createdAt) {
+			// A report predating the record belongs to an earlier
+			// incarnation of a reused ID (a reaped orphan's late write, a
+			// stale file the create could not remove): neither its
+			// process nor its exit is this terminal's.
+			s.logger.Warn("stale report ignored", "terminal", c.id)
+			rep = nil
+		}
+		if rep != nil {
+			c.process = rep.Process
+		}
+		if !c.absent {
 			continue
 		}
-		if marker.ExitedAt.Before(terminal.createdAt) {
-			// Evidence predating the record belongs to an earlier
-			// incarnation of a reused ID (a reaped orphan's late marker).
-			s.logger.Warn("stale exit marker ignored", "terminal", terminal.id)
-			statuses[terminal.id] = api.TerminalMissing
+		if !rep.Exited() {
+			c.status = api.TerminalMissing
 			continue
 		}
-		code := marker.Code
-		if terminal.stopRequested {
+		code := rep.Code
+		if c.stopRequested {
 			// An ATC-initiated stop suppresses the exit code — a kill is
 			// not a meaningful program result.
 			code = nil
 		}
 		observed := s.now()
-		if err := s.repository.RecordExit(ctx, terminal.id, *marker.ExitedAt, observed, code); err != nil {
+		if err := s.repository.RecordExit(ctx, c.id, *rep.ExitedAt, observed, code); err != nil {
 			// Leave the status untouched this pass; the next one retries.
-			s.logger.Error("recording exit evidence", "terminal", terminal.id, "error", err)
+			s.logger.Error("recording exit evidence", "terminal", c.id, "error", err)
+			c.status = ""
 			continue
 		}
-		exits = append(exits, exitEvidence{terminal.id, *marker.ExitedAt, observed, code})
-		statuses[terminal.id] = api.TerminalExited
+		exitedAt := *rep.ExitedAt
+		c.exit = &store.TerminalRecord{ExitedAt: &exitedAt, ExitCode: code, UpdatedAt: observed}
+		c.status = api.TerminalExited
 	}
 
-	// Phase 3: apply, guarding entries that were deleted or entered a
-	// create's settling window while the locks were down.
+	// Phase 3: apply, skipping entries that were deleted, re-created
+	// (another incarnation of the id), or entered a create's settling
+	// window while the locks were down. Observed processes refresh the
+	// view silently: only status changes publish.
 	var changed []string
 	s.mu.Lock()
-	for _, evidence := range exits {
-		if e, ok := s.view[evidence.id]; ok && e.record.ExitedAt == nil {
-			exitedAt := evidence.exitedAt
-			e.record.ExitedAt = &exitedAt
-			e.record.ExitCode = evidence.code
-			e.record.UpdatedAt = evidence.observedAt
-		}
-	}
-	for id, status := range statuses {
-		e, ok := s.view[id]
-		if !ok {
+	for _, c := range candidates {
+		e, ok := s.view[c.id]
+		if !ok || !e.record.CreatedAt.Equal(c.createdAt) {
 			continue
 		}
-		if _, ok := s.settling[id]; ok {
+		if _, ok := s.settling[c.id]; ok {
 			continue
 		}
-		if e.status != status {
-			e.status = status
-			changed = append(changed, id)
+		if c.process != "" {
+			e.process = c.process
+		}
+		if c.exit != nil && e.record.ExitedAt == nil {
+			e.record.ExitedAt = c.exit.ExitedAt
+			e.record.ExitCode = c.exit.ExitCode
+			e.record.UpdatedAt = c.exit.UpdatedAt
+		}
+		if c.status != "" && e.status != c.status {
+			e.status = c.status
+			changed = append(changed, c.id)
 		}
 	}
 	s.mu.Unlock()
@@ -403,9 +425,6 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 	}
 	directory = canonical
 	name := strings.TrimSpace(params.Name)
-	if name == "" {
-		name = filepath.Base(directory)
-	}
 	abort := func() {}
 	if launch.Prepare != nil {
 		prepared, err := launch.Prepare(ctx, directory)
@@ -479,13 +498,13 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 			break
 		}
 	}
-	// A marker left by an earlier incarnation of this ID must not become
+	// A report left by an earlier incarnation of this ID must not become
 	// this terminal's evidence.
-	if err := exitmarker.Remove(s.markerDir, record.ID); err != nil {
-		s.logger.Warn("clearing stale exit marker", "terminal", record.ID, "error", err)
+	if err := report.Remove(s.reportDir, record.ID); err != nil {
+		s.logger.Warn("clearing stale report", "terminal", record.ID, "error", err)
 	}
 	s.mu.Lock()
-	s.view[record.ID] = &entry{record: record, status: api.TerminalUnreachable}
+	s.view[record.ID] = &entry{record: record, status: api.TerminalUnreachable, process: fallbackProcess(record)}
 	s.settling[record.ID] = struct{}{}
 	s.mu.Unlock()
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
@@ -508,12 +527,12 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 	return s.Get(record.ID)
 }
 
-// awaitSettled polls until the session is visibly running or its wrapper
+// awaitSettled polls until the session is visibly running or its monitor
 // has recorded an exit, for up to VerifyPasses complete inventories.
 func (s *Service) awaitSettled(ctx context.Context, id string) {
 	passes, failures := 0, 0
 	for passes < VerifyPasses && failures < VerifyFailureCap {
-		if marker, err := exitmarker.Read(s.markerDir, id); err == nil && marker.Exited() {
+		if rep, err := report.Read(s.reportDir, id); err == nil && rep.Exited() {
 			return
 		}
 		inventory, err := s.driver.Inventory(ctx)
@@ -571,12 +590,13 @@ func (s *Service) List(spaceID string) []api.Terminal {
 
 // Update applies a merge patch to the two mutable fields: the name, and
 // the space (a move, which changes nothing else — not the session, the
-// directory, the App, or any thread). Neither accepts null; a move into
-// a space being deleted is refused. An empty patch returns the terminal
-// unchanged.
+// directory, the App, or any thread). A null name clears the user-set
+// name, so the terminal is labelled by its foreground program again; an
+// empty name is refused, as is a null space and a move into a space
+// being deleted. An empty patch returns the terminal unchanged.
 func (s *Service) Update(ctx context.Context, id string, params api.TerminalUpdateParams) (api.Terminal, error) {
-	if params.Name.Null() || params.SpaceID.Null() {
-		return api.Terminal{}, fmt.Errorf("%w: name and spaceId cannot be null", ErrInvalidUpdate)
+	if params.SpaceID.Null() {
+		return api.Terminal{}, fmt.Errorf("%w: spaceId cannot be null", ErrInvalidUpdate)
 	}
 	if !params.Name.Set && !params.SpaceID.Set {
 		return s.Get(id)
@@ -594,7 +614,10 @@ func (s *Service) Update(ctx context.Context, id string, params api.TerminalUpda
 		return api.Terminal{}, ErrNotFound
 	}
 	name, spaceID := current.Name, current.SpaceID
-	if params.Name.Set {
+	switch {
+	case params.Name.Null():
+		name = ""
+	case params.Name.Set:
 		if name = strings.TrimSpace(*params.Name.Value); name == "" {
 			return api.Terminal{}, fmt.Errorf("%w: name cannot be empty", ErrInvalidUpdate)
 		}
@@ -689,8 +712,8 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	delete(s.view, id)
 	delete(s.settling, id)
 	s.mu.Unlock()
-	if err := exitmarker.Remove(s.markerDir, id); err != nil {
-		s.logger.Warn("removing exit marker", "terminal", id, "error", err)
+	if err := report.Remove(s.reportDir, id); err != nil {
+		s.logger.Warn("removing report", "terminal", id, "error", err)
 	}
 	s.hub.Publish(api.EventTerminalDeleted, resource, id)
 	s.ops.Unlock()
@@ -709,6 +732,7 @@ func (e *entry) terminal() api.Terminal {
 		SpaceID:   e.record.SpaceID,
 		Directory: e.record.Directory,
 		AppID:     e.record.AppID,
+		Process:   e.process,
 		Status:    e.status,
 		CreatedAt: e.record.CreatedAt,
 		UpdatedAt: e.record.UpdatedAt,
@@ -721,4 +745,24 @@ func (e *entry) terminal() api.Terminal {
 		terminal.ExitCode = &code
 	}
 	return terminal
+}
+
+// fallbackProcess names a terminal from creation-time knowledge until the
+// monitor's first observation: the App's short name, else the launch
+// command's first word (its basename, so a path reads as the program),
+// else shell. The short name is the Integration part of the qualified
+// integration/app id — every terminal App today is <integration>/tui, so
+// the app part says nothing, and the Integration id is the name the
+// observation will report for the running binary (claude, codex).
+func fallbackProcess(record store.TerminalRecord) string {
+	if record.AppID != "" {
+		if integration, _, ok := strings.Cut(record.AppID, "/"); ok && integration != "" {
+			return integration
+		}
+		return record.AppID
+	}
+	if fields := strings.Fields(record.Command); len(fields) > 0 {
+		return filepath.Base(fields[0])
+	}
+	return "shell"
 }

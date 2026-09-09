@@ -115,7 +115,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, threadServi
 		Method:      http.MethodPatch,
 		Path:        "/v1/terminals/{id}",
 		Summary:     "Update a terminal",
-		Description: "A merge patch of name and spaceId: an omitted field is unchanged, neither accepts null. Moving a terminal to another space changes nothing else — not the session, the directory, the app, or any thread. A space being deleted refuses the move.",
+		Description: "A merge patch of name and spaceId: an omitted field is unchanged; a null name clears the user-set name so the terminal is labelled by its foreground program again, and spaceId never accepts null. Moving a terminal to another space changes nothing else — not the session, the directory, the app, or any thread. A space being deleted refuses the move.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Terminal identifier."`
 		Body api.TerminalUpdateParams

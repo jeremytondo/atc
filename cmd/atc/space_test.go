@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -46,11 +45,11 @@ func TestSpaceCLILifecycle(t *testing.T) {
 		t.Errorf("get = %q, %v", stdout, err)
 	}
 
-	// A terminal in the space starts in its directory and is named by it;
-	// an unplaced terminal starts in this process's cwd.
+	// A terminal in the space starts in its directory, unnamed; an
+	// unplaced terminal starts in this process's cwd.
 	stdout, _, err = runCLI(t, "terminal", "create", "--space", id, "--detach")
 	if err != nil || !regexp.MustCompile(`(?m)^directory\s+`+regexp.QuoteMeta(dir)+`$`).MatchString(stdout) ||
-		!regexp.MustCompile(`(?m)^name\s+`+filepath.Base(dir)+`$`).MatchString(stdout) || !strings.Contains(stdout, id) {
+		!regexp.MustCompile(`(?m)^name\s*$`).MatchString(stdout) || !strings.Contains(stdout, id) {
 		t.Fatalf("create --space = %q, %v", stdout, err)
 	}
 	inSpace := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)

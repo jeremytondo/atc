@@ -84,7 +84,7 @@ func (c *fakeClient) CreateTerminal(_ context.Context, params api.TerminalCreate
 		return api.Terminal{}, c.createErr
 	}
 	c.nextID++
-	terminal := api.Terminal{ID: fmt.Sprintf("term-new%02d", c.nextID), Name: "shell", SpaceID: params.SpaceID, Status: api.TerminalRunning, CreatedAt: time.Now()}
+	terminal := api.Terminal{ID: fmt.Sprintf("term-new%02d", c.nextID), Process: "shell", SpaceID: params.SpaceID, Status: api.TerminalRunning, CreatedAt: time.Now()}
 	if c.createStatus != "" {
 		terminal.Status = c.createStatus
 	}
@@ -154,10 +154,10 @@ var (
 	}
 	exitOne   = 1
 	terminals = []api.Terminal{
-		{ID: "term-old", Name: "old", SpaceID: "spce-work", Status: api.TerminalRunning, CreatedAt: t0},
-		{ID: "term-dead", Name: "dead", SpaceID: "spce-work", Status: api.TerminalExited, ExitCode: &exitOne, CreatedAt: t0.Add(time.Minute)},
-		{ID: "term-new", Name: "new", SpaceID: "spce-work", Status: api.TerminalRunning, CreatedAt: t0.Add(time.Hour)},
-		{ID: "term-play", Name: "play", SpaceID: "spce-play", Status: api.TerminalRunning, CreatedAt: t0},
+		{ID: "term-old", Process: "zsh", SpaceID: "spce-work", Status: api.TerminalRunning, CreatedAt: t0},
+		{ID: "term-dead", Process: "nvim", SpaceID: "spce-work", Status: api.TerminalExited, ExitCode: &exitOne, CreatedAt: t0.Add(time.Minute)},
+		{ID: "term-new", Name: "api", Process: "codex", SpaceID: "spce-work", Status: api.TerminalRunning, CreatedAt: t0.Add(time.Hour)},
+		{ID: "term-play", Name: "play", Process: "zsh", SpaceID: "spce-play", Status: api.TerminalRunning, CreatedAt: t0},
 	}
 )
 
@@ -320,7 +320,10 @@ func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 	}
 }
 
-func TestTerminalListNewestFirstAndBack(t *testing.T) {
+// The terminal list is in number order — creation order, oldest first —
+// with row one selected on entry, and each row labelled by its number
+// and name or process (ATC-317).
+func TestTerminalListNumberOrderAndBack(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
 	h.key("j")
@@ -329,15 +332,21 @@ func TestTerminalListNewestFirstAndBack(t *testing.T) {
 	if h.m.screen != screenTerminals || h.m.space.ID != "spce-work" {
 		t.Fatalf("enter = screen %v space %q", h.m.screen, h.m.space.ID)
 	}
-	if diff := cmp.Diff([]string{"term-new", "term-dead", "term-old"}, terminalIDs(h.m.terminals)); diff != "" {
-		t.Errorf("newest-first (-want +got):\n%s", diff)
+	if diff := cmp.Diff([]string{"term-old", "term-dead", "term-new"}, terminalIDs(h.m.terminals)); diff != "" {
+		t.Errorf("number order (-want +got):\n%s", diff)
 	}
-	if h.m.selectedTerminal != "term-new" {
-		t.Errorf("newest preselected: %q", h.m.selectedTerminal)
+	if h.m.selectedTerminal != "term-old" {
+		t.Errorf("row one preselected: %q", h.m.selectedTerminal)
+	}
+	view := h.m.View().Content
+	for _, row := range []string{"> 1:zsh", "  2:nvim", "  3:api"} {
+		if !strings.Contains(view, row) {
+			t.Errorf("view lacks %q:\n%s", row, view)
+		}
 	}
 	h.key("j")
 	h.key("enter")
-	if !strings.Contains(h.m.message, "exited with code 1") || len(h.exec.commands) != 0 {
+	if !strings.Contains(h.m.message, "2:nvim has exited with code 1") || len(h.exec.commands) != 0 {
 		t.Errorf("exited terminal: message %q, exec %v", h.m.message, h.exec.commands)
 	}
 	if !strings.Contains(h.m.View().Content, "exited (1)") {
@@ -423,8 +432,11 @@ func TestDeleteConfirmations(t *testing.T) {
 	// Terminal delete names the terminal and reloads the list.
 	h.key("enter") // play
 	h.key("d")
-	if h.m.confirm == nil || h.m.confirm.kind != "terminal" || h.m.confirm.name != "play" {
+	if h.m.confirm == nil || h.m.confirm.kind != "terminal" || h.m.confirm.name != "1:play" {
 		t.Fatalf("terminal confirmation = %+v", h.m.confirm)
+	}
+	if !strings.Contains(h.m.View().Content, "delete terminal 1:play?") {
+		t.Errorf("view:\n%s", h.m.View().Content)
 	}
 	h.client.terminals = terminals[:3]
 	h.key("y")
@@ -538,9 +550,7 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 	h.open()
 	h.key("j")
 	h.key("j")
-	h.key("enter") // work
-	h.key("j")
-	h.key("j") // term-old
+	h.key("enter") // work; row one, term-old, selected
 	h.exec.exits = []error{nil}
 	msgs := h.send(keyPress("enter"))
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-old"}}, h.exec.commands); diff != "" {
@@ -578,14 +588,15 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 		t.Errorf("vanished selection fell to %q", h.m.selectedTerminal)
 	}
 
-	// A non-zero, non-transport exit is reported and never retried;
-	// exit 255 in local mode is just such an exit.
-	h.key("k")
+	// A non-zero, non-transport exit is reported, naming the terminal by
+	// its label, and never retried; exit 255 in local mode is just such
+	// an exit.
+	h.key("j") // term-new, now row two
 	for _, exit := range []error{fakeExit(1), fakeExit(255)} {
 		h.exec.exits = []error{exit}
 		before := len(h.exec.commands)
 		h.key("enter")
-		if len(h.exec.commands) != before+1 || h.m.screen != screenTerminals || !strings.Contains(h.m.message, exit.Error()) {
+		if len(h.exec.commands) != before+1 || h.m.screen != screenTerminals || !strings.Contains(h.m.message, "attachment to 2:api ended: "+exit.Error()) {
 			t.Errorf("exit %v = commands %d screen %v message %q", exit, len(h.exec.commands), h.m.screen, h.m.message)
 		}
 	}
@@ -608,8 +619,8 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new01"}}, h.exec.commands); diff != "" {
 		t.Errorf("exec (-want +got):\n%s", diff)
 	}
-	if h.m.selectedTerminal != "term-new01" || h.m.terminals[0].ID != "term-new01" {
-		t.Errorf("after create: selected %q first %q", h.m.selectedTerminal, h.m.terminals[0].ID)
+	if last := h.m.terminals[len(h.m.terminals)-1].ID; h.m.selectedTerminal != "term-new01" || last != "term-new01" {
+		t.Errorf("after create: selected %q last %q", h.m.selectedTerminal, last)
 	}
 	h.client.createErr = errors.New("boom")
 	h.key("n")
@@ -621,7 +632,7 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	h.client.createErr = nil
 	h.client.createStatus = api.TerminalUnreachable
 	h.key("n")
-	if !strings.Contains(h.m.message, "is unreachable") || len(h.exec.commands) != 1 {
+	if !strings.Contains(h.m.message, "5:shell is unreachable") || len(h.exec.commands) != 1 {
 		t.Errorf("unreachable create = %q exec %v", h.m.message, h.exec.commands)
 	}
 	// While a create is in flight, another n is ignored.
@@ -652,7 +663,7 @@ func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	h.client.err = errors.New("dial tcp: no route to host")
 	msgs := h.send(keyPress("enter"))
 	ended := h.send(msgs[0])
-	if h.m.reconnect == nil || !strings.Contains(h.m.message, "connection lost, reconnecting to play") || !strings.Contains(h.m.View().Content, "waiting for play") {
+	if h.m.reconnect == nil || !strings.Contains(h.m.message, "connection lost, reconnecting to 1:play") || !strings.Contains(h.m.View().Content, "waiting for 1:play") {
 		t.Fatalf("loss = reconnect %v message %q", h.m.reconnect, h.m.message)
 	}
 	// The retry is modal: list keys are ignored until it ends.
@@ -728,7 +739,7 @@ func TestReconnectStopsWhenTerminalIsNotRunningOrGone(t *testing.T) {
 	}{
 		"exited": {func(c *fakeClient) {
 			c.terminals[3].Status, c.terminals[3].ExitCode = api.TerminalExited, &exitOne
-		}, "play has exited with code 1"},
+		}, "1:play has exited with code 1"},
 		"gone": {func(c *fakeClient) { c.terminals = c.terminals[:3] }, "terminal not found"},
 		"token rotated": {func(c *fakeClient) {
 			c.err = &api.Problem{Status: http.StatusUnauthorized, Code: api.CodeUnauthorized}
@@ -758,11 +769,72 @@ func TestHelpOverlay(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
 	h.key("?")
-	if !h.m.help || !strings.Contains(h.m.View().Content, "enter attach") {
+	if !h.m.help || !strings.Contains(h.m.View().Content, "enter attach") || !strings.Contains(h.m.View().Content, "1-9 attach by number") {
 		t.Fatalf("help = %v view:\n%s", h.m.help, h.m.View().Content)
 	}
-	h.key("j")
-	if h.m.help || h.m.selectedSpace != "spce-home" {
+	h.key("1")
+	if h.m.help || h.m.selectedSpace != "spce-home" || len(h.exec.commands) != 0 {
 		t.Error("closing key was also applied to the list")
+	}
+}
+
+// Digits attach by row number on the terminals screen only (ATC-317).
+func TestDigitAttachesByRowNumber(t *testing.T) {
+	h := newHarness(t, "")
+	h.open()
+	// Inert on the spaces screen.
+	h.key("1")
+	if len(h.exec.commands) != 0 || h.m.screen != screenSpaces || h.m.selectedSpace != "spce-home" || h.m.message != "" {
+		t.Fatalf("digit on spaces = exec %v screen %v selected %q message %q", h.exec.commands, h.m.screen, h.m.selectedSpace, h.m.message)
+	}
+	// Filter text in the directory picker.
+	h.key("n")
+	h.key("1")
+	if h.m.dirInput != "1" || len(h.exec.commands) != 0 {
+		t.Fatalf("digit in the directory picker = input %q exec %v", h.m.dirInput, h.exec.commands)
+	}
+	h.key("esc")
+	h.key("esc")
+	h.key("j")
+	h.key("j")
+	h.key("enter") // work: 1:zsh 2:nvim 3:api
+
+	h.exec.exits = []error{nil}
+	h.key("3")
+	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new"}}, h.exec.commands); diff != "" {
+		t.Errorf("3 (-want +got):\n%s", diff)
+	}
+	if h.m.selectedTerminal != "term-new" {
+		t.Errorf("after 3: selected %q", h.m.selectedTerminal)
+	}
+	h.key("7")
+	if len(h.exec.commands) != 1 || h.m.message != "no terminal 7" {
+		t.Errorf("7 = exec %v message %q", h.exec.commands, h.m.message)
+	}
+	h.key("2")
+	if len(h.exec.commands) != 1 || !strings.Contains(h.m.message, "2:nvim has exited with code 1") {
+		t.Errorf("2 = exec %v message %q", h.exec.commands, h.m.message)
+	}
+	// Ignored while a load is in flight, like enter.
+	pending := h.send(keyPress("r"))
+	if more := h.send(keyPress("1")); len(more) != 0 || len(h.exec.commands) != 1 {
+		t.Errorf("digit while loading = %v exec %v", more, h.exec.commands)
+	}
+	for _, msg := range pending {
+		h.run(msg)
+	}
+	// The row's terminal, as listed: a delete elsewhere since the last
+	// refresh does not renumber what the user sees.
+	h.client.terminals = terminals[1:]
+	h.exec.exits = []error{nil}
+	h.key("1")
+	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new"}, {"/bin/attach", "term-old"}}, h.exec.commands); diff != "" {
+		t.Errorf("1 after a stale delete (-want +got):\n%s", diff)
+	}
+	// A confirmation prompt does not hear digits.
+	h.key("d")
+	h.key("1")
+	if h.m.confirm == nil || len(h.exec.commands) != 2 {
+		t.Errorf("digit in confirmation = confirm %v exec %v", h.m.confirm, h.exec.commands)
 	}
 }

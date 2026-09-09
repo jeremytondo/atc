@@ -45,7 +45,7 @@ func TestMentionThroughTheCoordinatorAndT3Code(t *testing.T) {
 	hub := events.NewHubAt(256, 1)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	root := canonical(t, t.TempDir())
-	terminalService := terminals.NewService(terminals.Options{Repository: db.Terminals(), Driver: idleDriver{}, Spaces: db.Spaces(), HomeDir: root, MarkerDir: t.TempDir(), Hub: hub, Logger: logger})
+	terminalService := terminals.NewService(terminals.Options{Repository: db.Terminals(), Driver: idleDriver{}, Spaces: db.Spaces(), HomeDir: root, ReportDir: t.TempDir(), Hub: hub, Logger: logger})
 	if err := terminalService.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
