@@ -14,23 +14,23 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
-	"github.com/jeremytondo/atc/internal/terminals/wrapper"
+	"github.com/jeremytondo/atc/internal/terminals/monitor"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
-// TestMain doubles as the wrapper executable for the real-zmx integration
-// tests: re-exec'd as `<test-binary> __child --marker … --id … --dir …
-// [--command …]`, it runs the real wrapper exactly the way cmd/atc does.
+// TestMain doubles as the monitor executable for the real-zmx integration
+// tests: re-exec'd as `<test-binary> __child --report … --id … --dir …
+// [--command …]`, it runs the real monitor exactly the way cmd/atc does.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "__child" {
 		flags := flag.NewFlagSet("__child", flag.ExitOnError)
-		marker := flags.String("marker", "", "")
+		rep := flags.String("report", "", "")
 		id := flags.String("id", "", "")
 		dir := flags.String("dir", "", "")
 		command := flags.String("command", "", "")
 		_ = flags.Parse(os.Args[2:])
-		os.Exit(wrapper.Run(wrapper.Options{
-			MarkerPath: *marker, TerminalID: *id, Directory: *dir, Command: *command,
+		os.Exit(monitor.Run(monitor.Options{
+			ReportPath: *rep, TerminalID: *id, Directory: *dir, Command: *command,
 		}))
 	}
 	os.Exit(m.Run())
@@ -105,7 +105,7 @@ func TestEnvContract(t *testing.T) {
 // A socket directory too deep for sun_path fails boot with the remedy.
 func TestNewRejectsDeepSocketDir(t *testing.T) {
 	deep := filepath.Join(t.TempDir(), strings.Repeat("d", 120))
-	_, err := New(Options{SocketDir: deep, MarkerDir: t.TempDir(), WrapperExecutable: "/bin/true"})
+	_, err := New(Options{SocketDir: deep, ReportDir: t.TempDir(), MonitorExecutable: "/bin/true"})
 	if err == nil || !strings.Contains(err.Error(), "move your state dir") {
 		t.Errorf("New(deep dir) = %v, want the socket-path guard error", err)
 	}
@@ -116,7 +116,7 @@ func TestNewTightensPermissiveSocketDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Options{SocketDir: dir, MarkerDir: t.TempDir(), WrapperExecutable: "/bin/true"}); err != nil {
+	if _, err := New(Options{SocketDir: dir, ReportDir: t.TempDir(), MonitorExecutable: "/bin/true"}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(dir)
@@ -133,13 +133,13 @@ func TestNewTightensPermissiveSocketDir(t *testing.T) {
 // socket-path budget; TempDir on macOS does not.
 func newRealDriver(t *testing.T) *Driver {
 	t.Helper()
-	if _, err := New(Options{SocketDir: t.TempDir(), MarkerDir: t.TempDir(), WrapperExecutable: "/bin/true"}); err != nil {
+	if _, err := New(Options{SocketDir: t.TempDir(), ReportDir: t.TempDir(), MonitorExecutable: "/bin/true"}); err != nil {
 		t.Skipf("driver unavailable: %v", err)
 	}
 	driver, err := New(Options{
 		SocketDir:         mkShortTempDir(t),
-		MarkerDir:         t.TempDir(),
-		WrapperExecutable: testBinary(t),
+		ReportDir:         t.TempDir(),
+		MonitorExecutable: testBinary(t),
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -192,23 +192,23 @@ func TestRealZmxLifecycle(t *testing.T) {
 	if diff := cmp.Diff(want, sessions); diff != "" {
 		t.Fatalf("inventory after create (-want +got):\n%s", diff)
 	}
-	// The wrapper's start marker appears (a beat after reachability — the
+	// The monitor's start report appears (a beat after reachability — the
 	// daemon settles before its root task finishes starting) and is not
 	// yet exit evidence.
 	startDeadline := time.Now().Add(3 * time.Second)
 	for {
-		marker, err := exitmarker.Read(driver.markerDir, id)
+		rep, err := report.Read(driver.reportDir, id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if marker != nil {
-			if marker.Exited() {
-				t.Fatalf("marker = %+v, want un-exited while the command runs", marker)
+		if rep != nil {
+			if rep.Exited() {
+				t.Fatalf("rep = %+v, want un-exited while the command runs", rep)
 			}
 			break
 		}
 		if time.Now().After(startDeadline) {
-			t.Fatal("wrapper never wrote its start marker")
+			t.Fatal("monitor never wrote its start report")
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -228,19 +228,19 @@ func TestRealZmxLifecycle(t *testing.T) {
 	if err := driver.Kill(ctx, id); err != nil {
 		t.Errorf("Kill(absent) = %v, want nil", err)
 	}
-	// zmx kill delivers HUP; the wrapper forwards it and records the death
+	// zmx kill delivers HUP; the monitor forwards it and records the death
 	// before the follow-up SIGKILL lands.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		marker, err := exitmarker.Read(driver.markerDir, id)
+		rep, err := report.Read(driver.reportDir, id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if marker.Exited() {
+		if rep.Exited() {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Log("no exit marker after kill (wrapper outraced by SIGKILL); acceptable, evidence-free death is the missing state")
+			t.Log("no exit evidence after kill (monitor outraced by SIGKILL); acceptable, evidence-free death is the missing state")
 			break
 		}
 		time.Sleep(50 * time.Millisecond)

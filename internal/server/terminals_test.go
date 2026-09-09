@@ -31,7 +31,7 @@ import (
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -112,7 +112,7 @@ type fixture struct {
 	service    *terminals.Service
 	threads    *threads.Service
 	binaries   map[string]bool
-	markers    string
+	reports    string
 	projectID  string
 	projectDir string
 	t3         *t3code.Service
@@ -137,7 +137,7 @@ func newFixture(t *testing.T) *fixture {
 		now time.Time
 	}
 	clock.now = time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	markers := t.TempDir()
+	reports := t.TempDir()
 	now := func() time.Time {
 		clock.Lock()
 		defer clock.Unlock()
@@ -150,7 +150,7 @@ func newFixture(t *testing.T) *fixture {
 		Driver:     driver,
 		Spaces:     db.Spaces(),
 		HomeDir:    projectDir,
-		MarkerDir:  markers,
+		ReportDir:  reports,
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        now,
@@ -241,7 +241,7 @@ func newFixture(t *testing.T) *fixture {
 		HomeDir:           projectDir,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
-		binaries: binaries, markers: markers, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
+		binaries: binaries, reports: reports, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectID = "proj-fixtr"
@@ -396,7 +396,7 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 func TestCreateWithFailingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.driver.onCreate = func(id string, _ terminals.CreateSpec) error {
-		writeExitMarker(t, f.markers, id, 127)
+		writeReport(t, f.reports, id, 127)
 		return errors.New("client exited before the session settled")
 	}
 	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Command: "no-such-tool"}))
@@ -425,10 +425,10 @@ func TestDeleteUnderUnreachableBackend(t *testing.T) {
 	}
 }
 
-func writeExitMarker(t *testing.T, dir, id string, code int) {
+func writeReport(t *testing.T, dir, id string, code int) {
 	t.Helper()
 	now := time.Now().UTC()
-	err := exitmarker.Write(exitmarker.Path(dir, id), exitmarker.Marker{
+	err := report.Write(report.Path(dir, id), report.Report{
 		TerminalID: id, StartedAt: now.Add(-time.Second), ExitedAt: &now, Code: &code,
 	})
 	if err != nil {

@@ -16,7 +16,7 @@ import (
 	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/service"
-	"github.com/jeremytondo/atc/internal/terminals/wrapper"
+	"github.com/jeremytondo/atc/internal/terminals/monitor"
 )
 
 func newTerminalCmd() *cobra.Command {
@@ -391,7 +391,7 @@ Examples:
 	return cmd
 }
 
-// newChildCmd is the hidden wrapper subcommand: every ATC terminal
+// newChildCmd is the hidden monitor subcommand: every ATC terminal
 // session's root task, recording exit evidence (ATC-251). It is not a
 // second supervisor and is never run by hand.
 func newChildCmd() *cobra.Command {
@@ -402,9 +402,9 @@ func newChildCmd() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := cmd.Flags()
-			opts := wrapper.Options{}
+			opts := monitor.Options{}
 			var err error
-			if opts.MarkerPath, err = flags.GetString("marker"); err != nil {
+			if opts.ReportPath, err = flags.GetString("report"); err != nil {
 				return err
 			}
 			if opts.TerminalID, err = flags.GetString("id"); err != nil {
@@ -416,17 +416,17 @@ func newChildCmd() *cobra.Command {
 			if opts.Command, err = flags.GetString("command"); err != nil {
 				return err
 			}
-			if code := wrapper.Run(opts); code != 0 {
+			if code := monitor.Run(opts); code != 0 {
 				return &service.ExitError{Code: code}
 			}
 			return nil
 		},
 	}
-	cmd.Flags().String("marker", "", "exit marker file path")
+	cmd.Flags().String("report", "", "monitor report file path")
 	cmd.Flags().String("id", "", "terminal id")
 	cmd.Flags().String("dir", "", "working directory")
 	cmd.Flags().String("command", "", "command to run through the shell")
-	_ = cmd.MarkFlagRequired("marker")
+	_ = cmd.MarkFlagRequired("report")
 	_ = cmd.MarkFlagRequired("id")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd

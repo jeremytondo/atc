@@ -560,7 +560,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	markerDir, err := paths.ExitMarkerDir()
+	reportDir, err := paths.ReportDir()
 	if err != nil {
 		return err
 	}
@@ -574,8 +574,8 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// unreachable and delete keeps working.
 	driver, err := zmx.New(zmx.Options{
 		SocketDir:         socketDir,
-		MarkerDir:         markerDir,
-		WrapperExecutable: selfExecutable,
+		ReportDir:         reportDir,
+		MonitorExecutable: selfExecutable,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -596,7 +596,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Driver:     driver,
 		Spaces:     database.Spaces(),
 		HomeDir:    homeDir,
-		MarkerDir:  markerDir,
+		ReportDir:  reportDir,
 		Hub:        hub,
 		Logger:     logger,
 	})

@@ -15,7 +15,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
 // ErrNotFound reports an id with no record; the API layer maps it to 404.
@@ -44,8 +44,8 @@ type Options struct {
 	// HomeDir is the server user's home directory: the Default space's
 	// directory, and the default for a space created without one.
 	HomeDir string
-	// MarkerDir is where wrappers record exit evidence.
-	MarkerDir string
+	// ReportDir is where monitors write their reports.
+	ReportDir string
 	Hub       *events.Hub
 	Logger    *slog.Logger
 	Now       func() time.Time
@@ -71,7 +71,7 @@ type Service struct {
 	driver     Driver
 	spaces     *store.Spaces
 	homeDir    string
-	markerDir  string
+	reportDir  string
 	hub        *events.Hub
 	logger     *slog.Logger
 	now        func() time.Time
@@ -118,7 +118,7 @@ func NewService(opts Options) *Service {
 		driver:         opts.Driver,
 		spaces:         opts.Spaces,
 		homeDir:        opts.HomeDir,
-		markerDir:      opts.MarkerDir,
+		reportDir:      opts.ReportDir,
 		hub:            opts.Hub,
 		logger:         opts.Logger,
 		now:            opts.Now,
@@ -176,7 +176,7 @@ func (s *Service) Run(ctx context.Context) {
 //	inventory unavailable             → unreachable
 //	present and reachable             → running
 //	present but unresponsive          → unreachable
-//	absent with marker exit evidence  → exited (evidence recorded now)
+//	absent with report exit evidence  → exited (evidence recorded now)
 //	absent without evidence           → missing
 //
 // Absence from the inventory is never by itself an exit. Reconcile is
@@ -248,7 +248,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 	s.mu.Unlock()
 
-	// Phase 2: marker reads and evidence persistence, outside the view
+	// Phase 2: report reads and evidence persistence, outside the view
 	// lock — a slow disk or a held SQLite writer must not block reads.
 	type exitEvidence struct {
 		id                   string
@@ -257,38 +257,38 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 	var exits []exitEvidence
 	for _, terminal := range absent {
-		marker, err := exitmarker.Read(s.markerDir, terminal.id)
+		rep, err := report.Read(s.reportDir, terminal.id)
 		if err != nil {
 			// Unreadable evidence is no evidence; the honest answer for an
 			// absent session without valid evidence is missing.
-			s.logger.Warn("unreadable exit marker", "terminal", terminal.id, "error", err)
+			s.logger.Warn("unreadable report", "terminal", terminal.id, "error", err)
 			statuses[terminal.id] = api.TerminalMissing
 			continue
 		}
-		if !marker.Exited() {
+		if !rep.Exited() {
 			statuses[terminal.id] = api.TerminalMissing
 			continue
 		}
-		if marker.ExitedAt.Before(terminal.createdAt) {
+		if rep.ExitedAt.Before(terminal.createdAt) {
 			// Evidence predating the record belongs to an earlier
-			// incarnation of a reused ID (a reaped orphan's late marker).
-			s.logger.Warn("stale exit marker ignored", "terminal", terminal.id)
+			// incarnation of a reused ID (a reaped orphan's late report).
+			s.logger.Warn("stale exit evidence ignored", "terminal", terminal.id)
 			statuses[terminal.id] = api.TerminalMissing
 			continue
 		}
-		code := marker.Code
+		code := rep.Code
 		if terminal.stopRequested {
 			// An ATC-initiated stop suppresses the exit code — a kill is
 			// not a meaningful program result.
 			code = nil
 		}
 		observed := s.now()
-		if err := s.repository.RecordExit(ctx, terminal.id, *marker.ExitedAt, observed, code); err != nil {
+		if err := s.repository.RecordExit(ctx, terminal.id, *rep.ExitedAt, observed, code); err != nil {
 			// Leave the status untouched this pass; the next one retries.
 			s.logger.Error("recording exit evidence", "terminal", terminal.id, "error", err)
 			continue
 		}
-		exits = append(exits, exitEvidence{terminal.id, *marker.ExitedAt, observed, code})
+		exits = append(exits, exitEvidence{terminal.id, *rep.ExitedAt, observed, code})
 		statuses[terminal.id] = api.TerminalExited
 	}
 
@@ -479,10 +479,10 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 			break
 		}
 	}
-	// A marker left by an earlier incarnation of this ID must not become
+	// A report left by an earlier incarnation of this ID must not become
 	// this terminal's evidence.
-	if err := exitmarker.Remove(s.markerDir, record.ID); err != nil {
-		s.logger.Warn("clearing stale exit marker", "terminal", record.ID, "error", err)
+	if err := report.Remove(s.reportDir, record.ID); err != nil {
+		s.logger.Warn("clearing stale report", "terminal", record.ID, "error", err)
 	}
 	s.mu.Lock()
 	s.view[record.ID] = &entry{record: record, status: api.TerminalUnreachable}
@@ -508,12 +508,12 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 	return s.Get(record.ID)
 }
 
-// awaitSettled polls until the session is visibly running or its wrapper
+// awaitSettled polls until the session is visibly running or its monitor
 // has recorded an exit, for up to VerifyPasses complete inventories.
 func (s *Service) awaitSettled(ctx context.Context, id string) {
 	passes, failures := 0, 0
 	for passes < VerifyPasses && failures < VerifyFailureCap {
-		if marker, err := exitmarker.Read(s.markerDir, id); err == nil && marker.Exited() {
+		if rep, err := report.Read(s.reportDir, id); err == nil && rep.Exited() {
 			return
 		}
 		inventory, err := s.driver.Inventory(ctx)
@@ -689,8 +689,8 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	delete(s.view, id)
 	delete(s.settling, id)
 	s.mu.Unlock()
-	if err := exitmarker.Remove(s.markerDir, id); err != nil {
-		s.logger.Warn("removing exit marker", "terminal", id, "error", err)
+	if err := report.Remove(s.reportDir, id); err != nil {
+		s.logger.Warn("removing report", "terminal", id, "error", err)
 	}
 	s.hub.Publish(api.EventTerminalDeleted, resource, id)
 	s.ops.Unlock()

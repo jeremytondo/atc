@@ -1,8 +1,10 @@
-// Package wrapper is the body of `atc __child`, the ATC-owned root task of
-// every terminal session (ATC-251). It records atomic start and exit
-// evidence around the real workload and forwards HUP/INT/TERM — standard
-// process supervision in the containerd-shim/tini shape. zmx remains the
-// sole durable supervisor; the wrapper only records.
+// Package monitor is the body of `atc __child`, the ATC-owned root task
+// of every terminal session (ATC-251). It starts the real workload with
+// inherited descriptors, records atomic start and exit evidence around it
+// in the per-terminal report, and forwards HUP/INT/TERM — standard
+// process supervision in the containerd-shim/tini shape. It never sits on
+// the PTY data path; zmx remains the sole durable supervisor, and the
+// monitor only records.
 //
 // Shell invocation (decided in the spec): with no command it execs $SHELL
 // (fallback /bin/sh) with the traditional login convention
@@ -10,7 +12,7 @@
 // session. With a command it runs $SHELL -i -l -c "<command>", so profile
 // and rc files load before the command, exactly as if the user had opened
 // a terminal and typed it. Command exit (or shell exit) ends the terminal.
-package wrapper
+package monitor
 
 import (
 	"os"
@@ -20,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
 // LaunchFailureCode is recorded when the workload never started (bad
@@ -29,10 +31,10 @@ import (
 // separate launch-error path.
 const LaunchFailureCode = 127
 
-// Options names the wrapper's inputs, passed as flags by the zmx driver
-// so the wrapper never depends on inheriting ATC's environment.
+// Options names the monitor's inputs, passed as flags by the zmx driver
+// so the monitor never depends on inheriting ATC's environment.
 type Options struct {
-	MarkerPath string
+	ReportPath string
 	TerminalID string
 	// Directory the workload starts in.
 	Directory string
@@ -41,12 +43,12 @@ type Options struct {
 	Command string
 }
 
-// Run supervises the workload and returns the wrapper's own exit code
+// Run supervises the workload and returns the monitor's own exit code
 // (mirroring the child's). Failures to record evidence are reported on
 // stderr — the session PTY — since there is nowhere else to say it.
 func Run(opts Options) int {
 	started := time.Now().UTC()
-	marker := exitmarker.Marker{TerminalID: opts.TerminalID, StartedAt: started}
+	rep := report.Report{TerminalID: opts.TerminalID, StartedAt: started}
 
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -71,47 +73,47 @@ func Run(opts Options) int {
 	if err := cmd.Start(); err != nil {
 		code := LaunchFailureCode
 		now := time.Now().UTC()
-		marker.ExitedAt = &now
-		marker.Code = &code
-		marker.Error = err.Error()
-		writeMarker(opts.MarkerPath, marker)
+		rep.ExitedAt = &now
+		rep.Code = &code
+		rep.Error = err.Error()
+		writeReport(opts.ReportPath, rep)
 		return LaunchFailureCode
 	}
-	marker.PID = cmd.Process.Pid
-	writeMarker(opts.MarkerPath, marker)
+	rep.PID = cmd.Process.Pid
+	writeReport(opts.ReportPath, rep)
 
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	for {
 		select {
 		case received := <-signals:
-			// zmx kill signals the wrapper's process group, but a shell
+			// zmx kill signals the monitor's process group, but a shell
 			// with job control has moved to its own group — forwarding is
 			// what carries the HUP through.
 			_ = cmd.Process.Signal(received)
 		case waitErr := <-waited:
 			now := time.Now().UTC()
-			marker.ExitedAt = &now
+			rep.ExitedAt = &now
 			code := LaunchFailureCode
 			if state := cmd.ProcessState; state != nil {
 				code = state.ExitCode()
 				if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 					code = 128 + int(status.Signal())
-					marker.Signal = status.Signal().String()
+					rep.Signal = status.Signal().String()
 				}
 			} else if waitErr != nil {
-				marker.Error = waitErr.Error()
+				rep.Error = waitErr.Error()
 			}
-			marker.Code = &code
-			writeMarker(opts.MarkerPath, marker)
+			rep.Code = &code
+			writeReport(opts.ReportPath, rep)
 			return code
 		}
 	}
 }
 
-func writeMarker(path string, marker exitmarker.Marker) {
-	if err := exitmarker.Write(path, marker); err != nil {
-		// The marker is evidence, not control flow: the workload runs (or
+func writeReport(path string, rep report.Report) {
+	if err := report.Write(path, rep); err != nil {
+		// The report is evidence, not control flow: the workload runs (or
 		// ran) regardless, and the terminal degrades to missing.
 		_, _ = os.Stderr.WriteString("atc __child: recording exit evidence: " + err.Error() + "\n")
 	}

@@ -1,6 +1,6 @@
-package wrapper
+package monitor
 
-// The wrapper is process supervision; these tests run real processes. The
+// The monitor is process supervision; these tests run real processes. The
 // shell is /bin/sh where behavior matters and the re-exec'd test binary
 // where the exact argv must be observed (a #! script cannot see argv[0]).
 
@@ -12,71 +12,71 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
 func TestMain(m *testing.M) {
 	// Helper mode: when re-exec'd as the "shell", record argv and exit.
-	if record := os.Getenv("WRAPPER_TEST_RECORD"); record != "" {
+	if record := os.Getenv("MONITOR_TEST_RECORD"); record != "" {
 		_ = os.WriteFile(record, []byte(strings.Join(os.Args, "\n")), 0o600)
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
 
-func runWrapper(t *testing.T, command string, directory string) (int, *exitmarker.Marker) {
+func runMonitor(t *testing.T, command string, directory string) (int, *report.Report) {
 	t.Helper()
 	dir := t.TempDir()
-	path := exitmarker.Path(dir, "term-aaaaa")
-	code := Run(Options{MarkerPath: path, TerminalID: "term-aaaaa", Directory: directory, Command: command})
-	marker, err := exitmarker.Read(dir, "term-aaaaa")
+	path := report.Path(dir, "term-aaaaa")
+	code := Run(Options{ReportPath: path, TerminalID: "term-aaaaa", Directory: directory, Command: command})
+	rep, err := report.Read(dir, "term-aaaaa")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return code, marker
+	return code, rep
 }
 
 func TestCommandExitCodeRecorded(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	code, marker := runWrapper(t, "exit 3", t.TempDir())
+	code, rep := runMonitor(t, "exit 3", t.TempDir())
 	if code != 3 {
 		t.Errorf("Run = %d, want 3", code)
 	}
-	if !marker.Exited() || marker.Code == nil || *marker.Code != 3 {
-		t.Errorf("marker = %+v, want exited with code 3", marker)
+	if !rep.Exited() || rep.Code == nil || *rep.Code != 3 {
+		t.Errorf("report = %+v, want exited with code 3", rep)
 	}
 }
 
 func TestSignalDeathRecordedAs128PlusSignum(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	code, marker := runWrapper(t, "kill -KILL $$", t.TempDir())
+	code, rep := runMonitor(t, "kill -KILL $$", t.TempDir())
 	if code != 137 {
 		t.Errorf("Run = %d, want 137 (128+SIGKILL)", code)
 	}
-	if !marker.Exited() || marker.Code == nil || *marker.Code != 137 {
-		t.Errorf("marker = %+v, want exited with code 137", marker)
+	if !rep.Exited() || rep.Code == nil || *rep.Code != 137 {
+		t.Errorf("report = %+v, want exited with code 137", rep)
 	}
-	if marker.Signal == "" {
-		t.Error("marker.Signal empty for a signal death")
+	if rep.Signal == "" {
+		t.Error("report.Signal empty for a signal death")
 	}
 }
 
 func TestLaunchFailureRecordedAs127(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	code, marker := runWrapper(t, "true", filepath.Join(t.TempDir(), "does-not-exist"))
+	code, rep := runMonitor(t, "true", filepath.Join(t.TempDir(), "does-not-exist"))
 	if code != LaunchFailureCode {
 		t.Errorf("Run = %d, want %d", code, LaunchFailureCode)
 	}
-	if !marker.Exited() || marker.Code == nil || *marker.Code != LaunchFailureCode {
-		t.Errorf("marker = %+v, want exited with launch-failure code", marker)
+	if !rep.Exited() || rep.Code == nil || *rep.Code != LaunchFailureCode {
+		t.Errorf("report = %+v, want exited with launch-failure code", rep)
 	}
-	if marker.Error == "" {
-		t.Error("marker.Error empty for a launch failure")
+	if rep.Error == "" {
+		t.Error("report.Error empty for a launch failure")
 	}
 }
 
-// HUP/INT/TERM must reach the workload through the wrapper — zmx kill
-// signals the wrapper's process group, and a shell that moved to its own
+// HUP/INT/TERM must reach the workload through the monitor — zmx kill
+// signals the monitor's process group, and a shell that moved to its own
 // group only hears about it by forwarding.
 func TestForwardsSignalsToChild(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
@@ -86,10 +86,10 @@ func TestForwardsSignalsToChild(t *testing.T) {
 	command := "trap 'exit 42' HUP; : > " + ready + "; sleep 30 >/dev/null 2>&1 & wait"
 
 	dir := t.TempDir()
-	path := exitmarker.Path(dir, "term-aaaaa")
+	path := report.Path(dir, "term-aaaaa")
 	done := make(chan int, 1)
 	go func() {
-		done <- Run(Options{MarkerPath: path, TerminalID: "term-aaaaa", Directory: "/", Command: command})
+		done <- Run(Options{ReportPath: path, TerminalID: "term-aaaaa", Directory: "/", Command: command})
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -102,7 +102,7 @@ func TestForwardsSignalsToChild(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// Signal our own process: the wrapper's handler owns HUP while
+	// Signal our own process: the monitor's handler owns HUP while
 	// registered and forwards it to the child.
 	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestForwardsSignalsToChild(t *testing.T) {
 			t.Errorf("Run = %d, want the trap's 42", code)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("wrapper did not return after forwarded HUP")
+		t.Fatal("monitor did not return after forwarded HUP")
 	}
 }
 
@@ -138,10 +138,10 @@ func TestShellInvocation(t *testing.T) {
 	} {
 		record := filepath.Join(t.TempDir(), "argv")
 		t.Setenv("SHELL", self)
-		t.Setenv("WRAPPER_TEST_RECORD", record)
-		code, marker := runWrapper(t, tc.command, "/")
-		if code != 0 || !marker.Exited() {
-			t.Fatalf("%s: Run = %d, marker %+v", name, code, marker)
+		t.Setenv("MONITOR_TEST_RECORD", record)
+		code, rep := runMonitor(t, tc.command, "/")
+		if code != 0 || !rep.Exited() {
+			t.Fatalf("%s: Run = %d, rep %+v", name, code, rep)
 		}
 		data, err := os.ReadFile(record)
 		if err != nil {

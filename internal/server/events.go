@@ -24,7 +24,7 @@ const defaultHeartbeatInterval = 15 * time.Second
 // block a write forever; with it a send that cannot complete within the
 // SSE write timeout fails and ends that client's stream.
 //
-// The wrapper also records write failures, reachable from the request
+// The monitor also records write failures, reachable from the request
 // context: Huma's comment path swallows write errors, so a stalled client
 // receiving only heartbeats would otherwise keep its handler and hub
 // subscription alive forever.

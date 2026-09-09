@@ -35,7 +35,7 @@ import (
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
 // commandTimeout bounds every zmx invocation: a hung zmx must not hang its
@@ -59,18 +59,18 @@ func maxSocketPathBytes() int {
 type Options struct {
 	// SocketDir is ATC's private zmx socket directory (paths.TerminalSocketDir).
 	SocketDir string
-	// MarkerDir is where wrappers record exit evidence (paths.ExitMarkerDir).
-	MarkerDir string
-	// WrapperExecutable is the atc binary, re-exec'd as `atc __child`.
-	WrapperExecutable string
+	// ReportDir is where monitors write their reports (paths.ReportDir).
+	ReportDir string
+	// MonitorExecutable is the atc binary, re-exec'd as `atc __child`.
+	MonitorExecutable string
 	Logger            *slog.Logger
 }
 
 // Driver implements terminals.Driver over the zmx CLI.
 type Driver struct {
 	socketDir string
-	markerDir string
-	wrapper   string
+	reportDir string
+	monitor   string
 	logger    *slog.Logger
 
 	mu       sync.Mutex
@@ -106,8 +106,8 @@ func New(opts Options) (*Driver, error) {
 	}
 	return &Driver{
 		socketDir: socketDir,
-		markerDir: opts.MarkerDir,
-		wrapper:   opts.WrapperExecutable,
+		reportDir: opts.ReportDir,
+		monitor:   opts.MonitorExecutable,
 		logger:    opts.Logger,
 	}, nil
 }
@@ -220,7 +220,7 @@ func parseList(output string) []terminals.Session {
 }
 
 // Create births the session: record already persisted by the caller, the
-// wrapper as root task, a fresh PTY for the short-lived attach client, and
+// monitor as root task, a fresh PTY for the short-lived attach client, and
 // complete inventories as the only settle authority — the client's exit
 // code is not one.
 func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpec) error {
@@ -240,8 +240,8 @@ func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpe
 		return fmt.Errorf("create %s: session already exists", id)
 	}
 
-	argv := []string{"attach", id, d.wrapper, "__child",
-		"--marker", exitmarker.Path(d.markerDir, id), "--id", id, "--dir", spec.Directory}
+	argv := []string{"attach", id, d.monitor, "__child",
+		"--report", report.Path(d.reportDir, id), "--id", id, "--dir", spec.Directory}
 	if spec.Command != "" {
 		argv = append(argv, "--command", spec.Command)
 	}

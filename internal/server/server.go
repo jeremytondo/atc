@@ -98,7 +98,7 @@ func NewHandler(opts Options) http.Handler {
 		"bearerAuth": {Type: "http", Scheme: "bearer"},
 	}
 	// A merge-patch Optional[T] is exactly a nullable T on the wire; the
-	// document says so instead of describing the Go wrapper.
+	// document says so instead of describing the Go type.
 	config.Components.Schemas.RegisterTypeAlias(reflect.TypeFor[api.Optional[string]](), reflect.TypeFor[*string]())
 	config.Components.Schemas.RegisterTypeAlias(reflect.TypeFor[api.Optional[bool]](), reflect.TypeFor[*bool]())
 	// Declared globally so the generated document tells client authors

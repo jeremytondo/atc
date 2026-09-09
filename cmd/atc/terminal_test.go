@@ -122,7 +122,7 @@ func startTestServerFull(t *testing.T) *testServer {
 		Driver:     driver,
 		Spaces:     db.Spaces(),
 		HomeDir:    homeDir,
-		MarkerDir:  t.TempDir(),
+		ReportDir:  t.TempDir(),
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

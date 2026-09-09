@@ -21,7 +21,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
-	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
 // fakeDriver is a hand-written in-memory session backend. Create births a
@@ -35,7 +35,7 @@ type fakeDriver struct {
 	killErr   error
 	killed    []string
 	// onCreate observes the create, e.g. to assert the record already
-	// exists or to plant a fast-failure marker instead of a session.
+	// exists or to plant a fast-failure report instead of a session.
 	onCreate func(id string, spec CreateSpec)
 	// commands records what each session was created with.
 	commands map[string]string
@@ -120,14 +120,14 @@ func (a *fakeDriver) setInvErr(err error) {
 }
 
 // fixture wires a Service over a real temp-file store, the fake driver, a
-// real marker directory, and a fake clock. home is the fixture's "server
+// real report directory, and a fake clock. home is the fixture's "server
 // user's home", a real temp directory the Default space is rooted at.
 type fixture struct {
 	service *Service
 	store   *store.Store
 	driver  *fakeDriver
 	hub     *events.Hub
-	markers string
+	reports string
 	clock   *fakeClock
 	home    string
 }
@@ -152,7 +152,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	driver := newFakeDriver()
-	markers := t.TempDir()
+	reports := t.TempDir()
 	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)}
 	home := canonicalTempDir(t)
 	service := NewService(Options{
@@ -160,7 +160,7 @@ func newFixture(t *testing.T) *fixture {
 		Driver:     driver,
 		Spaces:     s.Spaces(),
 		HomeDir:    home,
-		MarkerDir:  markers,
+		ReportDir:  reports,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        clock.Now,
@@ -169,7 +169,7 @@ func newFixture(t *testing.T) *fixture {
 	if err := service.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{service: service, store: s, driver: driver, hub: service.hub, markers: markers, clock: clock, home: home}
+	return &fixture{service: service, store: s, driver: driver, hub: service.hub, reports: reports, clock: clock, home: home}
 }
 
 // canonicalTempDir is a temp directory in canonical form — on macOS the
@@ -200,15 +200,15 @@ func (f *fixture) defaultSpace(t *testing.T) api.Space {
 	return api.Space{}
 }
 
-func plantExitMarker(t *testing.T, dir, id string, code int, exited bool) {
+func plantReport(t *testing.T, dir, id string, code int, exited bool) {
 	t.Helper()
-	marker := exitmarker.Marker{TerminalID: id, PID: 1, StartedAt: time.Now()}
+	rep := report.Report{TerminalID: id, PID: 1, StartedAt: time.Now()}
 	if exited {
 		now := time.Now().UTC()
-		marker.ExitedAt = &now
-		marker.Code = &code
+		rep.ExitedAt = &now
+		rep.Code = &code
 	}
-	if err := exitmarker.Write(exitmarker.Path(dir, id), marker); err != nil {
+	if err := report.Write(report.Path(dir, id), rep); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -280,13 +280,13 @@ func TestCreateDefaults(t *testing.T) {
 	}
 }
 
-// A fast-failing command never becomes a session; the wrapper's marker is
+// A fast-failing command never becomes a session; the monitor's report is
 // the evidence and create reports exited with it — no separate error path.
 func TestCreateFastFailingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.driver.createErr = errors.New("client exited before the session settled")
 	f.driver.onCreate = func(id string, _ CreateSpec) {
-		plantExitMarker(t, f.markers, id, 127, true)
+		plantReport(t, f.reports, id, 127, true)
 	}
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{Command: "no-such-tool"})
 	if err != nil {
@@ -314,7 +314,7 @@ func TestCreateNeverSettles(t *testing.T) {
 	}
 }
 
-// The reconciliation decision table over (inventory result, marker state,
+// The reconciliation decision table over (inventory result, report state,
 // stop intent) → status.
 func TestReconcileDecisionTable(t *testing.T) {
 	invErr := errors.New("zmx unavailable")
@@ -334,7 +334,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 		"inventory failure → unreachable":               {present: true, reachable: true, invErr: invErr, want: api.TerminalUnreachable},
 		"absent with evidence → exited":                 {markerExited: true, want: api.TerminalExited, wantCode: &code3},
 		"absent, stop intent → exited, code suppressed": {markerExited: true, stopIntent: true, want: api.TerminalExited},
-		"absent, start-only marker → missing":           {markerStart: true, want: api.TerminalMissing},
+		"absent, start-only report → missing":           {markerStart: true, want: api.TerminalMissing},
 		"absent, no evidence → missing":                 {want: api.TerminalMissing},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -356,7 +356,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 				f.service.mu.Unlock()
 			}
 			if tc.markerExited || tc.markerStart {
-				plantExitMarker(t, f.markers, id, code3, tc.markerExited)
+				plantReport(t, f.reports, id, code3, tc.markerExited)
 			}
 			if tc.present {
 				f.driver.set(id, tc.reachable)
@@ -381,7 +381,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 }
 
 // Exit evidence is durable truth: once recorded, later inventory failures
-// or marker removal never resurrect the terminal, and it stays listed
+// or report removal never resurrect the terminal, and it stays listed
 // until deleted.
 func TestExitedIsStickyAndStaysListed(t *testing.T) {
 	f := newFixture(t)
@@ -391,10 +391,10 @@ func TestExitedIsStickyAndStaysListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.driver.remove(terminal.ID)
-	plantExitMarker(t, f.markers, terminal.ID, 3, true)
+	plantReport(t, f.reports, terminal.ID, 3, true)
 	f.service.Reconcile(ctx)
 
-	if err := exitmarker.Remove(f.markers, terminal.ID); err != nil {
+	if err := report.Remove(f.reports, terminal.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.driver.setInvErr(errors.New("zmx down"))
@@ -561,12 +561,12 @@ func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.driver.remove(terminal.ID)
-	// The marker's exit predates the record's creation (fixture clock
+	// The rep's exit predates the record's creation (fixture clock
 	// starts 2026-08-27T12:00) — a leftover from a dead incarnation.
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	code := 3
-	marker := exitmarker.Marker{TerminalID: terminal.ID, PID: 1, StartedAt: old, ExitedAt: &old, Code: &code}
-	if err := exitmarker.Write(exitmarker.Path(f.markers, terminal.ID), marker); err != nil {
+	rep := report.Report{TerminalID: terminal.ID, PID: 1, StartedAt: old, ExitedAt: &old, Code: &code}
+	if err := report.Write(report.Path(f.reports, terminal.ID), rep); err != nil {
 		t.Fatal(err)
 	}
 	f.service.Reconcile(ctx)
@@ -600,7 +600,7 @@ func TestLoadRebuildsView(t *testing.T) {
 		Driver:     f.driver,
 		Spaces:     f.service.spaces,
 		HomeDir:    f.home,
-		MarkerDir:  f.markers,
+		ReportDir:  f.reports,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        f.clock.Now,
@@ -616,7 +616,7 @@ func TestLoadRebuildsView(t *testing.T) {
 	// A home that is no usable directory fails the boot.
 	broken := NewService(Options{
 		Repository: f.service.repository, Driver: f.driver, Spaces: f.service.spaces,
-		HomeDir: filepath.Join(f.home, "nope"), MarkerDir: f.markers, Hub: events.NewHub(64), Now: f.clock.Now,
+		HomeDir: filepath.Join(f.home, "nope"), ReportDir: f.reports, Hub: events.NewHub(64), Now: f.clock.Now,
 	})
 	if err := broken.Load(ctx); err == nil {
 		t.Error("Load with an unusable home succeeded")
@@ -963,7 +963,7 @@ func TestDeleteSpace(t *testing.T) {
 	}
 	f.driver.set(ids[1], false)
 	f.driver.remove(ids[2])
-	plantExitMarker(t, f.markers, ids[2], 0, true)
+	plantReport(t, f.reports, ids[2], 0, true)
 	f.driver.remove(ids[3])
 	f.service.Reconcile(ctx)
 	elsewhere, err := f.service.Create(ctx, api.TerminalCreateParams{Name: "elsewhere"})
