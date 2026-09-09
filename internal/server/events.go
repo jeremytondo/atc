@@ -159,6 +159,9 @@ var changeEvents = map[string]func(api.ChangeEvent) any{
 	api.EventThreadCreated:      func(c api.ChangeEvent) any { return api.ThreadCreatedEvent{ChangeEvent: c} },
 	api.EventThreadUpdated:      func(c api.ChangeEvent) any { return api.ThreadUpdatedEvent{ChangeEvent: c} },
 	api.EventThreadDeleted:      func(c api.ChangeEvent) any { return api.ThreadDeletedEvent{ChangeEvent: c} },
+	api.EventArtifactCreated:    func(c api.ChangeEvent) any { return api.ArtifactCreatedEvent{ChangeEvent: c} },
+	api.EventArtifactUpdated:    func(c api.ChangeEvent) any { return api.ArtifactUpdatedEvent{ChangeEvent: c} },
+	api.EventArtifactDeleted:    func(c api.ChangeEvent) any { return api.ArtifactDeletedEvent{ChangeEvent: c} },
 	api.EventIntegrationUpdated: func(c api.ChangeEvent) any { return api.IntegrationUpdatedEvent{ChangeEvent: c} },
 }
 

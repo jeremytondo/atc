@@ -44,6 +44,12 @@ type Config struct {
 	// Funnel supports only 443, 8443, and 10000; the server never
 	// switches ports on its own to work around a conflict.
 	WebhooksPort int `toml:"webhooks_port"`
+	// DocumentsPort is the port the document origin listens on (ATC-318):
+	// published artifacts for browsers, on Bind locally and on the tailnet
+	// whenever Tailscale is. A distinct port is a distinct browser origin
+	// from the API, which is the isolation the reader relies on, so it may
+	// never equal Port. 0 means an OS-assigned port, as for Port.
+	DocumentsPort int `toml:"documents_port"`
 }
 
 // funnelPorts are the public ports Tailscale Funnel can serve.
@@ -52,7 +58,7 @@ var funnelPorts = []int{443, 8443, 10000}
 // Default is the configuration with no file, environment, or flags present.
 // Port 7331 is the stable contract port (ATC-245).
 func Default() Config {
-	return Config{Port: 7331, Bind: "127.0.0.1", TailscaleExecutable: "tailscale", WebhooksPort: 443}
+	return Config{Port: 7331, Bind: "127.0.0.1", TailscaleExecutable: "tailscale", WebhooksPort: 443, DocumentsPort: 7332}
 }
 
 // Load resolves the file and environment levels: defaults, overlaid with
@@ -117,6 +123,13 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 		}
 		cfg.WebhooksPort = port
 	}
+	if value, ok := lookupEnv("ATC_DOCUMENTS_PORT"); ok {
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("ATC_DOCUMENTS_PORT=%q is not a number", value)
+		}
+		cfg.DocumentsPort = port
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -141,18 +154,28 @@ func (c Config) Validate() error {
 	if !slices.Contains(funnelPorts, c.WebhooksPort) {
 		return fmt.Errorf("webhooks_port %d is not a port Tailscale Funnel can serve (443, 8443, or 10000)", c.WebhooksPort)
 	}
+	if c.DocumentsPort < 0 || c.DocumentsPort > 65535 {
+		return fmt.Errorf("documents_port %d is outside 0-65535", c.DocumentsPort)
+	}
+	if c.DocumentsPort != 0 && c.DocumentsPort == c.Port {
+		return fmt.Errorf("documents_port and port are both %d: the document origin must be a distinct origin from the API", c.Port)
+	}
 	return nil
 }
 
 // ValidateExposure checks the exposures a launch will actually run,
 // once flags have settled them: private Serve fronts the API at
 // https://<node>:<port> and Funnel serves the receiver at
-// https://<node>:<webhooks_port>, so both on one port would be one
-// Tailscale endpoint with two owners. The server never switches ports to
+// https://<node>:<webhooks_port>, and Serve fronts the document origin at
+// https://<node>:<documents_port> alongside the API, so two on one port
+// would be one Tailscale endpoint with two owners. The server never switches ports to
 // work around it.
 func (c Config) ValidateExposure(tailnet, webhooks bool) error {
 	if tailnet && webhooks && c.WebhooksPort == c.Port {
 		return fmt.Errorf("webhooks_port and port are both %d: the public webhook endpoint and the private tailnet API cannot share a Tailscale port", c.Port)
+	}
+	if tailnet && webhooks && c.WebhooksPort == c.DocumentsPort {
+		return fmt.Errorf("webhooks_port and documents_port are both %d: the public webhook endpoint and the private document origin cannot share a Tailscale port", c.DocumentsPort)
 	}
 	return nil
 }

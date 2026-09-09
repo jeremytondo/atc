@@ -8,6 +8,7 @@
 //	data    $XDG_DATA_HOME/atc/atc.db         (~/.local/share/atc/atc.db)
 //	data    $XDG_DATA_HOME/atc/t3code-session.json
 //	data    $XDG_DATA_HOME/atc/linear.json
+//	data    $XDG_DATA_HOME/atc/artifacts     (~/.local/share/atc/artifacts)
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
@@ -87,6 +88,14 @@ func T3CodeSessionFile() (string, error) {
 // the server as tokens renew. A 0600 credential beside auth-token.
 func LinearSetupFile() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "linear.json")
+}
+
+// ArtifactDir holds published artifact content (ATC-318): one directory
+// per artifact id, one per version number beneath it, each with the
+// version's static build and source snapshot. Durable user-owned bytes,
+// so it lives in the data dir beside the database that indexes them.
+func ArtifactDir() (string, error) {
+	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "artifacts")
 }
 
 // TerminalSocketDir is ATC's private zmx socket directory (ATC-251).
