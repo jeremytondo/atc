@@ -109,6 +109,12 @@ func HookDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "hooks")
 }
 
+// LifecycleLogFile is the durable record of ATC-issued server lifecycle
+// operations (ATC-319).
+func LifecycleLogFile() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "lifecycle.log")
+}
+
 func resolve(envVar string, fallback []string, file string) (string, error) {
 	if dir := os.Getenv(envVar); dir != "" {
 		return filepath.Join(dir, "atc", file), nil

@@ -15,6 +15,12 @@
 // the PTY (stdin EOF) detaches the client while the daemon persists.
 // `zmx kill` returns before the session is gone and its exit code proves
 // nothing; absence is verified only by polling complete inventories.
+//
+// Every session is launched in its own process placement (ATC-319,
+// internal/placement), which is also its exact ownership boundary:
+// deleting a terminal ends the session and then whatever its scope still
+// holds, including background processes that left the session's process
+// group and so survive `zmx kill`.
 package zmx
 
 import (
@@ -34,9 +40,13 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
+	"github.com/jeremytondo/atc/internal/placement"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/report"
 )
+
+// placementKind names terminal scopes: atc-terminal-<namespace>-<id>.scope.
+const placementKind = "terminal"
 
 // commandTimeout bounds every zmx invocation: a hung zmx must not hang its
 // caller — slowness is unavailability.
@@ -72,6 +82,7 @@ type Driver struct {
 	reportDir string
 	monitor   string
 	logger    *slog.Logger
+	placement *placement.Host
 
 	mu       sync.Mutex
 	resolved string // memoized successful LookPath result
@@ -111,12 +122,34 @@ func New(opts Options) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
+	host := placement.Detect()
+	if !host.Scoped() {
+		// The explicitly limited contract of a direct launch: on Linux
+		// without systemd there is nothing to place sessions outside a
+		// supervisor's reach; elsewhere the platform's own detachment is
+		// what persistence rests on.
+		opts.Logger.Log(context.Background(), directLaunchLevel(), "terminal sessions launch without independent process placement; they persist only as far as this platform's own session handling allows")
+	}
 	return &Driver{
 		socketDir: socketDir,
 		reportDir: reportDir,
 		monitor:   opts.MonitorExecutable,
 		logger:    opts.Logger,
+		placement: host,
 	}, nil
+}
+
+func directLaunchLevel() slog.Level {
+	if runtime.GOOS == "linux" {
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
+}
+
+// unit is the session's scope name, derived from the private namespace
+// (the socket directory) and the id.
+func (d *Driver) unit(id string) string {
+	return placement.Name(placementKind, d.socketDir, id)
 }
 
 // zmx resolves the executable on PATH, memoizing success so a transiently
@@ -227,13 +260,19 @@ func parseList(output string) []terminals.Session {
 }
 
 // Create births the session: record already persisted by the caller, the
-// monitor as root task, a fresh PTY for the short-lived attach client, and
-// complete inventories as the only settle authority — the client's exit
-// code is not one.
+// monitor as root task, a fresh PTY for the short-lived attach client
+// inside the session's own placement, and complete inventories as the
+// only settle authority — the client's exit code is not one. Every
+// failure before the client starts is terminals.ErrNotLaunched, a
+// placement that cannot be established included: a session is never
+// quietly launched inside the server's own cgroup.
 func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpec) error {
+	notLaunched := func(err error) error {
+		return fmt.Errorf("create %s: %w: %w", id, terminals.ErrNotLaunched, err)
+	}
 	executable, err := d.zmx()
 	if err != nil {
-		return err
+		return notLaunched(err)
 	}
 	// zmx attach silently attaches to an existing name, ignoring the
 	// command entirely; creating must never be silently attaching. An
@@ -241,25 +280,32 @@ func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpe
 	// socket path.
 	inventory, err := d.Inventory(ctx)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", id, err)
+		return notLaunched(err)
 	}
 	if present, _ := lookupSession(inventory, id); present {
-		return fmt.Errorf("create %s: session already exists", id)
+		return notLaunched(errors.New("session already exists"))
+	}
+	if err := d.placement.Preflight(ctx); err != nil {
+		return notLaunched(err)
 	}
 
-	argv := []string{"attach", id, d.monitor, "__child",
+	argv := []string{executable, "attach", id, d.monitor, "__child",
 		"--report", report.Path(d.reportDir, id), "--id", id, "--dir", spec.Directory}
 	if spec.Command != "" {
 		argv = append(argv, "--command", spec.Command)
 	}
-	cmd := exec.Command(executable, argv...)
+	// The scope wraps the attach client, so the daemon it forks is inside
+	// from birth. Deliberately not CommandContext: a cancelled create
+	// closes the PTY and reaps the client, never the session.
+	argv = d.placement.Wrap(d.unit(id), "ATC terminal "+id, argv)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = Env(d.socketDir, true)
 	// A real PTY, sized sanely: the forked daemon reads its initial
 	// winsize from the creator (falling back to 24x160 for a bare pipe),
 	// and the attach client's raw-mode setup wants a terminal.
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
-		return fmt.Errorf("create %s: %w", id, err)
+		return notLaunched(err)
 	}
 	tail := newTailBuffer()
 	go tail.consume(ptmx)
@@ -286,17 +332,36 @@ func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpe
 	return fmt.Errorf("create %s: %w", id, err)
 }
 
-// Kill terminates the session and verifies absence. An absent session is
-// success; `zmx kill`'s own exit code and output are deliberately ignored
-// (it returns before death and exits 0 on unmatched names).
+// Kill terminates the session and verifies absence, then ends whatever
+// the session's placement still holds and verifies that too. The
+// graceful zmx shutdown goes first — it is what lets the monitor record
+// the exit — and the scope stop finishes only what it left behind. Each
+// phase runs regardless of the other's outcome, so an unhealthy zmx
+// never leaves a scope running and a stubborn scope never hides an
+// unverified session; the first failure is reported. An absent session
+// with nothing left is success; `zmx kill`'s own exit code and output
+// are deliberately ignored (it returns before death and exits 0 on
+// unmatched names).
 func (d *Driver) Kill(ctx context.Context, id string) error {
+	sessionErr := d.killSession(ctx, id)
+	placementErr := d.stopPlacement(ctx, id)
+	if sessionErr != nil {
+		return fmt.Errorf("kill %s: %w", id, sessionErr)
+	}
+	if placementErr != nil {
+		return fmt.Errorf("kill %s: %w", id, placementErr)
+	}
+	return nil
+}
+
+func (d *Driver) killSession(ctx context.Context, id string) error {
 	executable, err := d.zmx()
 	if err != nil {
 		return err
 	}
 	inventory, err := d.Inventory(ctx)
 	if err != nil {
-		return fmt.Errorf("kill %s: %w", id, err)
+		return err
 	}
 	if present, _ := lookupSession(inventory, id); !present {
 		return nil
@@ -318,7 +383,75 @@ func (d *Driver) Kill(ctx context.Context, id string) error {
 	if err == nil {
 		err = fmt.Errorf("session still present after %d inventory passes", terminals.VerifyPasses)
 	}
-	return fmt.Errorf("kill %s: %w", id, err)
+	return err
+}
+
+// stopPlacement ends the session's scope if it still holds processes.
+// The scope empties on its own a beat after the session dies — the
+// manager notices the cgroup drain asynchronously — so it is given a
+// short grace before being stopped, and a stop is verified the same way.
+func (d *Driver) stopPlacement(ctx context.Context, id string) error {
+	if !d.placement.Scoped() {
+		return nil
+	}
+	unit := d.unit(id)
+	active, err := d.awaitInactive(ctx, unit, terminals.VerifyPasses/4)
+	if err != nil || !active {
+		return err
+	}
+	d.logger.Info("stopping processes left by session", "session", id)
+	if err := d.placement.Stop(ctx, unit); err != nil {
+		return err
+	}
+	active, err = d.awaitInactive(ctx, unit, terminals.VerifyPasses/4)
+	if err != nil {
+		return err
+	}
+	if active {
+		return errors.New("processes still present after the scope was stopped")
+	}
+	return nil
+}
+
+// awaitInactive polls the scope at the verification cadence for up to
+// passes checks; it returns as soon as the scope is inactive.
+func (d *Driver) awaitInactive(ctx context.Context, unit string, passes int) (active bool, err error) {
+	for pass := 0; ; pass++ {
+		active, err = d.placement.Active(ctx, unit)
+		if err != nil || !active || pass+1 >= passes {
+			return active, err
+		}
+		select {
+		case <-ctx.Done():
+			return active, ctx.Err()
+		case <-time.After(terminals.VerifyInterval):
+		}
+	}
+}
+
+// Leftovers lists the ids whose scope still holds processes while the
+// inventory has no such session: the scope outlived what it was created
+// for. The scope listing is namespaced, so another state directory's
+// terminals are never candidates.
+func (d *Driver) Leftovers(ctx context.Context, inventory []terminals.Session) ([]string, error) {
+	if !d.placement.Scoped() {
+		return nil, nil
+	}
+	units, err := d.placement.ListActive(ctx, placement.Pattern(placementKind, d.socketDir))
+	if err != nil {
+		return nil, err
+	}
+	var leftovers []string
+	for _, unit := range units {
+		id, ok := placement.ID(placementKind, d.socketDir, unit)
+		if !ok {
+			continue
+		}
+		if present, _ := lookupSession(inventory, id); !present {
+			leftovers = append(leftovers, id)
+		}
+	}
+	return leftovers, nil
 }
 
 // pollInventory re-checks complete inventories at the verification cadence

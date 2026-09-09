@@ -14,8 +14,15 @@ package terminals
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrNotLaunched marks a Driver.Create failure from before the backend
+// ran anything: nothing can have been born, so there is nothing to
+// reconcile and the caller may discard the record. Any other Create
+// error is an uncertain outcome — the session may exist.
+var ErrNotLaunched = errors.New("not launched")
 
 // Every cadence the domain uses, in one place (spec decision). No jitter,
 // no backoff: an inventory failure leaves statuses unreachable and the
@@ -66,6 +73,13 @@ type Driver interface {
 	// the record; an error does not prove the session was never born.
 	Create(ctx context.Context, id string, spec CreateSpec) error
 	// Kill terminates the session best-effort and verifies absence by
-	// polling the inventory. A session that is already absent is success.
+	// polling the inventory, then ends and verifies the end of every
+	// process the session's launch still owns (ATC-319). A session that
+	// is already absent, with nothing left running, is success.
 	Kill(ctx context.Context, id string) error
+	// Leftovers lists sessions absent from inventory (a complete one the
+	// caller holds) whose launch still owns running processes —
+	// background work that outlived its session. Kill cleans one up. An
+	// error means the answer is unavailable — never "none".
+	Leftovers(ctx context.Context, inventory []Session) ([]string, error)
 }

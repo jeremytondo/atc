@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/placement"
 )
 
 // Start registers and starts the supervised server; there is no separate
@@ -149,6 +150,11 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		}
 		return rollbackLingering(ctx, lingerChanged, cause)
 	}
+	operation := "start"
+	if bounce {
+		operation = "restart"
+	}
+	recordOperation(opts.Stderr, operation)
 	if runtime.GOOS == "linux" {
 		if err := runSupervisor(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return restoreUnit(err)
@@ -223,6 +229,7 @@ func Stop(ctx context.Context, opts Options) error {
 			say(opts.Stdout, "%s is not running\n", UnitName)
 			return nil
 		}
+		recordOperation(opts.Stderr, "stop")
 		if err := launchdUnload(ctx); err != nil {
 			return err
 		}
@@ -230,6 +237,7 @@ func Stop(ctx context.Context, opts Options) error {
 		if err := requireSystemctl(); err != nil {
 			return err
 		}
+		recordOperation(opts.Stderr, "stop")
 		// stop with no disable; already a no-op success on an inactive unit.
 		if err := runSupervisor(ctx, "systemctl", "--user", "stop", UnitName); err != nil {
 			return err
@@ -245,7 +253,9 @@ func Stop(ctx context.Context, opts Options) error {
 
 // Uninstall stops the server and removes the unit — the one total undo for
 // start's registration. No purge: the leftovers are predictable XDG paths,
-// reported so nothing is hidden.
+// reported so nothing is hidden. Running terminals are left running
+// (ATC-319: they live outside the server's lifetime by design) and
+// reported the same way.
 func Uninstall(ctx context.Context, opts Options) error {
 	if err := supported(); err != nil {
 		return err
@@ -259,6 +269,9 @@ func Uninstall(ctx context.Context, opts Options) error {
 	lingerEnabled := false
 	if existed && runtime.GOOS == "linux" {
 		lingerEnabled, _ = userLingering(ctx, os.Getuid())
+	}
+	if existed {
+		recordOperation(opts.Stderr, "uninstall")
 	}
 	if runtime.GOOS == "darwin" {
 		if err := launchdUnload(ctx); err != nil {
@@ -280,10 +293,34 @@ func Uninstall(ctx context.Context, opts Options) error {
 		exitCode(ctx, "systemctl", "--user", "daemon-reload")
 	}
 	say(opts.Stdout, "%s", uninstallReport(existed, remainingFiles()))
+	say(opts.Stdout, "%s", terminalsNotice(ctx))
 	if lingerEnabled {
 		say(opts.Stdout, "%s", lingerUninstallNotice(os.Getuid()))
 	}
 	return nil
+}
+
+// liveTerminals counts the terminal sessions still running in their own
+// placements, across every ATC state directory on this machine. A seam
+// variable so lifecycle tests never consult the live manager.
+var liveTerminals = func(ctx context.Context) (int, error) {
+	units, err := placement.Detect().ListActive(ctx, placement.Pattern("terminal", ""))
+	return len(units), err
+}
+
+// terminalsNotice reports what uninstalling deliberately left running.
+// Silence when there is nothing, or when the count is unavailable — the
+// undo must not fail over a diagnostic.
+func terminalsNotice(ctx context.Context) string {
+	count, err := liveTerminals(ctx)
+	if err != nil || count == 0 {
+		return ""
+	}
+	noun := "terminal sessions keep"
+	if count == 1 {
+		noun = "terminal session keeps"
+	}
+	return fmt.Sprintf("%d %s running (the server never takes them down); start the server again to attach to or delete them\n", count, noun)
 }
 
 func loopbackURL(port int) string {

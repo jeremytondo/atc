@@ -19,6 +19,7 @@ func TestXDGOverridesHonored(t *testing.T) {
 		"database":  {DatabaseFile, "/custom/data/atc/atc.db"},
 		"terminals": {TerminalSocketDir, "/custom/state/atc/terminals"},
 		"exits":     {ReportDir, "/custom/state/atc/exits"},
+		"lifecycle": {LifecycleLogFile, "/custom/state/atc/lifecycle.log"},
 	} {
 		path, err := tc.got()
 		if err != nil {

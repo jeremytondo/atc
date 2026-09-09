@@ -15,6 +15,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/config"
+	"github.com/jeremytondo/atc/internal/paths"
 )
 
 func TestFirstRunNotice(t *testing.T) {
@@ -94,6 +95,9 @@ func installSeams(t *testing.T, s *seamStub) {
 		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint, probeWebhooks = origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet, origWebhooks
 	})
 	requireSystemctl = func() error { return nil }
+	origLive := liveTerminals
+	t.Cleanup(func() { liveTerminals = origLive })
+	liveTerminals = func(context.Context) (int, error) { return 0, nil }
 	userLingering = func(context.Context, int) (bool, error) {
 		return s.lingering, s.lingerCheckErr
 	}
@@ -617,11 +621,35 @@ func TestStopPreservesAndUninstallRemovesUnit(t *testing.T) {
 	}
 	wantUnitFlags(t, unitFile, LaunchFlags{Tailscale: boolPtr(true)})
 
+	liveTerminals = func(context.Context) (int, error) { return 2, nil }
 	if err := Uninstall(context.Background(), opts); err != nil {
 		t.Fatalf("Uninstall = %v, want nil", err)
 	}
 	if _, err := os.Stat(unitFile); !errors.Is(err, os.ErrNotExist) {
 		t.Error("uninstall left the unit installed")
+	}
+	if got := opts.Stdout.(*strings.Builder).String(); !strings.Contains(got, "2 terminal sessions keep running") {
+		t.Errorf("Uninstall output = %q, want the running-terminals notice", got)
+	}
+
+	// Every ATC-issued operation leaves a durable line (ATC-319): what,
+	// when, and the process context ATC can vouch for.
+	logPath, err := paths.LifecycleLogFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("lifecycle log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(record)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], " msg=stop ") || !strings.Contains(lines[1], " msg=uninstall ") {
+		t.Errorf("lifecycle log = %q, want a stop line then an uninstall line", record)
+	}
+	for _, field := range []string{"time=", "unit=atc.server", "pid=", "ppid=", "command="} {
+		if !strings.Contains(lines[0], field) {
+			t.Errorf("lifecycle log line %q lacks %s", lines[0], field)
+		}
 	}
 }
 

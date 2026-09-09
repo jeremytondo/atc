@@ -1,27 +1,41 @@
 package codex
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
+
+	"github.com/jeremytondo/atc/internal/placement"
 )
 
 // startServer launches the shared app-server the way Codex Desktop does
 // when none is running: `codex app-server --listen unix://` (no path —
 // codex derives the well-known socket from its CODEX_HOME), output
 // appended to the control directory's log file, detached in its own
-// session so it outlives ATC. ATC never stops, restarts, adopts, or
+// session and, where the host supports it, in its own process placement
+// so it outlives ATC (ATC-319: a session alone does not leave the
+// server's cgroup). ATC never stops, restarts, adopts, or
 // health-manages it: the server is the user's, shared with every other
 // Codex client, and Codex's own startup lock settles a race with one of
 // them. The server starts in the user's home — a neutral directory for a
 // client that sends no cwd, rather than whatever ATC happened to be
 // started from.
-func startServer(codexHome string) error {
+//
+// The placement is named per launch, not per home: a losing starter
+// exits at once and its scope is collected, while a scope some earlier
+// server's children still hold must never block the next start.
+func startServer(codexHome string, host *placement.Host) error {
 	executable, err := exec.LookPath("codex")
 	if err != nil {
 		return fmt.Errorf("codex executable not found on PATH: %w", err)
+	}
+	if err := host.Preflight(context.Background()); err != nil {
+		return fmt.Errorf("cannot place codex app-server outside the server's lifetime: %w", err)
 	}
 	logPath := serverLogPath(codexHome)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
@@ -38,7 +52,9 @@ func startServer(codexHome string) error {
 	}
 	defer func() { _ = devnull.Close() }()
 
-	cmd := exec.Command(executable, "app-server", "--listen", "unix://")
+	unit := placement.Name("codex", codexHome, strconv.FormatInt(time.Now().UnixNano(), 36))
+	argv := host.Wrap(unit, "ATC-started codex app-server", []string{executable, "app-server", "--listen", "unix://"})
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = devnull
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
