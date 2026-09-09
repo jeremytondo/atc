@@ -1,9 +1,10 @@
 // Package monitor is the body of `atc __child`, the ATC-owned root task
 // of every terminal session (ATC-251). It starts the real workload with
 // inherited descriptors, records atomic start and exit evidence around it
-// in the per-terminal report, and forwards HUP/INT/TERM — standard
-// process supervision in the containerd-shim/tini shape. It never sits on
-// the PTY data path; zmx remains the sole durable supervisor, and the
+// in the per-terminal report, forwards HUP/INT/TERM, and observes which
+// program is in the terminal's foreground (ATC-317) — standard process
+// supervision in the containerd-shim/tini shape. It never sits on the
+// PTY data path; zmx remains the sole durable supervisor, and the
 // monitor only records.
 //
 // Shell invocation (decided in the spec): with no command it execs $SHELL
@@ -31,6 +32,10 @@ import (
 // separate launch-error path.
 const LaunchFailureCode = 127
 
+// PollInterval is how often the foreground group is read while the
+// workload runs, attached or not. Flat: an idle poll is one ioctl.
+const PollInterval = 2 * time.Second
+
 // Options names the monitor's inputs, passed as flags by the zmx driver
 // so the monitor never depends on inheriting ATC's environment.
 type Options struct {
@@ -41,12 +46,20 @@ type Options struct {
 	// Command is the free-form command to run through the shell; empty
 	// starts a plain interactive login shell.
 	Command string
+	// PollInterval overrides PollInterval; zero means the default.
+	PollInterval time.Duration
 }
 
 // Run supervises the workload and returns the monitor's own exit code
 // (mirroring the child's). Failures to record evidence are reported on
 // stderr — the session PTY — since there is nowhere else to say it.
+// Foreground observation is best-effort throughout: it can never affect
+// the workload, the evidence, or the exit code.
 func Run(opts Options) int {
+	interval := opts.PollInterval
+	if interval <= 0 {
+		interval = PollInterval
+	}
 	started := time.Now().UTC()
 	rep := report.Report{TerminalID: opts.TerminalID, StartedAt: started}
 
@@ -80,12 +93,25 @@ func Run(opts Options) int {
 		return LaunchFailureCode
 	}
 	rep.PID = cmd.Process.Pid
+	// The first observation rides on the start write; later ones are
+	// written only when the resolved name changes.
+	foreground := newObserver(int(os.Stdin.Fd()), cmd.Process.Pid)
+	if name, changed := foreground.poll(); changed {
+		rep.Process = name
+	}
 	writeReport(opts.ReportPath, rep)
 
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
+		case <-ticker.C:
+			if name, changed := foreground.poll(); changed {
+				rep.Process = name
+				writeReport(opts.ReportPath, rep)
+			}
 		case received := <-signals:
 			// zmx kill signals the monitor's process group, but a shell
 			// with job control has moved to its own group — forwarding is

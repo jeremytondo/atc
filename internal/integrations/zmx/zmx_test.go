@@ -193,8 +193,9 @@ func TestRealZmxLifecycle(t *testing.T) {
 		t.Fatalf("inventory after create (-want +got):\n%s", diff)
 	}
 	// The monitor's start report appears (a beat after reachability — the
-	// daemon settles before its root task finishes starting) and is not
-	// yet exit evidence.
+	// daemon settles before its root task finishes starting), is not yet
+	// exit evidence, and carries the foreground program observed on the
+	// PTY zmx gave the monitor: `sh -c "sleep 60"` reads sleep (ATC-317).
 	startDeadline := time.Now().Add(3 * time.Second)
 	for {
 		rep, err := report.Read(driver.reportDir, id)
@@ -204,6 +205,9 @@ func TestRealZmxLifecycle(t *testing.T) {
 		if rep != nil {
 			if rep.Exited() {
 				t.Fatalf("rep = %+v, want un-exited while the command runs", rep)
+			}
+			if rep.Process != "sleep" {
+				t.Fatalf("rep = %+v, want process sleep observed at start", rep)
 			}
 			break
 		}

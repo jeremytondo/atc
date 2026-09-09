@@ -5,21 +5,34 @@ package monitor
 // where the exact argv must be observed (a #! script cannot see argv[0]).
 
 import (
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
+
 	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
 )
 
 func TestMain(m *testing.M) {
-	// Helper mode: when re-exec'd as the "shell", record argv and exit.
+	// Helper modes: re-exec'd as the "shell", record argv and exit;
+	// re-exec'd as the monitor, run it on a real PTY.
 	if record := os.Getenv("MONITOR_TEST_RECORD"); record != "" {
 		_ = os.WriteFile(record, []byte(strings.Join(os.Args, "\n")), 0o600)
 		os.Exit(0)
+	}
+	if path := os.Getenv("MONITOR_TEST_REPORT"); path != "" {
+		poll, _ := time.ParseDuration(os.Getenv("MONITOR_TEST_POLL"))
+		os.Exit(Run(Options{
+			ReportPath: path, TerminalID: "term-aaaaa", Directory: "/",
+			Command: os.Getenv("MONITOR_TEST_COMMAND"), PollInterval: poll,
+		}))
 	}
 	os.Exit(m.Run())
 }
@@ -157,5 +170,66 @@ func TestShellInvocation(t *testing.T) {
 				t.Errorf("%s: argv[%d] = %q, want %q", name, i, got[i], want[i])
 			}
 		}
+	}
+}
+
+// Foreground observation needs a controlling terminal with job control,
+// so the monitor is re-exec'd on a PTY the test drives like a user: the
+// idle shell shows as the shell, a command it runs shows as that
+// command, and the last observation survives exit beside the evidence.
+func TestObservesForegroundProgram(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := report.Path(dir, "term-aaaaa")
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(),
+		"MONITOR_TEST_REPORT="+path, "MONITOR_TEST_POLL=20ms",
+		"SHELL=/bin/sh", "HOME="+t.TempDir(), "PS1=$ ", "TERM=dumb")
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, ptmx) }()
+	waitForProcess := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			rep, err := report.Read(dir, "term-aaaaa")
+			if err == nil && rep != nil && rep.Process == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("report never showed process %q; last %+v (%v)", want, rep, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitForProcess("sh")
+	if _, err := ptmx.WriteString("sleep 30\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitForProcess("sleep")
+	if _, err := ptmx.Write([]byte{3}); err != nil { // ctrl-c ends sleep
+		t.Fatal(err)
+	}
+	waitForProcess("sh")
+	if _, err := ptmx.WriteString("exit 5\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitErr := cmd.Wait()
+	var exit *exec.ExitError
+	if !errors.As(waitErr, &exit) || exit.ExitCode() != 5 {
+		t.Errorf("monitor exit = %v, want the shell's 5", waitErr)
+	}
+	rep, err := report.Read(dir, "term-aaaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Exited() || rep.Code == nil || *rep.Code != 5 || rep.Process != "sh" {
+		t.Errorf("final report = %+v, want exited with code 5 and process sh", rep)
 	}
 }

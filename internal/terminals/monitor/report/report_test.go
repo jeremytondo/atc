@@ -14,7 +14,7 @@ func TestRoundTrip(t *testing.T) {
 	started := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	exited := started.Add(time.Second)
 	code := 3
-	r := Report{TerminalID: "term-x7k2f", PID: 42, StartedAt: started, ExitedAt: &exited, Code: &code}
+	r := Report{TerminalID: "term-x7k2f", PID: 42, StartedAt: started, ExitedAt: &exited, Code: &code, Process: "nvim"}
 	if err := Write(Path(dir, "term-x7k2f"), r); err != nil {
 		t.Fatal(err)
 	}
