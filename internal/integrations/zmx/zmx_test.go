@@ -15,7 +15,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/monitor"
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 // TestMain doubles as the monitor executable for the real-zmx integration

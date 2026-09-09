@@ -35,7 +35,7 @@ import (
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 // commandTimeout bounds every zmx invocation: a hung zmx must not hang its

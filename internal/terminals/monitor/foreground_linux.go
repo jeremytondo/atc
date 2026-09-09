@@ -8,10 +8,13 @@ import (
 )
 
 // readProcess reads pid's command line and short name from /proc. ok is
-// false when the process does not exist. A zombie has an empty command
-// line, which callers treat as exited.
+// false when the process does not exist or is a zombie — exited, so no
+// longer what the terminal is running.
 func readProcess(pid int) (process, bool) {
 	dir := "/proc/" + strconv.Itoa(pid)
+	if state, _, ok := readStat(dir); !ok || state == "Z" {
+		return process{}, false
+	}
 	comm, err := os.ReadFile(dir + "/comm")
 	if err != nil {
 		return process{}, false
@@ -36,9 +39,25 @@ func splitCmdline(cmdline []byte) []string {
 	return argv
 }
 
-// groupMembers lists the live processes in group pgrp by scanning
-// /proc/*/stat, whose fields after the parenthesised name are state,
-// ppid, pgrp, …
+// readStat returns the state and process group from /proc/<pid>/stat,
+// whose fields after the parenthesised name are state, ppid, pgrp, …
+func readStat(dir string) (state string, pgrp int, ok bool) {
+	stat, err := os.ReadFile(dir + "/stat")
+	if err != nil {
+		return "", 0, false
+	}
+	fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+	if len(fields) < 3 {
+		return "", 0, false
+	}
+	pgrp, err = strconv.Atoi(fields[2])
+	if err != nil {
+		return "", 0, false
+	}
+	return fields[0], pgrp, true
+}
+
+// groupMembers lists the live processes in group pgrp by scanning /proc.
 func groupMembers(pgrp int) []int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -50,15 +69,7 @@ func groupMembers(pgrp int) []int {
 		if err != nil {
 			continue
 		}
-		stat, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err != nil {
-			continue
-		}
-		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
-		if len(fields) < 3 || fields[0] == "Z" {
-			continue
-		}
-		if group, err := strconv.Atoi(fields[2]); err == nil && group == pgrp {
+		if state, group, ok := readStat("/proc/" + entry.Name()); ok && group == pgrp && state != "Z" {
 			members = append(members, pid)
 		}
 	}

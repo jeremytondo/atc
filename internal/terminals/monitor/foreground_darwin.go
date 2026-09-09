@@ -12,17 +12,14 @@ const zombie int8 = 5
 
 // readProcess reads pid's short name from kern.proc.pid and its command
 // line from kern.procargs2 — the same sysctls ps and libproc use. ok is
-// false when the process does not exist. A zombie has no command line,
-// which callers treat as exited.
+// false when the process does not exist or is a zombie — exited, so no
+// longer what the terminal is running.
 func readProcess(pid int) (process, bool) {
 	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil {
+	if err != nil || info.Proc.P_stat == zombie {
 		return process{}, false
 	}
 	p := process{short: unix.ByteSliceToString(info.Proc.P_comm[:])}
-	if info.Proc.P_stat == zombie {
-		return p, true
-	}
 	if raw, err := unix.SysctlRaw("kern.procargs2", pid); err == nil {
 		p.argv = parseProcArgs(raw)
 	}

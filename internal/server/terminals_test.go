@@ -31,7 +31,7 @@ import (
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 

@@ -21,7 +21,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 // fakeDriver is a hand-written in-memory session backend. Create births a
@@ -382,8 +382,8 @@ func TestReconcileDecisionTable(t *testing.T) {
 		present      bool
 		reachable    bool
 		invErr       error
-		markerExited bool
-		markerStart  bool
+		reportExited bool
+		reportStart  bool
 		stopIntent   bool
 		// process is what the planted report observed; wantProcess what
 		// the resource shows (the fallback "shell" without a report).
@@ -393,12 +393,12 @@ func TestReconcileDecisionTable(t *testing.T) {
 		wantProcess string
 	}{
 		"present reachable → running":                   {present: true, reachable: true, want: api.TerminalRunning, wantProcess: "shell"},
-		"present reachable, observed → running":         {present: true, reachable: true, markerStart: true, process: "nvim", want: api.TerminalRunning, wantProcess: "nvim"},
+		"present reachable, observed → running":         {present: true, reachable: true, reportStart: true, process: "nvim", want: api.TerminalRunning, wantProcess: "nvim"},
 		"present unresponsive → unreachable":            {present: true, want: api.TerminalUnreachable, wantProcess: "shell"},
-		"inventory failure → unreachable":               {present: true, reachable: true, invErr: invErr, markerStart: true, process: "nvim", want: api.TerminalUnreachable, wantProcess: "nvim"},
-		"absent with evidence → exited":                 {markerExited: true, process: "hx", want: api.TerminalExited, wantCode: &code3, wantProcess: "hx"},
-		"absent, stop intent → exited, code suppressed": {markerExited: true, stopIntent: true, want: api.TerminalExited, wantProcess: "shell"},
-		"absent, start-only report → missing":           {markerStart: true, process: "less", want: api.TerminalMissing, wantProcess: "less"},
+		"inventory failure → unreachable":               {present: true, reachable: true, invErr: invErr, reportStart: true, process: "nvim", want: api.TerminalUnreachable, wantProcess: "nvim"},
+		"absent with evidence → exited":                 {reportExited: true, process: "hx", want: api.TerminalExited, wantCode: &code3, wantProcess: "hx"},
+		"absent, stop intent → exited, code suppressed": {reportExited: true, stopIntent: true, want: api.TerminalExited, wantProcess: "shell"},
+		"absent, start-only report → missing":           {reportStart: true, process: "less", want: api.TerminalMissing, wantProcess: "less"},
 		"absent, no evidence → missing":                 {want: api.TerminalMissing, wantProcess: "shell"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -419,8 +419,8 @@ func TestReconcileDecisionTable(t *testing.T) {
 				f.service.view[id].record.StopRequestedAt = &now
 				f.service.mu.Unlock()
 			}
-			if tc.markerExited || tc.markerStart {
-				plantReport(t, f.reports, id, code3, tc.markerExited, tc.process)
+			if tc.reportExited || tc.reportStart {
+				plantReport(t, f.reports, id, code3, tc.reportExited, tc.process)
 			}
 			if tc.present {
 				f.driver.set(id, tc.reachable)
@@ -634,11 +634,12 @@ func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.driver.remove(terminal.ID)
-	// The rep's exit predates the record's creation (fixture clock
-	// starts 2026-08-27T12:00) — a leftover from a dead incarnation.
+	// The report started before the record was created (fixture clock
+	// starts 2026-08-27T12:00) — a leftover from a dead incarnation, so
+	// neither its exit nor its process belongs to this terminal.
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	code := 3
-	rep := report.Report{TerminalID: terminal.ID, PID: 1, StartedAt: old, ExitedAt: &old, Code: &code}
+	rep := report.Report{TerminalID: terminal.ID, PID: 1, StartedAt: old, ExitedAt: &old, Code: &code, Process: "nvim"}
 	if err := report.Write(report.Path(f.reports, terminal.ID), rep); err != nil {
 		t.Fatal(err)
 	}
@@ -647,8 +648,8 @@ func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != api.TerminalMissing {
-		t.Errorf("status = %s, want missing (stale evidence rejected)", got.Status)
+	if got.Status != api.TerminalMissing || got.Process != "shell" {
+		t.Errorf("terminal = %+v, want missing with process shell (stale report rejected)", got)
 	}
 }
 

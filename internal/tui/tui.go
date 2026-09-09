@@ -109,7 +109,6 @@ type confirmation struct {
 // invalidates ticks and polls scheduled by an earlier attempt.
 type reconnect struct {
 	terminal   api.Terminal
-	label      string
 	delay      time.Duration
 	generation uint64
 }
@@ -664,7 +663,7 @@ func (m model) showSpaces() (tea.Model, tea.Cmd) {
 func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 	m.selectedTerminal = terminal.ID
 	if terminal.Status != api.TerminalRunning {
-		m.message = refusal(m.label(terminal), terminal)
+		m.message = m.refusal(terminal)
 		return m, m.loadTerminals()
 	}
 	cmd, err := m.attach(m.ctx, terminal)
@@ -690,9 +689,8 @@ func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
 		m.message = ""
 	case m.transportLoss != nil && m.transportLoss(msg.err):
 		m.generation++
-		label := m.label(msg.terminal)
-		m.reconnect = &reconnect{terminal: msg.terminal, label: label, delay: reconnectMin, generation: m.generation}
-		m.message = "connection lost, reconnecting to " + label
+		m.reconnect = &reconnect{terminal: msg.terminal, delay: reconnectMin, generation: m.generation}
+		m.message = "connection lost, reconnecting to " + m.label(msg.terminal)
 		return m, tea.Batch(requestWindowSize, m.tick(reconnectMin, m.generation))
 	default:
 		m.message = fmt.Sprintf("attachment to %s ended: %v", m.label(msg.terminal), msg.err)
@@ -715,7 +713,7 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		if errors.As(msg.err, &problem) && (problem.Status == http.StatusNotFound || problem.Status == http.StatusUnauthorized) {
 			// The terminal is gone, or the token no longer works: neither
 			// heals by waiting.
-			return stop(m.describe("reconnecting to "+r.label, msg.err))
+			return stop(m.describe("reconnecting to "+m.label(r.terminal), msg.err))
 		}
 		// Unreachable, or answering with a transient failure: wait
 		// longer, up to the cap.
@@ -724,7 +722,7 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		return m, m.tick(r.delay, r.generation)
 	}
 	if msg.terminal.Status != api.TerminalRunning {
-		return stop(refusal(r.label, msg.terminal))
+		return stop(m.refusal(msg.terminal))
 	}
 	m.reconnect = nil
 	return m.startAttach(msg.terminal)
@@ -741,7 +739,8 @@ func (m model) describe(action string, err error) string {
 	return action + ": " + err.Error()
 }
 
-func refusal(label string, terminal api.Terminal) string {
+func (m model) refusal(terminal api.Terminal) string {
+	label := m.label(terminal)
 	if terminal.Status == api.TerminalExited && terminal.ExitCode != nil {
 		return fmt.Sprintf("%s has exited with code %d; only running terminals can be attached", label, *terminal.ExitCode)
 	}

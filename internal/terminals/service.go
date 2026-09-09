@@ -15,7 +15,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 // ErrNotFound reports an id with no record; the API layer maps it to 404.
@@ -99,8 +99,9 @@ type entry struct {
 	record store.TerminalRecord
 	status api.TerminalStatus
 	// process is the program the monitor last observed in the foreground
-	// (ATC-317): never stored, rebuilt from the report on every reconcile
-	// pass, and never cleared once set. Empty means no observation yet.
+	// (ATC-317), seeded with the creation-time fallback so it is never
+	// empty: not stored, rebuilt from the report on every reconcile pass,
+	// and never reverting to the fallback once observed.
 	process string
 }
 
@@ -154,7 +155,7 @@ func (s *Service) Load(ctx context.Context) error {
 		if record.ExitedAt != nil {
 			status = api.TerminalExited
 		}
-		s.view[record.ID] = &entry{record: record, status: status}
+		s.view[record.ID] = &entry{record: record, status: status, process: fallbackProcess(record)}
 	}
 	return nil
 }
@@ -210,16 +211,22 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		present[session.Name] = session.Reachable
 	}
 
-	// Phase 1: decide everything decidable without IO, under the view
-	// lock. Every terminal leaves with a snapshot for the report phase;
-	// absent sessions are the ones whose report may be exit evidence.
+	// Each pass carries one candidate per terminal through its phases:
+	// the identity snapshot, the status decided so far, the process the
+	// report observed, and any exit evidence recorded this pass.
 	type candidate struct {
 		id            string
 		createdAt     time.Time
 		stopRequested bool
 		absent        bool
+		status        api.TerminalStatus // empty: leave untouched this pass
+		process       string
+		exit          *store.TerminalRecord // ExitedAt, ExitCode, UpdatedAt
 	}
-	statuses := make(map[string]api.TerminalStatus)
+
+	// Phase 1: decide everything decidable without IO, under the view
+	// lock. Absent sessions are the ones whose report may be exit
+	// evidence.
 	var candidates []candidate
 	var orphans []string
 	s.mu.Lock()
@@ -230,15 +237,15 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		c := candidate{id: id, createdAt: e.record.CreatedAt, stopRequested: e.record.StopRequestedAt != nil}
 		switch {
 		case e.record.ExitedAt != nil:
-			statuses[id] = api.TerminalExited
+			c.status = api.TerminalExited
 		case inventoryErr != nil:
-			statuses[id] = api.TerminalUnreachable
+			c.status = api.TerminalUnreachable
 		default:
 			if reachable, ok := present[id]; ok {
 				if reachable {
-					statuses[id] = api.TerminalRunning
+					c.status = api.TerminalRunning
 				} else {
-					statuses[id] = api.TerminalUnreachable
+					c.status = api.TerminalUnreachable
 				}
 			} else {
 				c.absent = true
@@ -257,86 +264,79 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 
 	// Phase 2: report reads and evidence persistence, outside the view
 	// lock — a slow disk or a held SQLite writer must not block reads.
-	type exitEvidence struct {
-		id                   string
-		exitedAt, observedAt time.Time
-		code                 *int
-	}
-	var exits []exitEvidence
-	processes := make(map[string]string)
-	for _, terminal := range candidates {
-		rep, err := report.Read(s.reportDir, terminal.id)
+	for i := range candidates {
+		c := &candidates[i]
+		rep, err := report.Read(s.reportDir, c.id)
 		if err != nil {
-			if terminal.absent {
+			if c.absent {
 				// Unreadable evidence is no evidence; the honest answer for
 				// an absent session without valid evidence is missing.
-				s.logger.Warn("unreadable report", "terminal", terminal.id, "error", err)
-				statuses[terminal.id] = api.TerminalMissing
+				s.logger.Warn("unreadable report", "terminal", c.id, "error", err)
+				c.status = api.TerminalMissing
 			}
 			continue
 		}
-		if rep != nil && rep.Process != "" {
-			processes[terminal.id] = rep.Process
+		if rep != nil && rep.StartedAt.Before(c.createdAt) {
+			// A report predating the record belongs to an earlier
+			// incarnation of a reused ID (a reaped orphan's late write, a
+			// stale file the create could not remove): neither its
+			// process nor its exit is this terminal's.
+			s.logger.Warn("stale report ignored", "terminal", c.id)
+			rep = nil
 		}
-		if !terminal.absent {
+		if rep != nil {
+			c.process = rep.Process
+		}
+		if !c.absent {
 			continue
 		}
 		if !rep.Exited() {
-			statuses[terminal.id] = api.TerminalMissing
-			continue
-		}
-		if rep.ExitedAt.Before(terminal.createdAt) {
-			// Evidence predating the record belongs to an earlier
-			// incarnation of a reused ID (a reaped orphan's late report).
-			s.logger.Warn("stale exit evidence ignored", "terminal", terminal.id)
-			statuses[terminal.id] = api.TerminalMissing
+			c.status = api.TerminalMissing
 			continue
 		}
 		code := rep.Code
-		if terminal.stopRequested {
+		if c.stopRequested {
 			// An ATC-initiated stop suppresses the exit code — a kill is
 			// not a meaningful program result.
 			code = nil
 		}
 		observed := s.now()
-		if err := s.repository.RecordExit(ctx, terminal.id, *rep.ExitedAt, observed, code); err != nil {
+		if err := s.repository.RecordExit(ctx, c.id, *rep.ExitedAt, observed, code); err != nil {
 			// Leave the status untouched this pass; the next one retries.
-			s.logger.Error("recording exit evidence", "terminal", terminal.id, "error", err)
+			s.logger.Error("recording exit evidence", "terminal", c.id, "error", err)
+			c.status = ""
 			continue
 		}
-		exits = append(exits, exitEvidence{terminal.id, *rep.ExitedAt, observed, code})
-		statuses[terminal.id] = api.TerminalExited
+		exitedAt := *rep.ExitedAt
+		c.exit = &store.TerminalRecord{ExitedAt: &exitedAt, ExitCode: code, UpdatedAt: observed}
+		c.status = api.TerminalExited
 	}
 
-	// Phase 3: apply, guarding entries that were deleted or entered a
-	// create's settling window while the locks were down. Observed
-	// processes refresh the view silently: only status changes publish.
+	// Phase 3: apply, skipping entries that were deleted, re-created
+	// (another incarnation of the id), or entered a create's settling
+	// window while the locks were down. Observed processes refresh the
+	// view silently: only status changes publish.
 	var changed []string
 	s.mu.Lock()
-	for id, process := range processes {
-		if e, ok := s.view[id]; ok {
-			e.process = process
-		}
-	}
-	for _, evidence := range exits {
-		if e, ok := s.view[evidence.id]; ok && e.record.ExitedAt == nil {
-			exitedAt := evidence.exitedAt
-			e.record.ExitedAt = &exitedAt
-			e.record.ExitCode = evidence.code
-			e.record.UpdatedAt = evidence.observedAt
-		}
-	}
-	for id, status := range statuses {
-		e, ok := s.view[id]
-		if !ok {
+	for _, c := range candidates {
+		e, ok := s.view[c.id]
+		if !ok || !e.record.CreatedAt.Equal(c.createdAt) {
 			continue
 		}
-		if _, ok := s.settling[id]; ok {
+		if _, ok := s.settling[c.id]; ok {
 			continue
 		}
-		if e.status != status {
-			e.status = status
-			changed = append(changed, id)
+		if c.process != "" {
+			e.process = c.process
+		}
+		if c.exit != nil && e.record.ExitedAt == nil {
+			e.record.ExitedAt = c.exit.ExitedAt
+			e.record.ExitCode = c.exit.ExitCode
+			e.record.UpdatedAt = c.exit.UpdatedAt
+		}
+		if c.status != "" && e.status != c.status {
+			e.status = c.status
+			changed = append(changed, c.id)
 		}
 	}
 	s.mu.Unlock()
@@ -504,7 +504,7 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 		s.logger.Warn("clearing stale report", "terminal", record.ID, "error", err)
 	}
 	s.mu.Lock()
-	s.view[record.ID] = &entry{record: record, status: api.TerminalUnreachable}
+	s.view[record.ID] = &entry{record: record, status: api.TerminalUnreachable, process: fallbackProcess(record)}
 	s.settling[record.ID] = struct{}{}
 	s.mu.Unlock()
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
@@ -737,9 +737,6 @@ func (e *entry) terminal() api.Terminal {
 		CreatedAt: e.record.CreatedAt,
 		UpdatedAt: e.record.UpdatedAt,
 	}
-	if terminal.Process == "" {
-		terminal.Process = fallbackProcess(e.record)
-	}
 	if e.record.AppID == "" {
 		terminal.Command = e.record.Command
 	}
@@ -765,9 +762,7 @@ func fallbackProcess(record store.TerminalRecord) string {
 		return record.AppID
 	}
 	if fields := strings.Fields(record.Command); len(fields) > 0 {
-		if name := filepath.Base(fields[0]); name != "." && name != "/" {
-			return name
-		}
+		return filepath.Base(fields[0])
 	}
 	return "shell"
 }

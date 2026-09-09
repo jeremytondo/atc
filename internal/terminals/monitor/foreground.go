@@ -45,7 +45,7 @@ func resolve(argv []string, short string) string {
 	switch {
 	case interpreters[base]:
 		rest := argv[1:]
-		for len(rest) > 0 && (strings.HasPrefix(rest[0], "-") || (base == "env" && isAssignment(rest[0]))) {
+		for len(rest) > 0 && (strings.HasPrefix(rest[0], "-") || (base == "env" && strings.Contains(rest[0], "="))) {
 			rest = rest[1:]
 		}
 		if len(rest) == 0 {
@@ -53,8 +53,10 @@ func resolve(argv []string, short string) string {
 		}
 		candidate = rest[0]
 	case shells[base]:
-		for i := 1; i+1 < len(argv); i++ {
-			if argv[i] == "-c" {
+		// Options precede the command string; -c may share a group with
+		// other flags (-lc, -ic).
+		for i := 1; i+1 < len(argv) && strings.HasPrefix(argv[i], "-"); i++ {
+			if !strings.HasPrefix(argv[i], "--") && strings.ContainsRune(argv[i], 'c') {
 				fields := strings.Fields(argv[i+1])
 				if len(fields) == 0 {
 					return short
@@ -77,26 +79,9 @@ func resolve(argv []string, short string) string {
 	return name
 }
 
-// isAssignment reports an env-style NAME=value argument.
-func isAssignment(arg string) bool {
-	name, _, ok := strings.Cut(arg, "=")
-	if !ok || name == "" {
-		return false
-	}
-	for i, r := range name {
-		letter := r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
-		digit := i > 0 && r >= '0' && r <= '9'
-		if !letter && !digit {
-			return false
-		}
-	}
-	return true
-}
-
-// process is what the process table says about one process.
+// process is what the process table says about one live process.
 type process struct {
-	// argv is the full command line; empty when the process has exited
-	// or its command line cannot be read.
+	// argv is the full command line; empty when it cannot be read.
 	argv []string
 	// short is the kernel's short process name.
 	short string
@@ -137,9 +122,9 @@ func (o *observer) poll() (string, bool) {
 	return name, true
 }
 
-// name resolves the group: its leader, then any live member when the
-// leader has already exited, then the leader's short name when its
-// command line is unreadable.
+// name resolves the group by its leader — a live leader whose command
+// line is unreadable still names itself by short name — or, once the
+// leader has exited, by any live member.
 func (o *observer) name(pgrp int) string {
 	if pgrp == o.own {
 		if p, ok := readProcess(o.workload); ok {
@@ -147,20 +132,13 @@ func (o *observer) name(pgrp int) string {
 		}
 		return ""
 	}
-	leader, ok := readProcess(pgrp)
-	if ok && len(leader.argv) > 0 {
+	if leader, ok := readProcess(pgrp); ok {
 		return resolve(leader.argv, leader.short)
 	}
 	for _, pid := range groupMembers(pgrp) {
-		if pid == pgrp {
-			continue
-		}
-		if p, ok := readProcess(pid); ok && len(p.argv) > 0 {
+		if p, ok := readProcess(pid); ok {
 			return resolve(p.argv, p.short)
 		}
-	}
-	if ok {
-		return resolve(nil, leader.short)
 	}
 	return ""
 }

@@ -38,7 +38,7 @@ func TestReadAbsentIsNilNotError(t *testing.T) {
 	}
 }
 
-func TestStartMarkerIsNotEvidence(t *testing.T) {
+func TestStartReportIsNotEvidence(t *testing.T) {
 	dir := t.TempDir()
 	if err := Write(Path(dir, "term-x7k2f"), Report{TerminalID: "term-x7k2f", PID: 42, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestStartMarkerIsNotEvidence(t *testing.T) {
 	}
 }
 
-func TestRejectsForeignAndMalformedMarkers(t *testing.T) {
+func TestRejectsForeignAndMalformedReports(t *testing.T) {
 	dir := t.TempDir()
 	// A report naming a different terminal is never adopted.
 	if err := Write(Path(dir, "term-aaaaa"), Report{TerminalID: "term-other", StartedAt: time.Now()}); err != nil {

@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 // LaunchFailureCode is recorded when the workload never started (bad

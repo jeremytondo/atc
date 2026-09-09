@@ -153,7 +153,7 @@ func (m model) directoriesView() string {
 }
 
 func (m model) reconnectingView() string {
-	return fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)\n", safeText(m.reconnect.label), m.reconnect.delay)
+	return fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)\n", safeText(m.label(m.reconnect.terminal)), m.reconnect.delay)
 }
 
 func (m model) confirmText() string {

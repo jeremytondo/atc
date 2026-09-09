@@ -17,7 +17,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/jeremytondo/atc/internal/terminals/monitor/report"
+	"github.com/jeremytondo/atc/internal/terminals/report"
 )
 
 func TestMain(m *testing.M) {
