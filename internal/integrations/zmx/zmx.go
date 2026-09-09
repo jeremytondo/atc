@@ -104,9 +104,16 @@ func New(opts Options) (*Driver, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
+	// Absolute like the socket directory: the monitor runs with the
+	// workload's directory as its cwd, and both sides must name the same
+	// report file.
+	reportDir, err := filepath.Abs(opts.ReportDir)
+	if err != nil {
+		return nil, err
+	}
 	return &Driver{
 		socketDir: socketDir,
-		reportDir: opts.ReportDir,
+		reportDir: reportDir,
 		monitor:   opts.MonitorExecutable,
 		logger:    opts.Logger,
 	}, nil
