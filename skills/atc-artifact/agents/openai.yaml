@@ -1,0 +1,7 @@
+interface:
+  display_name: "ATC Artifact"
+  short_description: "Create and publish an ATC artifact"
+  default_prompt: "Use $atc-artifact to create and publish an interactive document for this request."
+
+policy:
+  allow_implicit_invocation: false
