@@ -200,9 +200,11 @@ func (f *fixture) defaultSpace(t *testing.T) api.Space {
 	return api.Space{}
 }
 
-func plantReport(t *testing.T, dir, id string, code int, exited bool) {
+// plantReport writes a monitor report: start-only, or exit evidence with
+// code; process is the observed foreground program ("" for none yet).
+func plantReport(t *testing.T, dir, id string, code int, exited bool, process string) {
 	t.Helper()
-	rep := report.Report{TerminalID: id, PID: 1, StartedAt: time.Now()}
+	rep := report.Report{TerminalID: id, PID: 1, StartedAt: time.Now(), Process: process}
 	if exited {
 		now := time.Now().UTC()
 		rep.ExitedAt = &now
@@ -245,23 +247,23 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Error("session started before the record was persisted")
 	}
 	want := terminal
-	want.Name, want.SpaceID, want.Directory, want.Command, want.Status = filepath.Base(f.home), f.defaultSpace(t).ID, f.home, "hx", api.TerminalRunning
+	want.Name, want.SpaceID, want.Directory, want.Command, want.Process, want.Status = "", f.defaultSpace(t).ID, f.home, "hx", "hx", api.TerminalRunning
 	if diff := cmp.Diff(want, terminal); diff != "" {
 		t.Errorf("terminal (-want +got):\n%s", diff)
 	}
 }
 
-// Defaults: the Default space, its directory, and the directory's basename
-// as the name; an explicit directory is stored canonical and names the
-// terminal.
+// Defaults: the Default space, its directory, and no name — an unnamed
+// terminal is labelled by its process (ATC-317); an explicit directory
+// is stored canonical, and a blank name is no name.
 func TestCreateDefaults(t *testing.T) {
 	f := newFixture(t)
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if terminal.Name != filepath.Base(f.home) || terminal.Directory != f.home || terminal.Command != "" || terminal.SpaceID != f.defaultSpace(t).ID {
-		t.Errorf("defaults = %+v, want the Default space, %q, and its basename", terminal, f.home)
+	if terminal.Name != "" || terminal.Process != "shell" || terminal.Directory != f.home || terminal.Command != "" || terminal.SpaceID != f.defaultSpace(t).ID {
+		t.Errorf("defaults = %+v, want the Default space, %q, no name, and process shell", terminal, f.home)
 	}
 	sub := filepath.Join(f.home, "sub dir")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -275,8 +277,65 @@ func TestCreateDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if explicit.Directory != sub || explicit.Name != "sub dir" {
-		t.Errorf("explicit directory = %+v, want canonical %q named by basename", explicit, sub)
+	if explicit.Directory != sub || explicit.Name != "" {
+		t.Errorf("explicit directory = %+v, want canonical %q and no name", explicit, sub)
+	}
+}
+
+// process before the monitor's first observation comes from creation-time
+// knowledge — App, then command, then shell — and an observation, once
+// made, outlives both the fallback and the session.
+func TestProcessFallbackAndObservation(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	app, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{}, AppLaunch{
+		AppID:   "codex/tui",
+		Compose: func(string, string) (string, error) { return "node /opt/codex.js", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := f.create(ctx, api.TerminalCreateParams{Command: "git log | less"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := f.create(ctx, api.TerminalCreateParams{Command: "/usr/bin/hx ."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := f.create(ctx, api.TerminalCreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{app.ID: "codex", command.ID: "git", path.ID: "hx", plain.ID: "shell"} {
+		got, err := f.service.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Process != want {
+			t.Errorf("fallback process for %s = %q, want %q", id, got.Process, want)
+		}
+	}
+
+	// An observation replaces the fallback, sticks when the report goes
+	// away, and is kept by an exited terminal.
+	plantReport(t, f.reports, plain.ID, 0, false, "nvim")
+	f.service.Reconcile(ctx)
+	if got, _ := f.service.Get(plain.ID); got.Process != "nvim" || got.Status != api.TerminalRunning {
+		t.Errorf("observed = %+v, want running with process nvim", got)
+	}
+	if err := report.Remove(f.reports, plain.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.service.Reconcile(ctx)
+	if got, _ := f.service.Get(plain.ID); got.Process != "nvim" {
+		t.Errorf("after the report vanished = %q, want the observation kept", got.Process)
+	}
+	f.driver.remove(plain.ID)
+	plantReport(t, f.reports, plain.ID, 0, true, "nvim")
+	f.service.Reconcile(ctx)
+	if got, _ := f.service.Get(plain.ID); got.Process != "nvim" || got.Status != api.TerminalExited {
+		t.Errorf("exited = %+v, want exited with process nvim", got)
 	}
 }
 
@@ -286,7 +345,7 @@ func TestCreateFastFailingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.driver.createErr = errors.New("client exited before the session settled")
 	f.driver.onCreate = func(id string, _ CreateSpec) {
-		plantReport(t, f.reports, id, 127, true)
+		plantReport(t, f.reports, id, 127, true, "")
 	}
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{Command: "no-such-tool"})
 	if err != nil {
@@ -326,16 +385,21 @@ func TestReconcileDecisionTable(t *testing.T) {
 		markerExited bool
 		markerStart  bool
 		stopIntent   bool
-		want         api.TerminalStatus
-		wantCode     *int
+		// process is what the planted report observed; wantProcess what
+		// the resource shows (the fallback "shell" without a report).
+		process     string
+		want        api.TerminalStatus
+		wantCode    *int
+		wantProcess string
 	}{
-		"present reachable → running":                   {present: true, reachable: true, want: api.TerminalRunning},
-		"present unresponsive → unreachable":            {present: true, want: api.TerminalUnreachable},
-		"inventory failure → unreachable":               {present: true, reachable: true, invErr: invErr, want: api.TerminalUnreachable},
-		"absent with evidence → exited":                 {markerExited: true, want: api.TerminalExited, wantCode: &code3},
-		"absent, stop intent → exited, code suppressed": {markerExited: true, stopIntent: true, want: api.TerminalExited},
-		"absent, start-only report → missing":           {markerStart: true, want: api.TerminalMissing},
-		"absent, no evidence → missing":                 {want: api.TerminalMissing},
+		"present reachable → running":                   {present: true, reachable: true, want: api.TerminalRunning, wantProcess: "shell"},
+		"present reachable, observed → running":         {present: true, reachable: true, markerStart: true, process: "nvim", want: api.TerminalRunning, wantProcess: "nvim"},
+		"present unresponsive → unreachable":            {present: true, want: api.TerminalUnreachable, wantProcess: "shell"},
+		"inventory failure → unreachable":               {present: true, reachable: true, invErr: invErr, markerStart: true, process: "nvim", want: api.TerminalUnreachable, wantProcess: "nvim"},
+		"absent with evidence → exited":                 {markerExited: true, process: "hx", want: api.TerminalExited, wantCode: &code3, wantProcess: "hx"},
+		"absent, stop intent → exited, code suppressed": {markerExited: true, stopIntent: true, want: api.TerminalExited, wantProcess: "shell"},
+		"absent, start-only report → missing":           {markerStart: true, process: "less", want: api.TerminalMissing, wantProcess: "less"},
+		"absent, no evidence → missing":                 {want: api.TerminalMissing, wantProcess: "shell"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
@@ -356,7 +420,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 				f.service.mu.Unlock()
 			}
 			if tc.markerExited || tc.markerStart {
-				plantReport(t, f.reports, id, code3, tc.markerExited)
+				plantReport(t, f.reports, id, code3, tc.markerExited, tc.process)
 			}
 			if tc.present {
 				f.driver.set(id, tc.reachable)
@@ -372,6 +436,9 @@ func TestReconcileDecisionTable(t *testing.T) {
 			}
 			if got.Status != tc.want {
 				t.Errorf("status = %s, want %s", got.Status, tc.want)
+			}
+			if got.Process != tc.wantProcess {
+				t.Errorf("process = %q, want %q", got.Process, tc.wantProcess)
 			}
 			if diff := cmp.Diff(tc.wantCode, got.ExitCode); diff != "" {
 				t.Errorf("exitCode (-want +got):\n%s", diff)
@@ -391,7 +458,7 @@ func TestExitedIsStickyAndStaysListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.driver.remove(terminal.ID)
-	plantReport(t, f.reports, terminal.ID, 3, true)
+	plantReport(t, f.reports, terminal.ID, 3, true, "")
 	f.service.Reconcile(ctx)
 
 	if err := report.Remove(f.reports, terminal.ID); err != nil {
@@ -422,12 +489,18 @@ func TestUpdateName(t *testing.T) {
 	if renamed.Name != "build watcher" {
 		t.Errorf("name = %q", renamed.Name)
 	}
-	// A merge patch: an empty patch changes nothing, null is refused.
+	// A merge patch: an empty patch changes nothing, an empty name is
+	// refused, and null clears the name so the process labels the
+	// terminal again.
 	if same, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{}); err != nil || same.Name != "build watcher" {
 		t.Errorf("empty patch = %+v, %v", same, err)
 	}
-	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Clear[string]()}); !errors.Is(err, ErrInvalidUpdate) {
-		t.Errorf("null name = %v, want ErrInvalidUpdate", err)
+	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Some("  ")}); !errors.Is(err, ErrInvalidUpdate) {
+		t.Errorf("blank name = %v, want ErrInvalidUpdate", err)
+	}
+	cleared, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Clear[string]()})
+	if err != nil || cleared.Name != "" || cleared.Process != "shell" {
+		t.Errorf("null name = %+v, %v; want no name and process shell", cleared, err)
 	}
 	if _, err := f.service.Update(ctx, "term-zzzzz", api.TerminalUpdateParams{Name: api.Some("x")}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update(absent) = %v, want ErrNotFound", err)
@@ -593,6 +666,7 @@ func TestLoadRebuildsView(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.driver.remove(gone.ID)
+	plantReport(t, f.reports, running.ID, 0, false, "nvim")
 
 	// A "restarted" service over the same database and backend.
 	restarted := NewService(Options{
@@ -622,18 +696,20 @@ func TestLoadRebuildsView(t *testing.T) {
 		t.Error("Load with an unusable home succeeded")
 	}
 
-	byName := map[string]api.TerminalStatus{}
+	// Statuses settle from the inventory; the observed process is rebuilt
+	// from the monitor's report, which outlives the server.
+	byName := map[string][2]string{}
 	for _, terminal := range restarted.List("") {
-		byName[terminal.Name] = terminal.Status
+		byName[terminal.Name] = [2]string{string(terminal.Status), terminal.Process}
 	}
-	want := map[string]api.TerminalStatus{"keep": api.TerminalRunning, "gone": api.TerminalMissing}
+	want := map[string][2]string{"keep": {"running", "nvim"}, "gone": {"missing", "shell"}}
 	if diff := cmp.Diff(want, byName); diff != "" {
-		t.Errorf("statuses after restart (-want +got):\n%s", diff)
+		t.Errorf("view after restart (-want +got):\n%s", diff)
 	}
-	_ = running
 }
 
-// Change events flow for create, status change, rename, and delete.
+// Change events flow for create, status change, rename, and delete — and
+// not for a process observation, which a busy shell changes constantly.
 func TestEventsEmitted(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -646,6 +722,11 @@ func TestEventsEmitted(t *testing.T) {
 	}
 	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Some("renamed")}); err != nil {
 		t.Fatal(err)
+	}
+	plantReport(t, f.reports, terminal.ID, 0, false, "nvim")
+	f.service.Reconcile(ctx) // process only: no event
+	if got, _ := f.service.Get(terminal.ID); got.Process != "nvim" {
+		t.Fatalf("process = %q, want nvim", got.Process)
 	}
 	f.driver.remove(terminal.ID)
 	f.service.Reconcile(ctx) // running → missing
@@ -672,6 +753,11 @@ func TestEventsEmitted(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, types); diff != "" {
 		t.Errorf("event types (-want +got):\n%s", diff)
+	}
+	select {
+	case change := <-sub.C:
+		t.Errorf("unexpected extra event %+v", change)
+	default:
 	}
 }
 
@@ -963,7 +1049,7 @@ func TestDeleteSpace(t *testing.T) {
 	}
 	f.driver.set(ids[1], false)
 	f.driver.remove(ids[2])
-	plantReport(t, f.reports, ids[2], 0, true)
+	plantReport(t, f.reports, ids[2], 0, true, "")
 	f.driver.remove(ids[3])
 	f.service.Reconcile(ctx)
 	elsewhere, err := f.service.Create(ctx, api.TerminalCreateParams{Name: "elsewhere"})

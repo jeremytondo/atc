@@ -98,6 +98,10 @@ type Service struct {
 type entry struct {
 	record store.TerminalRecord
 	status api.TerminalStatus
+	// process is the program the monitor last observed in the foreground
+	// (ATC-317): never stored, rebuilt from the report on every reconcile
+	// pass, and never cleared once set. Empty means no observation yet.
+	process string
 }
 
 func NewService(opts Options) *Service {
@@ -134,7 +138,7 @@ func NewService(opts Options) *Service {
 // minting the Default space when none exists. Statuses start from
 // durable evidence alone (exited where recorded, unreachable otherwise)
 // and settle in the startup Reconcile that must follow before reads are
-// served.
+// served; the same pass restores each observed process from its report.
 func (s *Service) Load(ctx context.Context) error {
 	if err := s.loadSpaces(ctx); err != nil {
 		return err
@@ -179,10 +183,13 @@ func (s *Service) Run(ctx context.Context) {
 //	absent with report exit evidence  → exited (evidence recorded now)
 //	absent without evidence           → missing
 //
-// Absence from the inventory is never by itself an exit. Reconcile is
-// status-only — it is called on the request path (startup, mutations), and
-// orphan reaping means bounded kill verification (~seconds per orphan)
-// that must never block an HTTP handler. The background loop reaps.
+// Absence from the inventory is never by itself an exit. Every pass also
+// reads every terminal's report for the observed foreground process; a
+// process change refreshes the view but publishes nothing, since only
+// status changes are events. Reconcile is otherwise status-only — it is
+// called on the request path (startup, mutations), and orphan reaping
+// means bounded kill verification (~seconds per orphan) that must never
+// block an HTTP handler. The background loop reaps.
 func (s *Service) Reconcile(ctx context.Context) {
 	s.reconcile(ctx, false)
 }
@@ -204,20 +211,23 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 
 	// Phase 1: decide everything decidable without IO, under the view
-	// lock; absent sessions leave with a snapshot for the evidence phase.
-	type absentTerminal struct {
+	// lock. Every terminal leaves with a snapshot for the report phase;
+	// absent sessions are the ones whose report may be exit evidence.
+	type candidate struct {
 		id            string
 		createdAt     time.Time
 		stopRequested bool
+		absent        bool
 	}
 	statuses := make(map[string]api.TerminalStatus)
-	var absent []absentTerminal
+	var candidates []candidate
 	var orphans []string
 	s.mu.Lock()
 	for id, e := range s.view {
 		if _, ok := s.settling[id]; ok {
 			continue
 		}
+		c := candidate{id: id, createdAt: e.record.CreatedAt, stopRequested: e.record.StopRequestedAt != nil}
 		switch {
 		case e.record.ExitedAt != nil:
 			statuses[id] = api.TerminalExited
@@ -231,13 +241,10 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 					statuses[id] = api.TerminalUnreachable
 				}
 			} else {
-				absent = append(absent, absentTerminal{
-					id:            id,
-					createdAt:     e.record.CreatedAt,
-					stopRequested: e.record.StopRequestedAt != nil,
-				})
+				c.absent = true
 			}
 		}
+		candidates = append(candidates, c)
 	}
 	if reap && inventoryErr == nil {
 		for _, session := range inventory {
@@ -256,13 +263,22 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		code                 *int
 	}
 	var exits []exitEvidence
-	for _, terminal := range absent {
+	processes := make(map[string]string)
+	for _, terminal := range candidates {
 		rep, err := report.Read(s.reportDir, terminal.id)
 		if err != nil {
-			// Unreadable evidence is no evidence; the honest answer for an
-			// absent session without valid evidence is missing.
-			s.logger.Warn("unreadable report", "terminal", terminal.id, "error", err)
-			statuses[terminal.id] = api.TerminalMissing
+			if terminal.absent {
+				// Unreadable evidence is no evidence; the honest answer for
+				// an absent session without valid evidence is missing.
+				s.logger.Warn("unreadable report", "terminal", terminal.id, "error", err)
+				statuses[terminal.id] = api.TerminalMissing
+			}
+			continue
+		}
+		if rep != nil && rep.Process != "" {
+			processes[terminal.id] = rep.Process
+		}
+		if !terminal.absent {
 			continue
 		}
 		if !rep.Exited() {
@@ -293,9 +309,15 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 
 	// Phase 3: apply, guarding entries that were deleted or entered a
-	// create's settling window while the locks were down.
+	// create's settling window while the locks were down. Observed
+	// processes refresh the view silently: only status changes publish.
 	var changed []string
 	s.mu.Lock()
+	for id, process := range processes {
+		if e, ok := s.view[id]; ok {
+			e.process = process
+		}
+	}
 	for _, evidence := range exits {
 		if e, ok := s.view[evidence.id]; ok && e.record.ExitedAt == nil {
 			exitedAt := evidence.exitedAt
@@ -403,9 +425,6 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 	}
 	directory = canonical
 	name := strings.TrimSpace(params.Name)
-	if name == "" {
-		name = filepath.Base(directory)
-	}
 	abort := func() {}
 	if launch.Prepare != nil {
 		prepared, err := launch.Prepare(ctx, directory)
@@ -571,12 +590,13 @@ func (s *Service) List(spaceID string) []api.Terminal {
 
 // Update applies a merge patch to the two mutable fields: the name, and
 // the space (a move, which changes nothing else — not the session, the
-// directory, the App, or any thread). Neither accepts null; a move into
-// a space being deleted is refused. An empty patch returns the terminal
-// unchanged.
+// directory, the App, or any thread). A null name clears the user-set
+// name, so the terminal is labelled by its foreground program again; an
+// empty name is refused, as is a null space and a move into a space
+// being deleted. An empty patch returns the terminal unchanged.
 func (s *Service) Update(ctx context.Context, id string, params api.TerminalUpdateParams) (api.Terminal, error) {
-	if params.Name.Null() || params.SpaceID.Null() {
-		return api.Terminal{}, fmt.Errorf("%w: name and spaceId cannot be null", ErrInvalidUpdate)
+	if params.SpaceID.Null() {
+		return api.Terminal{}, fmt.Errorf("%w: spaceId cannot be null", ErrInvalidUpdate)
 	}
 	if !params.Name.Set && !params.SpaceID.Set {
 		return s.Get(id)
@@ -594,7 +614,10 @@ func (s *Service) Update(ctx context.Context, id string, params api.TerminalUpda
 		return api.Terminal{}, ErrNotFound
 	}
 	name, spaceID := current.Name, current.SpaceID
-	if params.Name.Set {
+	switch {
+	case params.Name.Null():
+		name = ""
+	case params.Name.Set:
 		if name = strings.TrimSpace(*params.Name.Value); name == "" {
 			return api.Terminal{}, fmt.Errorf("%w: name cannot be empty", ErrInvalidUpdate)
 		}
@@ -709,9 +732,13 @@ func (e *entry) terminal() api.Terminal {
 		SpaceID:   e.record.SpaceID,
 		Directory: e.record.Directory,
 		AppID:     e.record.AppID,
+		Process:   e.process,
 		Status:    e.status,
 		CreatedAt: e.record.CreatedAt,
 		UpdatedAt: e.record.UpdatedAt,
+	}
+	if terminal.Process == "" {
+		terminal.Process = fallbackProcess(e.record)
 	}
 	if e.record.AppID == "" {
 		terminal.Command = e.record.Command
@@ -721,4 +748,26 @@ func (e *entry) terminal() api.Terminal {
 		terminal.ExitCode = &code
 	}
 	return terminal
+}
+
+// fallbackProcess names a terminal from creation-time knowledge until the
+// monitor's first observation: the App's short name, else the launch
+// command's first word (its basename, so a path reads as the program),
+// else shell. The short name is the Integration part of the qualified
+// integration/app id — every terminal App today is <integration>/tui, so
+// the app part says nothing, and the Integration id is the name the
+// observation will report for the running binary (claude, codex).
+func fallbackProcess(record store.TerminalRecord) string {
+	if record.AppID != "" {
+		if integration, _, ok := strings.Cut(record.AppID, "/"); ok && integration != "" {
+			return integration
+		}
+		return record.AppID
+	}
+	if fields := strings.Fields(record.Command); len(fields) > 0 {
+		if name := filepath.Base(fields[0]); name != "." && name != "/" {
+			return name
+		}
+	}
+	return "shell"
 }

@@ -331,7 +331,7 @@ func TestTerminalCRUDOverTheWire(t *testing.T) {
 		t.Fatalf("create: got %d, want 201; body %s", rec.Code, rec.Body)
 	}
 	created := decodeTerminal(t, rec)
-	if created.Status != api.TerminalRunning || created.Name != filepath.Base(f.projectDir) ||
+	if created.Status != api.TerminalRunning || created.Name != "" || created.Process != "hx" ||
 		created.SpaceID != f.defaultSpace(t).ID || created.Directory != f.projectDir {
 		t.Fatalf("created = %+v", created)
 	}
@@ -370,8 +370,8 @@ func TestTerminalCRUDOverTheWire(t *testing.T) {
 	}
 }
 
-// Update accepts only name: unknown and immutable fields are rejected by
-// schema, so the contract cannot silently widen.
+// Update accepts name and spaceId: unknown and immutable fields are
+// rejected by schema, so the contract cannot silently widen.
 func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	f := newFixture(t)
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
@@ -380,7 +380,9 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 		"immutable command":   `{"command":"vim"}`,
 		"immutable app":       `{"name":"x","appId":"claude/tui"}`,
 		"unknown field":       `{"name":"x","frobnicate":true}`,
-		"null name":           `{"name":null}`,
+		"empty name":          `{"name":""}`,
+		"blank name":          `{"name":"  "}`,
+		"null space":          `{"spaceId":null}`,
 	} {
 		rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, body)
 		if rec.Code != http.StatusUnprocessableEntity {
@@ -390,6 +392,24 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	// A merge patch: an empty body changes nothing.
 	if rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, `{}`); rec.Code != http.StatusOK || decodeTerminal(t, rec).Name != created.Name {
 		t.Errorf("empty patch: got %d; body %s", rec.Code, rec.Body)
+	}
+}
+
+// name on the wire: a value sets the user's name beside the observed
+// process, null clears it (ATC-317).
+func TestUpdateNameSetsAndClears(t *testing.T) {
+	f := newFixture(t)
+	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
+	rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, `{"name":"api"}`)
+	if named := decodeTerminal(t, rec); rec.Code != http.StatusOK || named.Name != "api" || named.Process != "shell" {
+		t.Fatalf("set name: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, `{"name":null}`)
+	if cleared := decodeTerminal(t, rec); rec.Code != http.StatusOK || cleared.Name != "" || cleared.Process != "shell" {
+		t.Fatalf("clear name: got %d; body %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"name":""`) || !strings.Contains(rec.Body.String(), `"process":"shell"`) {
+		t.Errorf("wire shape: %s", rec.Body)
 	}
 }
 
