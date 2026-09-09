@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -311,7 +312,15 @@ type channel struct {
 func newChannel(count int) (*channel, error) {
 	c := &channel{coreEnds: make(chan net.Conn, count), done: make(chan struct{})}
 	for range count {
-		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		// Darwin has no SOCK_CLOEXEC. Hold ForkLock across creation and
+		// marking so a concurrent fork cannot inherit either raw endpoint.
+		syscall.ForkLock.RLock()
+		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+		if err == nil {
+			unix.CloseOnExec(fds[0])
+			unix.CloseOnExec(fds[1])
+		}
+		syscall.ForkLock.RUnlock()
 		if err != nil {
 			c.close()
 			return nil, fmt.Errorf("cannot create the receiver channel: %w", err)
