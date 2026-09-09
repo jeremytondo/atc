@@ -81,18 +81,14 @@ is manual; see
 ## Publishing documents
 
 Agents author Artifacts with the [`atc-artifact` skill](skills/atc-artifact/SKILL.md)
-and the `atc artifact` commands. This repository exposes the skill to Codex as
-`$atc-artifact` and to Claude Code as `/atc-artifact`; both are explicit-only.
-Install it through your skill manager for use outside this checkout; ATC does
-not distribute it. Codex retains the skill's explicit-only policy. In Claude
-Code, mark it `user-only` in `/skills` after installing because Claude stores
-that policy in its settings. `new` creates a working copy on the shared
-platform, `check`, `build`, and `preview` work on it locally, and `publish`
-uploads the build and its source as a new Version. The first authoring use
-installs a private Node runtime and the platform's dependencies under
-`~/.local/share/atc/authoring`; an ATC upgrade refreshes them on the next use.
-Working copies persist there too, outside any repository, until they are
-removed with `atc artifact discard`.
+(install it through your skill manager; ATC does not distribute it) and the
+`atc artifact` commands: `new` creates a working copy on the shared platform,
+`check`, `build`, and `preview` work on it locally, and `publish` uploads the
+build and its source as a new Version. The first authoring use installs a
+private Node runtime and the platform's dependencies under
+`~/.local/share/atc/authoring`; an ATC upgrade refreshes them on the next
+use. Working copies persist there too, outside any repository, until
+`atc artifact discard`.
 
 Readers open the links `publish` prints. The document origin listens on
 `documents_port` (7332 by default; it must differ from `port`) at the same

@@ -1,6 +1,7 @@
 ---
 name: atc-artifact
 description: Author and publish an ATC artifact — a polished, interactive HTML document (explanation, comparison, report, demonstration) built on ATC's shared React platform and served from ATC's document origin with a persistent link. Use when a user wants a browser-readable document rather than a chat answer or a Markdown file, when revising a published artifact, or when returning links to earlier versions.
+disable-model-invocation: true
 ---
 
 # ATC artifacts
