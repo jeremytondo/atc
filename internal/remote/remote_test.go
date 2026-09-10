@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,9 +61,9 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			script := &scriptedSSH{stdout: tc.stdout, stderr: tc.stderr, exit: tc.exit}
-			ssh := &SSH{executable: "/usr/bin/ssh", run: script.run}
+			ssh := &SSH{executable: "/usr/bin/ssh", target: "ws", controlDir: t.TempDir(), run: script.run}
 			var stderr strings.Builder
-			got, err := ssh.Bootstrap(context.Background(), "ws", strings.NewReader(""), &stderr)
+			got, err := ssh.Bootstrap(context.Background(), strings.NewReader(""), &stderr)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
@@ -83,7 +85,9 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 			if printed := fmt.Sprintf("%v %+v %s %#v", got, got, got, got); strings.Contains(printed, got.Token) {
 				t.Errorf("formatting a Bootstrap prints the token: %s", printed)
 			}
-			if diff := cmp.Diff([]string{"/usr/bin/ssh", "--", "ws", "atc", "__bootstrap"}, script.cmd.Args); diff != "" {
+			wantArgs := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+				"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-T", "--", "ws", "atc", "__bootstrap"}
+			if diff := cmp.Diff(wantArgs, script.cmd.Args); diff != "" {
 				t.Errorf("argv (-want +got):\n%s", diff)
 			}
 			if script.cmd.Env != nil {
@@ -94,9 +98,8 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 }
 
 func TestBootstrapRejectsBadTargets(t *testing.T) {
-	ssh := &SSH{executable: "ssh", run: func(*exec.Cmd) error { t.Fatal("ssh ran"); return nil }}
 	for _, target := range []string{"", "ws\n", "ws\x1b[2J"} {
-		if _, err := ssh.Bootstrap(context.Background(), target, strings.NewReader(""), io.Discard); err == nil {
+		if _, err := NewSSH(target); err == nil {
 			t.Errorf("target %q accepted", target)
 		}
 	}
@@ -106,21 +109,104 @@ func TestBootstrapRejectsBadTargets(t *testing.T) {
 }
 
 func TestAttachCommandAndTransportLoss(t *testing.T) {
-	ssh := &SSH{executable: "/usr/bin/ssh"}
-	cmd := ssh.AttachCommand(context.Background(), "ws", "term-abcde")
-	want := []string{"/usr/bin/ssh", "-tt", "-o", "LogLevel=ERROR", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
+	ssh := &SSH{executable: "/usr/bin/ssh", target: "ws", controlDir: t.TempDir()}
+	cmd := ssh.AttachCommand(context.Background(), "term-abcde")
+	want := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-tt", "-o", "LogLevel=ERROR", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("argv (-want +got):\n%s", diff)
-	}
-	for _, arg := range cmd.Args {
-		if strings.Contains(arg, "ControlMaster") || strings.Contains(arg, "ControlPath") || strings.Contains(arg, "ControlPersist") {
-			t.Errorf("attach sets connection sharing: %v", cmd.Args)
-		}
 	}
 	if cmd.Env != nil {
 		t.Errorf("attach child got an explicit environment: %v", cmd.Env)
 	}
 	if !IsTransportLoss(scriptedExit(255)) || IsTransportLoss(scriptedExit(1)) || IsTransportLoss(nil) || IsTransportLoss(errors.New("x")) {
 		t.Error("transport loss is exit 255 and nothing else")
+	}
+}
+
+func TestPrivateSSHDirectories(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	first, err := NewSSH("ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := NewSSH("ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if first.controlDir == second.controlDir {
+		t.Fatal("pickers share a control directory")
+	}
+	for _, ssh := range []*SSH{first, second} {
+		info, err := os.Stat(ssh.controlDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 || len(ssh.controlPath()) >= 104 {
+			t.Errorf("control directory permissions %v or path length %d", info.Mode().Perm(), len(ssh.controlPath()))
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.controlDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("closed directory remains: %v", err)
+	}
+	if _, err := os.Stat(second.controlDir); err != nil {
+		t.Errorf("closing one picker affected another: %v", err)
+	}
+}
+
+func TestClosePrivateSSH(t *testing.T) {
+	for _, name := range []string{"active", "absent", "expired during close", "shutdown failed"} {
+		t.Run(name, func(t *testing.T) {
+			ssh := &SSH{executable: "/usr/bin/ssh", target: "ws", controlDir: t.TempDir()}
+			if name != "absent" {
+				if err := os.WriteFile(ssh.controlPath(), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			ssh.run = func(cmd *exec.Cmd) error {
+				calls++
+				want := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-O", "exit", "--", "ws"}
+				if diff := cmp.Diff(want, cmd.Args); diff != "" {
+					t.Errorf("shutdown command (-want +got):\n%s", diff)
+				}
+				if name == "expired during close" {
+					if err := os.Remove(ssh.controlPath()); err != nil {
+						t.Fatal(err)
+					}
+					return scriptedExit(255)
+				}
+				if name == "shutdown failed" {
+					return context.DeadlineExceeded
+				}
+				return nil
+			}
+			err := ssh.Close()
+			if (err != nil) != (name == "shutdown failed") {
+				t.Errorf("Close = %v", err)
+			}
+			if _, err := os.Stat(ssh.controlDir); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("control directory remains: %v", err)
+			}
+			if err := ssh.Close(); err != nil {
+				t.Errorf("second Close = %v", err)
+			}
+			wantCalls := 1
+			if name == "absent" {
+				wantCalls = 0
+			}
+			if calls != wantCalls {
+				t.Errorf("shutdown calls = %d, want %d", calls, wantCalls)
+			}
+		})
 	}
 }
