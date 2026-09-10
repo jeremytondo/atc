@@ -19,26 +19,18 @@ jobs:
       - run: mise run check
 
   supervisor:
-    # The real-supervisor regression (ATC-319): real systemd user manager,
-    # real zmx, isolated ATC state. Prerequisites missing fail the job —
-    # the test that proves terminals survive a server stop must never
-    # silently skip.
+    # The real-supervisor regression (ATC-319) plus the managed-runtime
+    # lifecycle (ATC-324): real systemd user manager and isolated ATC
+    # state, with ATC installing the pinned zmx itself — no zmx is placed
+    # on PATH, since nothing consults it. Prerequisites missing fail the
+    # job: the tests that prove terminals survive a stop and that the
+    # pinned assets are real must never silently skip.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
-      - name: Install zmx
-        env:
-          ZMX_VERSION: "0.6.0"
-        run: |
-          curl -fsSL -o zmx.tar.gz "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-linux-x86_64.tar.gz"
-          curl -fsSL -o zmx.tar.gz.sha256 "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-linux-x86_64.tar.gz.sha256"
-          echo "$(cut -d' ' -f1 zmx.tar.gz.sha256)  zmx.tar.gz" | sha256sum -c -
-          tar -xzf zmx.tar.gz
-          sudo install -m 0755 zmx /usr/local/bin/zmx
-          zmx version
       - name: Reach the systemd user manager
         run: |
           sudo loginctl enable-linger "$(id -un)"
@@ -52,4 +44,17 @@ jobs:
           done
           systemctl --user show --property=Version --value
           systemd-run --version | head -n 1
-      - run: ATC_SUPERVISOR_TESTS=require go test -race -count=1 -v -run 'RealSupervisor|RealScope|RealZmx' ./internal/...
+      - run: ATC_SUPERVISOR_TESTS=require go test -race -count=1 -v -run 'RealSupervisor|RealScope|RealZmx|PinnedAssets' ./internal/...
+
+  runtime-macos:
+    # macOS parity for the managed runtime (ATC-324): Linux results do not
+    # establish it. No systemd here, so the supervisor tests skip; the
+    # real-zmx lifecycle installs and runs the pinned macOS arm64 asset,
+    # and the asset-validation test checks every target's pins.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - run: ATC_SUPERVISOR_TESTS=require go test -race -count=1 -v -run 'RealZmx|PinnedAssets' ./internal/integrations/zmx/

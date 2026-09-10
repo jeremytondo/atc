@@ -59,6 +59,11 @@ type Integration struct {
 	// long-lived connection to its program; nil otherwise. A connected
 	// Integration is available; its executable (if any) is not consulted.
 	Connection func() api.IntegrationConnection
+	// Runtime reports the program ATC installs and runs for the
+	// Integration itself (zmx, ATC-324); nil otherwise. Such an
+	// Integration is available exactly when its runtime is ready, and
+	// nothing is probed on PATH for it.
+	Runtime func() (status api.IntegrationRuntime, ready bool)
 	// PrepareThread is the Integration's thread-creation seam (ATC-289):
 	// it resolves a create against the program's live state without
 	// sending anything, refusing with ErrNotConnected (the state and

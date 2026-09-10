@@ -174,8 +174,9 @@ func (s *Service) Get(id string) (api.Integration, error) {
 
 // availability is the one rule for whether an Integration can act right
 // now, for the catalog and for launches alike: a connection-backed
-// Integration when connected, an executable-backed one when its binary
-// resolves on the server's PATH, and one with neither always. It returns
+// Integration when connected, one with a managed runtime when that
+// runtime is ready, an executable-backed one when its binary resolves on
+// the server's PATH, and one with none of these always. It returns
 // the connection it consulted, if any, and the refusal a launch would
 // carry.
 func (s *Service) availability(integration Integration) (available bool, connection *api.IntegrationConnection, reason error) {
@@ -185,6 +186,12 @@ func (s *Service) availability(integration Integration) (available bool, connect
 			return false, &c, fmt.Errorf("%w: %s is %s: %s", ErrUnavailable, integration.Name, c.State, c.Detail)
 		}
 		return true, &c, nil
+	}
+	if integration.Runtime != nil {
+		if status, ready := integration.Runtime(); !ready {
+			return false, nil, fmt.Errorf("%w: %s", ErrUnavailable, status.Detail)
+		}
+		return true, nil, nil
 	}
 	if integration.Executable != nil && !s.resolves(integration.Executable) {
 		return false, nil, fmt.Errorf("%w: command %q not found on the server's PATH; install with: %s",
@@ -214,7 +221,14 @@ func (s *Service) integration(integration Integration) api.Integration {
 	if integration.Executable != nil {
 		out.InstallHint = integration.Executable.InstallHint
 	}
-	out.Available, out.Connection, _ = s.availability(integration)
+	if integration.Runtime != nil {
+		// One snapshot for both the health flag and the reported status, so
+		// the two never describe different moments.
+		status, ready := integration.Runtime()
+		out.Available, out.Runtime = ready, &status
+	} else {
+		out.Available, out.Connection, _ = s.availability(integration)
+	}
 	var executableResolves *bool
 	if integration.Executable != nil {
 		resolves := s.resolves(integration.Executable)

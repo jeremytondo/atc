@@ -79,9 +79,11 @@ func TestIntegrationCatalogListAndGet(t *testing.T) {
 		t.Errorf("t3code apps (-want +got):\n%s", diff)
 	}
 
-	// zmx: an infrastructure Integration with no Apps or agents.
+	// zmx: an infrastructure Integration with no Apps or agents, available
+	// through its managed runtime (ATC-324) rather than any PATH probe.
 	wantZmx := api.Integration{ID: "zmx", Name: "zmx", Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
-		Agents: []api.IntegrationAgent{}, Apps: []api.App{}, Available: true, InstallHint: "install zmx from https://github.com/neurosnap/zmx"}
+		Agents: []api.IntegrationAgent{}, Apps: []api.App{}, Available: true,
+		Runtime: &api.IntegrationRuntime{Active: "0.6.0", Desired: "0.6.0", Executable: "/data/atc/runtimes/zmx/0.6.0/zmx"}}
 	if diff := cmp.Diff(wantZmx, list.Integrations[3]); diff != "" {
 		t.Errorf("zmx (-want +got):\n%s", diff)
 	}

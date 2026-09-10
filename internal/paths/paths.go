@@ -10,8 +10,10 @@
 //	data    $XDG_DATA_HOME/atc/linear.json
 //	data    $XDG_DATA_HOME/atc/artifacts     (~/.local/share/atc/artifacts)
 //	data    $XDG_DATA_HOME/atc/authoring     (~/.local/share/atc/authoring)
+//	data    $XDG_DATA_HOME/atc/runtimes      (~/.local/share/atc/runtimes)
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
+//	state   $XDG_STATE_HOME/atc/terminal-runtime.json
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
 //	state   $XDG_STATE_HOME/atc/hooks         (~/.local/state/atc/hooks)
 //
@@ -107,11 +109,29 @@ func AuthoringDir() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "authoring")
 }
 
+// RuntimeDir holds the executables ATC installs for itself (ATC-324): one
+// directory per managed program, one per version beneath it, each
+// published whole or not at all. Surviving terminal sessions keep running
+// these executables after ATC stops, so they live in the durable data dir,
+// never in a cache.
+func RuntimeDir() (string, error) {
+	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "runtimes")
+}
+
 // TerminalSocketDir is ATC's private zmx socket directory (ATC-251).
 // Sessions created here are invisible to hand-run zmx, which is the whole
 // isolation story — ATC never touches sessions outside this directory.
 func TerminalSocketDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "terminals")
+}
+
+// TerminalRuntimeFile records which zmx runtime the terminal namespace
+// beside it (TerminalSocketDir) runs on (ATC-324): the server and the
+// attaching CLI both resolve it and never pick a runtime on their own. It
+// lives beside the socket directory, not inside it — zmx probes every
+// entry of its socket directory as a session.
+func TerminalRuntimeFile() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "terminal-runtime.json")
 }
 
 // ReportDir holds the monitor's per-terminal report files, one
