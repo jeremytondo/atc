@@ -27,7 +27,7 @@ func Start(ctx context.Context, opts Options) error {
 
 // Restart is the same path as Start — re-render, health gate, same failure
 // diagnostics — but always bounces the process. The remedy for upgrades,
-// config edits, and version skew.
+// config edits, and a server left on another protocol.
 func Restart(ctx context.Context, opts Options) error {
 	return startOrRestart(ctx, opts, true)
 }

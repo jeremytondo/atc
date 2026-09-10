@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/remote"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/tui"
 	"github.com/jeremytondo/atc/internal/version"
@@ -118,7 +120,8 @@ func TestRootStartsStoppedLocalServer(t *testing.T) {
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(api.ServerVersionHeader, "v0.0.0-started")
-		_ = json.NewEncoder(w).Encode(api.Health{Status: "ok", Version: "v0.0.0-started"})
+		w.Header().Set(api.ProtocolHeader, strconv.Itoa(api.Protocol))
+		_ = json.NewEncoder(w).Encode(api.Health{Status: "ok", Version: "v0.0.0-started", Protocol: api.Protocol})
 	})
 	var startedWith service.Options
 	prev := startLocalServer
@@ -148,15 +151,46 @@ func TestRootStartsStoppedLocalServer(t *testing.T) {
 	}
 }
 
-// installFakeSSH puts an ssh on PATH that records its arguments, prints
-// the scripted stdout and stderr, and exits with the scripted code.
-func installFakeSSH(t *testing.T, stdout, stderr string, exit int) (argsFile string) {
+// fakeRemote scripts the target of a remote launch: what discovery
+// prints, what inspection reports, and what the bootstrap answers.
+type fakeRemote struct {
+	discovery  string
+	inspection remote.Inspection
+	bootstrap  string // stdout of the bootstrap command
+	stderr     string // stderr of the bootstrap command
+	exit       int    // exit code of the bootstrap command
+}
+
+// readyRemote is a target that needs nothing: compatible executable on
+// PATH, healthy exposed server.
+func readyRemote(token string) fakeRemote {
+	return fakeRemote{
+		discovery: "os=Linux\narch=x86_64\nhome=/home/u\npath=/home/u/.local/bin/atc\n",
+		inspection: remote.Inspection{
+			Executable: remote.Executable{Path: "/home/u/.local/bin/atc", Version: "v9.9.9", Channel: "stable", Protocol: api.Protocol, Writable: true},
+			Server:     remote.Server{Executable: "/home/u/.local/bin/atc", Supervised: true, Responding: true, Healthy: true, Version: "v9.9.9", Protocol: api.Protocol},
+			Tailnet:    remote.Tailnet{Configured: true},
+		},
+		bootstrap: fmt.Sprintf(`{"url":"https://ws.tailnet.ts.net:7331","token":%q,"version":"v9.9.9","protocol":%d}`+"\n", token, api.Protocol),
+		stderr:    "starting atc.server\n",
+	}
+}
+
+// installFakeSSH puts an ssh on PATH that records its arguments and
+// answers each remote command from the scripted target: the discovery
+// script on stdin, inspection, and the bootstrap. The bootstrap's
+// arguments are what the test reads back.
+func installFakeSSH(t *testing.T, target fakeRemote) (argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "args")
+	inspection, err := json.Marshal(target.inspection)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The scripted output lives in files, not the environment: the test
 	// checks that the token never reaches this process's environment.
-	for name, content := range map[string]string{"stdout": stdout, "stderr": stderr} {
+	for name, content := range map[string]string{"discovery": target.discovery, "inspection": string(inspection), "stdout": target.bootstrap, "stderr": target.stderr} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -167,28 +201,44 @@ if [ "$3" = "-O" ]; then
   rm -f "$2"
   exit 0
 fi
-printf '%s\n' "$*" > "$FAKE_SSH_DIR/args"
 : > "$2"
-cat "$FAKE_SSH_DIR/stdout"
-cat "$FAKE_SSH_DIR/stderr" >&2
-exit "$FAKE_SSH_EXIT"
+case "$*" in
+  *" -- ws sh") cat >/dev/null; cat "$FAKE_SSH_DIR/discovery"; exit 0 ;;
+  *" __remote inspect") cat "$FAKE_SSH_DIR/inspection"; exit 0 ;;
+  *" __remote bootstrap"*)
+    printf '%s\n' "$*" > "$FAKE_SSH_DIR/args"
+    cat "$FAKE_SSH_DIR/stdout"
+    cat "$FAKE_SSH_DIR/stderr" >&2
+    exit "$FAKE_SSH_EXIT" ;;
+esac
+echo "unexpected: $*" >&2
+exit 2
 `
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_SSH_DIR", dir)
-	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(exit))
+	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(target.exit))
 	return argsFile
+}
+
+// verifyRemote stands in for the live readiness check over the tailnet.
+func verifyRemote(t *testing.T, err error) {
+	t.Helper()
+	prev := verifyRemoteHealth
+	verifyRemoteHealth = func(context.Context, remote.Bootstrap) (api.Health, error) { return api.Health{Status: "ok"}, err }
+	t.Cleanup(func() { verifyRemoteHealth = prev })
 }
 
 func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	forceTTY(t)
 	captured := capturePicker(t)
+	verifyRemote(t, nil)
 	const token = "atc_remote-secret-token"
-	argsFile := installFakeSSH(t, `{"url":"https://ws.tailnet.ts.net:7331","token":"`+token+`","version":"v9.9.9"}`+"\n", "starting atc.server\n", 0)
+	argsFile := installFakeSSH(t, readyRemote(token))
 
-	_, stderr, err := runCLI(t, "--remote", "ws")
+	stdout, stderr, err := runCLI(t, "--remote", "ws")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,11 +247,14 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 		t.Fatal(err)
 	}
 	bootstrapArgs := strings.Fields(string(args))
-	if len(bootstrapArgs) != 15 || bootstrapArgs[0] != "-S" || !strings.HasSuffix(string(args), "-T -- ws atc __bootstrap\n") {
+	if len(bootstrapArgs) != 16 || bootstrapArgs[0] != "-S" || !strings.HasSuffix(string(args), "-T -- ws /home/u/.local/bin/atc __remote bootstrap\n") {
 		t.Fatalf("bootstrap ssh args = %q", args)
 	}
 	if !strings.Contains(stderr, "starting atc.server") {
 		t.Errorf("remote stderr not shown live: %q", stderr)
+	}
+	if strings.Contains(stdout, "[y/N]") {
+		t.Errorf("a ready target was asked to approve changes:\n%s", stdout)
 	}
 	if captured.Target != "ws" || captured.ServerVersion != "v9.9.9" || captured.TransportLoss == nil || captured.Client == nil {
 		t.Errorf("options = target %q server %q transportLoss set %v client %v", captured.Target, captured.ServerVersion, captured.TransportLoss != nil, captured.Client)
@@ -214,8 +267,9 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 		t.Errorf("attach executable = %q", cmd.Path)
 	}
 	controlPath := bootstrapArgs[1]
+	// The attach runs the executable discovery found, not a PATH lookup.
 	want := []string{cmd.Args[0], "-S", controlPath, "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
-		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-tt", "-o", "LogLevel=ERROR", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-tt", "-o", "LogLevel=ERROR", "--", "ws", "/home/u/.local/bin/atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("attach args (-want +got):\n%s", diff)
 	}
@@ -237,7 +291,9 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 func TestRootRemoteBootstrapFailureEndsLaunch(t *testing.T) {
 	forceTTY(t)
 	captured := capturePicker(t)
-	argsFile := installFakeSSH(t, "", "tailnet exposure is not enabled on this machine: add `tailscale = true` to /home/u/.config/atc/config.toml\n", 1)
+	target := readyRemote("t")
+	target.bootstrap, target.stderr, target.exit = "", "tailnet exposure is not enabled on this machine: add `tailscale = true` to /home/u/.config/atc/config.toml\n", 1
+	argsFile := installFakeSSH(t, target)
 	_, stderr, err := runCLI(t, "--remote", "ws")
 	if err == nil || !strings.Contains(err.Error(), "bootstrap on ws failed") || !strings.Contains(err.Error(), "tailscale = true") {
 		t.Fatalf("err = %v", err)
@@ -275,7 +331,8 @@ func checkSSHClosed(t *testing.T, argsFile, controlPath string) {
 
 func TestRootRemoteClosesSSHAfterCancelledPicker(t *testing.T) {
 	forceTTY(t)
-	argsFile := installFakeSSH(t, `{"url":"https://ws.tailnet.ts.net:7331","token":"test","version":"v1"}`, "", 0)
+	verifyRemote(t, nil)
+	argsFile := installFakeSSH(t, readyRemote("test"))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	previous := runPicker
@@ -310,7 +367,7 @@ func TestRemoteFlagIsRootOnlyAndBootstrapIsHidden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(stdout, "__bootstrap") || !strings.Contains(stdout, "--remote") {
+	if strings.Contains(stdout, "__remote") || !strings.Contains(stdout, "--remote") {
 		t.Errorf("root help:\n%s", stdout)
 	}
 }

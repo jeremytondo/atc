@@ -7,9 +7,7 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"sync"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
@@ -22,9 +20,11 @@ import (
 // through — never server internals. It returns the client and the base URL
 // it settled on. The server URL comes from ATC_SERVER (a remote client's
 // paste-once setup) or the settled local config port; the token from
-// ATC_TOKEN or the local token file. Version skew prints one warning line
-// on stderr with the restart remedy.
-func NewClient(stderr io.Writer) (*api.Client, string, error) {
+// ATC_TOKEN or the local token file. Compatibility is the client's own
+// protocol check (api.Protocol): a server on another protocol fails every
+// call with a protocol_mismatch problem, and a server on another release
+// is simply used.
+func NewClient() (*api.Client, string, error) {
 	baseURL := os.Getenv("ATC_SERVER")
 	if baseURL == "" {
 		configPath, err := paths.ConfigFile()
@@ -47,17 +47,5 @@ func NewClient(stderr io.Writer) (*api.Client, string, error) {
 			return nil, "", err
 		}
 	}
-	clientVersion := version.String()
-	// The callback runs on whichever goroutine issued the request, and the
-	// client supports concurrent calls — Once keeps the warning single and
-	// race-free.
-	var warn sync.Once
-	onServerVersion := func(serverVersion string) {
-		if serverVersion != clientVersion {
-			warn.Do(func() {
-				_, _ = fmt.Fprintf(stderr, "atc: server is %s, client is %s; run `atc server restart`\n", serverVersion, clientVersion)
-			})
-		}
-	}
-	return api.NewClient(baseURL, token, clientVersion, nil, onServerVersion), baseURL, nil
+	return api.NewClient(baseURL, token, version.String(), nil), baseURL, nil
 }

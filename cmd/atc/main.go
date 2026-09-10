@@ -102,8 +102,11 @@ func newRootCmd() *cobra.Command {
 
 Bare ` + "`atc`" + ` opens the picker: choose a space, then a terminal, and attach to
 it (ctrl-\ detaches back to the picker). ` + "`atc --remote <target>`" + ` opens
-the same picker against the machine an ssh target names; its server is
-started if needed and must expose the API on the tailnet.
+the same picker against the machine an ssh target names. If that machine
+needs atc installed or updated, its tailscale setting enabled, or its
+server restarted, the changes are shown and applied after one
+confirmation; a ready machine connects without one, and a stopped
+compatible server is started without one.
 
 For ` + "`atc server run`" + `, configuration precedence is:
   flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
@@ -122,7 +125,7 @@ start.`,
 	}
 	addPickerFlags(root)
 	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newArtifactCmd(), newDirectoryCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
-		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd(), newBootstrapCmd())
+		newUpgradeCmd(), newServerCmd(), newChildCmd(), newWebhookReceiverCmd(), newRemoteCmd())
 	return root
 }
 
@@ -139,7 +142,7 @@ var (
 // the same way.
 func runWithClient(body func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		client, baseURL, err := cli.NewClient(cmd.ErrOrStderr())
+		client, baseURL, err := cli.NewClient()
 		if err != nil {
 			return err
 		}
@@ -148,15 +151,25 @@ func runWithClient(body func(cmd *cobra.Command, args []string, client *api.Clie
 }
 
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "Print the atc version",
+		Short: "Print the atc version (or, with --protocol, the ATC protocol it speaks)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), version.String())
+			protocol, err := cmd.Flags().GetBool("protocol")
+			if err != nil {
+				return err
+			}
+			if protocol {
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), api.Protocol)
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), version.String())
 			return err
 		},
 	}
+	cmd.Flags().Bool("protocol", false, "print the ATC protocol this build speaks instead of its version")
+	return cmd
 }
 
 func newUpgradeCmd() *cobra.Command {
@@ -167,9 +180,11 @@ func newUpgradeCmd() *cobra.Command {
 Use --dev to install the current rolling dev build instead. Without it, a dev
 build switches to the latest production release even if its version is lower.
 
-If the server is still running the old version, interactive runs ask before
-restarting it. Headless runs print a reminder unless --restart or --no-restart
-chooses the behavior. A restart preserves terminals but interrupts active turns.`,
+A server still running the old version keeps running if the new build can
+talk to it (same ATC protocol); pass --restart to bounce it anyway. If it
+cannot, interactive runs ask before restarting it, and headless runs print a
+reminder unless --restart or --no-restart chooses the behavior. A restart
+preserves terminals but interrupts active turns.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := cmd.Flags()
@@ -210,7 +225,7 @@ chooses the behavior. A restart preserves terminals but interrupts active turns.
 		},
 	}
 	cmd.Flags().Bool("dev", false, "install the current rolling dev build (always reinstalls)")
-	cmd.Flags().Bool("restart", false, "restart a server left on the old version, without asking")
+	cmd.Flags().Bool("restart", false, "restart a server left on the old version, compatible or not, without asking")
 	cmd.Flags().Bool("no-restart", false, "never restart the server")
 	cmd.MarkFlagsMutuallyExclusive("restart", "no-restart")
 	return cmd
@@ -354,7 +369,7 @@ func newServerRestartCmd() *cobra.Command {
 	return addExposureFlags(lifecycleCmd("restart",
 		"Restart the supervised server",
 		`Re-render the unit and restart the server process. This is the remedy for
-upgrades, config edits, and client/server version skew.`+exposureFlagHelp,
+upgrades, config edits, and a server left on another protocol.`+exposureFlagHelp,
 		exposureLifecycleOptions, service.Restart))
 }
 

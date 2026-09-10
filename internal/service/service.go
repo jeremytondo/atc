@@ -51,7 +51,7 @@ const UnitName = "atc.server"
 // stopping, or the total undo.
 type Options struct {
 	Config config.Config
-	// Version is the client build identity, for skew reporting.
+	// Version is the client build identity, for diagnostics.
 	Version string
 	// Flags are the exposure flags supplied to this Start or Restart
 	// (ATC-283, ATC-306). A flag left nil is inherited from the running

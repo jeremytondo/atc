@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,19 +15,21 @@ import (
 	"github.com/jeremytondo/atc/internal/remote"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/tui"
+	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
 )
 
 // Bare `atc` opens the picker (ATC-316): the Space-first launcher over
 // the local server, or over a remote machine with --remote. The flag is
 // the root command's own — no subcommand sees it. Everything here is
-// wiring: the picker lives in internal/tui, the remote bootstrap in
-// internal/remote, and both are reached through seam variables so the
-// CLI tests can drive the launch without a terminal.
+// wiring: the picker lives in internal/tui, the remote setup and
+// bootstrap in internal/remote, and both are reached through seam
+// variables so the CLI tests can drive the launch without a terminal.
 
 var (
-	runPicker        = tui.Run
-	startLocalServer = service.Start
+	runPicker          = tui.Run
+	startLocalServer   = service.Start
+	verifyRemoteHealth = remote.VerifyHealth
 )
 
 func addPickerFlags(root *cobra.Command) {
@@ -67,9 +68,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 // attaches through the local zmx namespace.
 func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 	ctx := cmd.Context()
-	// The skew warning would land on the picker's screen; its help
-	// overlay reports the same fact.
-	client, baseURL, err := cli.NewClient(io.Discard)
+	client, baseURL, err := cli.NewClient()
 	if err != nil {
 		return err
 	}
@@ -80,6 +79,9 @@ func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 	if err != nil {
 		var problem *api.Problem
 		if errors.As(err, &problem) {
+			if problem.Code == api.CodeProtocolMismatch {
+				return fmt.Errorf("%w; `atc server restart` runs the installed build", err)
+			}
 			return err
 		}
 		lifecycle, err := lifecycleOptions(cmd)
@@ -114,22 +116,34 @@ func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 }
 
 // runRemotePicker owns the private SSH connection for the whole run,
-// including cleanup after a bootstrap failure or cancellation.
+// including cleanup after a failed setup or cancellation. The guided
+// setup (ATC-325) discovers the target, applies what the user approves,
+// and hands back a connection it has proven ready.
 func runRemotePicker(cmd *cobra.Command, target string, opts tui.Options) (err error) {
 	ssh, err := remote.NewSSH(target)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, ssh.Close()) }()
-	bootstrap, err := ssh.Bootstrap(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr())
+	setup := &remote.Setup{
+		SSH:      ssh,
+		Local:    remote.Identity{Version: version.String(), Protocol: api.Protocol},
+		Releases: upgrade.GitHub{},
+		Stdin:    cmd.InOrStdin(),
+		Stdout:   cmd.OutOrStdout(),
+		Stderr:   cmd.ErrOrStderr(),
+		Verify:   verifyRemoteHealth,
+	}
+	connection, err := setup.Run(cmd.Context())
 	if err != nil {
 		return err
 	}
-	opts.Client = api.NewClient(bootstrap.URL, bootstrap.Token, version.String(), nil, nil)
+	bootstrap := connection.Bootstrap
+	opts.Client = api.NewClient(bootstrap.URL, bootstrap.Token, version.String(), nil)
 	opts.Target = target
 	opts.ServerVersion = bootstrap.Version
 	opts.Attach = func(ctx context.Context, terminal api.Terminal) (*exec.Cmd, error) {
-		return ssh.AttachCommand(ctx, terminal.ID), nil
+		return ssh.AttachCommand(ctx, connection.Executable, terminal.ID), nil
 	}
 	opts.TransportLoss = remote.IsTransportLoss
 	return runPicker(cmd.Context(), opts)

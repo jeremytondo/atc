@@ -25,9 +25,12 @@ type Problem struct {
 	Detail string        `json:"detail,omitempty"`
 	Errors []ErrorDetail `json:"errors,omitempty"`
 
-	// ServerVersion is the Atc-Server-Version response header, carried on
-	// the error so a tokenless probe reads the server's version off a 401.
-	ServerVersion string `json:"-"`
+	// ServerVersion and ServerProtocol are the Atc-Server-Version and
+	// Atc-Protocol response headers, carried on the error so a tokenless
+	// or incompatible probe reads what answered off a 401 or a 426.
+	// ServerProtocol is 0 when the response carried no readable protocol.
+	ServerVersion  string `json:"-"`
+	ServerProtocol int    `json:"-"`
 }
 
 // ErrorDetail is one validation failure inside a Problem.
@@ -43,6 +46,7 @@ type ErrorDetail struct {
 // the status text as a slug (method_not_allowed, internal_server_error).
 const (
 	CodeUnauthorized              = "unauthorized"
+	CodeProtocolMismatch          = "protocol_mismatch"
 	CodeNotFound                  = "not_found"
 	CodeValidationFailed          = "validation_failed"
 	CodeTerminalNotFound          = "terminal_not_found"

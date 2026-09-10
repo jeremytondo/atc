@@ -215,6 +215,11 @@ func TestMessages(t *testing.T) {
 	if got := staleServerLine("v0.1.0"); !strings.Contains(got, "v0.1.0") || !strings.Contains(got, "atc server restart") || !strings.Contains(got, "--restart") {
 		t.Errorf("staleServerLine() = %q, want the version and both remedies", got)
 	}
+	// A compatible server on the old release is noted, never told a
+	// restart is required.
+	if got := compatibleServerLine("v0.1.0"); !strings.Contains(got, "v0.1.0") || !strings.Contains(got, "keeps running") || strings.Contains(got, "cannot") {
+		t.Errorf("compatibleServerLine() = %q", got)
+	}
 	if got := staleServerLine(""); !strings.Contains(got, "an unknown version") {
 		t.Errorf("staleServerLine(\"\") = %q", got)
 	}

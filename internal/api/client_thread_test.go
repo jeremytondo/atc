@@ -18,7 +18,7 @@ func TestCreateThread(t *testing.T) {
 		Method, Path, Body string
 	}
 	var got call
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got = call{Method: r.Method, Path: r.URL.Path, Body: strings.TrimSpace(string(body))}
 		if strings.Contains(got.Body, `"prompt":"bad"`) {
@@ -31,7 +31,7 @@ func TestCreateThread(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(Thread{ID: "thrd-x7k2f", IntegrationID: "t3code", Status: ThreadWorking})
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, "tok", "v1", nil, nil)
+	client := NewClient(srv.URL, "tok", "v1", nil)
 
 	thread, err := client.CreateThread(context.Background(), ThreadCreateParams{
 		IntegrationID: "t3code", Agent: "codex", ProjectID: "proj-aaaaa", Prompt: "hi", Model: "m",

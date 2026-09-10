@@ -14,6 +14,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -62,6 +63,7 @@ func (f *fixture) multipartRequest(t *testing.T, path string, params api.Artifac
 	_ = form.Close()
 	req := httptest.NewRequest(http.MethodPost, path, &body)
 	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set(api.ProtocolHeader, strconv.Itoa(api.Protocol))
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
@@ -72,7 +74,7 @@ func (f *fixture) client(t *testing.T) *api.Client {
 	t.Helper()
 	srv := httptest.NewServer(f.handler)
 	t.Cleanup(srv.Close)
-	return api.NewClient(srv.URL, testToken, testVersion, nil, nil)
+	return api.NewClient(srv.URL, testToken, testVersion, nil)
 }
 
 func TestArtifactPublicationOverTheWire(t *testing.T) {

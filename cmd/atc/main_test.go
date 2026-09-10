@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/service"
 )
 
@@ -54,6 +56,15 @@ func TestRunVersion(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout.String()) == "" {
 		t.Error("version printed nothing")
+	}
+	// --protocol is what `atc upgrade` asks a staged build before trusting
+	// its compatibility with the running server.
+	stdout.Reset()
+	if err := run(context.Background(), []string{"version", "--protocol"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(version --protocol) = %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != strconv.Itoa(api.Protocol) {
+		t.Errorf("version --protocol = %q, want %d", got, api.Protocol)
 	}
 }
 

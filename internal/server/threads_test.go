@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -256,6 +257,7 @@ func TestTerminalDeleteConvergesThreadsDespiteCancel(t *testing.T) {
 	cancel()
 	req := httptest.NewRequest(http.MethodDelete, "/v1/terminals/"+terminal.ID, nil).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set(api.ProtocolHeader, strconv.Itoa(api.Protocol))
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
 

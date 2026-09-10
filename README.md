@@ -105,16 +105,41 @@ title and Project, `source`, `delete`).
 Bare `atc` opens the picker against the local server, starting it if it is
 stopped: choose a Space, then a Terminal, and attach (ctrl-\ detaches back
 to the picker). `atc --remote <target>` opens the same picker against the
-machine an ordinary ssh target names. The remote's server is started if
-needed and must expose the API on the tailnet (`tailscale = true` in its
-`config.toml`); control traffic uses that HTTPS endpoint, and ssh carries
-only the launch-time bootstrap and the interactive attach. Each picker
-reuses its SSH connection through a private socket directory under `/tmp`,
-removed when it exits; credentials stay in memory. Terminal rows are
-numbered per space and labelled by the
+machine an ordinary ssh target names. Control traffic uses the remote
+server's HTTPS tailnet endpoint; ssh carries only the launch-time setup and
+the interactive attach. Each picker reuses its SSH connection through a
+private socket directory under `/tmp`, removed when it exits; credentials
+stay in memory. Terminal rows are numbered per space and labelled by the
 program in their foreground (`1:zsh`, `2:nvim`) or by a name you set
 (`3:api`); press a row's number to attach. `atc --help` and `?` inside the
 picker list the keys.
+
+### Remote setup
+
+Every `atc --remote` launch discovers the target first: its platform, the
+atc on its non-interactive PATH or in the usual install locations, the
+executable its server unit runs, what the running server answers, and
+whether Tailscale is connected there. A compatible, ready machine connects
+without any change; a stopped compatible server is started as before.
+Anything else is shown as a plan and applied after one confirmation:
+
+- atc missing: the latest release of this machine's channel (stable or dev)
+  is installed to `~/.local/bin` as the ssh user, verified and installed
+  atomically. Unpublished local builds cannot install anything remotely.
+- atc present but on another protocol: it is updated in place from the
+  latest release of *its own* channel, only where the ssh user can write
+  and no package manager owns it; otherwise you are told how to update it
+  there. Nothing is downgraded or switched between channels.
+- ATC's `tailscale` setting off: it is enabled in the remote `config.toml`,
+  keeping everything else in the file.
+- the running server on another protocol, or without tailnet exposure: it
+  is restarted. Terminals keep running (they live outside the server); active
+  agent turns are interrupted.
+
+Tailscale itself, and ssh access, must already be set up on the target;
+setup names the specific prerequisite that is missing and how to fix it.
+The picker opens only after the remote server answers over the tailnet with
+the bootstrap token on this client's protocol.
 
 ## Installing and upgrading
 
@@ -135,6 +160,16 @@ the binary keeps itself current:
 
 - `atc upgrade` — move to the latest production release
 - `atc upgrade --dev` — install the current rolling dev build
+
+Clients and servers are compatible when they speak the same ATC protocol
+(`Atc-Protocol`, one integer, in every request and response); the release
+version never decides. A client on another protocol is refused by the
+server, and a server on another protocol is refused by the client, on every
+operation; `atc server status` names the mismatch and `atc server restart`
+runs the installed build. Release differences on one protocol need nothing.
+The first build carrying the protocol had to be installed, and its servers
+restarted, by hand on every participating machine — earlier builds send no
+protocol and are treated as incompatible; nothing infers theirs.
 
 Releases are cut by the [Release workflow](.github/workflows/release.yml):
 `mise run release:patch|minor|major|dev`, `gh workflow run release.yml`, or

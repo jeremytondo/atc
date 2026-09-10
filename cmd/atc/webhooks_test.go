@@ -92,7 +92,7 @@ exec sleep 300
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := api.NewClient(fmt.Sprintf("http://127.0.0.1:%d", port), strings.TrimSpace(string(tokenOut)), "test", nil, nil)
+	client := api.NewClient(fmt.Sprintf("http://127.0.0.1:%d", port), strings.TrimSpace(string(tokenOut)), "test", nil)
 	var status api.Webhooks
 	waitUntil(t, "webhooks ready or unavailable", 30*time.Second, func() bool {
 		status, err = client.Webhooks(context.Background())
@@ -170,7 +170,7 @@ func TestServerRunWebhooksDisabledStatus(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("tokenless GET /v1/webhooks = %d, want 401", resp.StatusCode)
 	}
-	client := api.NewClient(fmt.Sprintf("http://127.0.0.1:%d", port), strings.TrimSpace(tokenOut.String()), "test", nil, nil)
+	client := api.NewClient(fmt.Sprintf("http://127.0.0.1:%d", port), strings.TrimSpace(tokenOut.String()), "test", nil)
 	status, err := client.Webhooks(context.Background())
 	if err != nil {
 		t.Fatal(err)

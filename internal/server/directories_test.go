@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,7 @@ func TestDirectoriesRefusals(t *testing.T) {
 		defer cancel()
 		req := httptest.NewRequest(http.MethodGet, "/v1/directories", nil).WithContext(ctx)
 		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set(api.ProtocolHeader, strconv.Itoa(api.Protocol))
 		rec := httptest.NewRecorder()
 		f.handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusGatewayTimeout || !strings.Contains(rec.Body.String(), `"code":"`+api.CodeDirectoryTimeout+`"`) {

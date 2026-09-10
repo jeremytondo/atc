@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -67,15 +69,20 @@ func Default() Config {
 // lookupEnv is injected so tests control the environment (os.LookupEnv in
 // production).
 func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
-	cfg := Default()
-
 	data, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		// No file is a normal install state.
-	case err != nil:
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return Config{}, err
-	default:
+	}
+	// No file is a normal install state: data is nil and only the
+	// defaults and environment apply.
+	return load(path, data, lookupEnv)
+}
+
+// load resolves the file and environment levels over the file's bytes;
+// path names it in diagnostics. Nil data means no file.
+func load(path string, data []byte, lookupEnv func(string) (string, bool)) (Config, error) {
+	cfg := Default()
+	if data != nil {
 		dec := toml.NewDecoder(bytes.NewReader(data))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&cfg); err != nil {
@@ -178,4 +185,86 @@ func (c Config) ValidateExposure(tailnet, webhooks bool) error {
 		return fmt.Errorf("webhooks_port and documents_port are both %d: the public webhook endpoint and the private document origin cannot share a Tailscale port", c.DocumentsPort)
 	}
 	return nil
+}
+
+// EnableTailscale sets `tailscale = true` in the configuration file at
+// path, creating the file when absent (ATC-325 guided setup). The edit is
+// textual — one key line replaced or appended — so every other line,
+// comments included, survives exactly, as do the file's mode and, when
+// path is a symlink (a dotfiles checkout), the link itself: the file it
+// points at is what changes. The result must load, or nothing is
+// written: a file the server would refuse is never produced from one it
+// accepted.
+func EnableTailscale(path string) error {
+	mode := fs.FileMode(0o600)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", path)
+		}
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	} else if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		// A dangling link stays a link: the file it names is created.
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	content := setKey(string(data), "tailscale", "true")
+	if _, err := load(path, []byte(content), func(string) (string, bool) { return "", false }); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.toml")
+	if err != nil {
+		return err
+	}
+	_, err = tmp.WriteString(content)
+	if err == nil {
+		err = tmp.Chmod(mode)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// setKey rewrites a top-level `key = ...` line to value, or appends one.
+// The file has no tables, so a line starting with the key is the key.
+func setKey(content, key, value string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		name, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && strings.TrimSpace(name) == key {
+			lines[i] = key + " = " + value
+			return strings.Join(lines, "\n")
+		}
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + key + " = " + value + "\n"
 }
