@@ -79,7 +79,7 @@ description = "Dispatch the release workflow to cut a major release"
 run = "gh workflow run release.yml -f bump=major"
 
 [tasks."release:dev"]
-description = "Dispatch the release workflow to refresh the rolling dev build from main (use `gh workflow run release.yml -f bump=dev --ref <branch>` for a branch)"
+description = "Refresh the rolling dev build from main (pass --ref <branch> to build a pushed branch)"
 run = "gh workflow run release.yml -f bump=dev"
 
 [tasks.clean]

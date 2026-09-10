@@ -138,6 +138,15 @@ Releases are cut by the [Release workflow](.github/workflows/release.yml):
 `mise run release:patch|minor|major|dev`, `gh workflow run release.yml`, or
 the Actions "Run workflow" button.
 
+To publish a dev build from a pushed branch without merging it:
+
+```sh
+mise run release:dev --ref <branch>
+```
+
+Omitting `--ref` builds from the repository's default branch. Each dev
+publication replaces the shared rolling dev build.
+
 ## Building and testing
 
 Tools and tasks are managed by [mise](https://mise.jdx.dev) via
