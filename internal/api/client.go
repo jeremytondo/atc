@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 )
@@ -250,6 +252,134 @@ func (c *Client) DeleteProject(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/projects/"+id, nil, nil)
 }
 
+// PublishArtifact creates an artifact from a publication: the params
+// and the build and source archives (gzip tars), streamed as one
+// multipart request.
+func (c *Client) PublishArtifact(ctx context.Context, params ArtifactPublishParams, build, source io.Reader) (ArtifactPublication, error) {
+	return c.publish(ctx, "/v1/artifacts", params, build, source)
+}
+
+// PublishArtifactVersion appends a version to an artifact; a nil build
+// and source with params.RestoreFrom set restores a stored version.
+func (c *Client) PublishArtifactVersion(ctx context.Context, id string, params ArtifactPublishParams, build, source io.Reader) (ArtifactPublication, error) {
+	return c.publish(ctx, "/v1/artifacts/"+url.PathEscape(id)+"/versions", params, build, source)
+}
+
+func (c *Client) publish(ctx context.Context, path string, params ArtifactPublishParams, build, source io.Reader) (ArtifactPublication, error) {
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return ArtifactPublication{}, fmt.Errorf("encoding publication params: %w", err)
+	}
+	// The multipart body is streamed through a pipe so an archive is never
+	// held in memory whole; a writer failure surfaces as the request's.
+	reader, writer := io.Pipe()
+	form := multipart.NewWriter(writer)
+	go func() {
+		err := writeForm(form, encoded, build, source)
+		_ = writer.CloseWithError(err)
+	}()
+	var result ArtifactPublication
+	if err := c.exchange(ctx, http.MethodPost, path, reader, form.FormDataContentType(), &result); err != nil {
+		_ = reader.Close()
+		return ArtifactPublication{}, err
+	}
+	return result, nil
+}
+
+func writeForm(form *multipart.Writer, params []byte, build, source io.Reader) error {
+	part, err := form.CreatePart(textproto.MIMEHeader{
+		"Content-Disposition": {`form-data; name="params"`}, "Content-Type": {"application/json"},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(params); err != nil {
+		return err
+	}
+	for name, archive := range map[string]io.Reader{"build": build, "source": source} {
+		if archive == nil {
+			continue
+		}
+		part, err := form.CreatePart(textproto.MIMEHeader{
+			"Content-Disposition": {fmt.Sprintf(`form-data; name="%s"; filename="%s.tar.gz"`, name, name)},
+			"Content-Type":        {"application/gzip"},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(part, archive); err != nil {
+			return fmt.Errorf("reading %s archive: %w", name, err)
+		}
+	}
+	return form.Close()
+}
+
+// Artifacts lists artifacts, or only projectID's when it is set.
+func (c *Client) Artifacts(ctx context.Context, projectID string) ([]Artifact, error) {
+	path := "/v1/artifacts"
+	if projectID != "" {
+		path += "?" + url.Values{"project": {projectID}}.Encode()
+	}
+	var list ArtifactList
+	err := c.do(ctx, http.MethodGet, path, nil, &list)
+	return list.Artifacts, err
+}
+
+// Artifact fetches one artifact.
+func (c *Client) Artifact(ctx context.Context, id string) (Artifact, error) {
+	var artifact Artifact
+	err := c.do(ctx, http.MethodGet, "/v1/artifacts/"+url.PathEscape(id), nil, &artifact)
+	return artifact, err
+}
+
+// UpdateArtifact applies a merge patch: title, Project, or both.
+func (c *Client) UpdateArtifact(ctx context.Context, id string, params ArtifactUpdateParams) (Artifact, error) {
+	var artifact Artifact
+	err := c.do(ctx, http.MethodPatch, "/v1/artifacts/"+url.PathEscape(id), params, &artifact)
+	return artifact, err
+}
+
+// DeleteArtifact removes an artifact and its whole history.
+func (c *Client) DeleteArtifact(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/artifacts/"+url.PathEscape(id), nil, nil)
+}
+
+// ArtifactVersions lists an artifact's history, oldest first.
+func (c *Client) ArtifactVersions(ctx context.Context, id string) ([]ArtifactVersion, error) {
+	var list ArtifactVersionList
+	err := c.do(ctx, http.MethodGet, "/v1/artifacts/"+url.PathEscape(id)+"/versions", nil, &list)
+	return list.Versions, err
+}
+
+// ArtifactVersion fetches one version.
+func (c *Client) ArtifactVersion(ctx context.Context, id string, number int) (ArtifactVersion, error) {
+	var version ArtifactVersion
+	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/v1/artifacts/%s/versions/%d", url.PathEscape(id), number), nil, &version)
+	return version, err
+}
+
+// ArtifactSource streams a version's source archive (a gzip tar); the
+// caller closes it. A non-2xx answer is returned as *Problem.
+func (c *Client) ArtifactSource(ctx context.Context, id string, number int) (io.ReadCloser, error) {
+	resp, err := c.send(ctx, http.MethodGet, fmt.Sprintf("/v1/artifacts/%s/versions/%d/source", url.PathEscape(id), number), nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, problemFrom(resp, resp.Header.Get(ServerVersionHeader))
+	}
+	return resp.Body, nil
+}
+
+// DocumentOrigin reports the document origin: readiness, local base URL,
+// and tailnet exposure.
+func (c *Client) DocumentOrigin(ctx context.Context) (DocumentOrigin, error) {
+	var status DocumentOrigin
+	err := c.do(ctx, http.MethodGet, "/v1/document-origin", nil, &status)
+	return status, err
+}
+
 // Webhooks reports the state of webhook ingress: readiness, public URL,
 // registered routes, any awaited setup action, and inbox counters.
 func (c *Client) Webhooks(ctx context.Context) (Webhooks, error) {
@@ -266,19 +396,19 @@ func (c *Client) Raw(ctx context.Context, method, path string, body io.Reader) (
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	return c.send(ctx, method, path, body)
+	return c.send(ctx, method, path, body, "application/json")
 }
 
 // send is the one place requests are built and executed: bearer token,
 // version header both ways, and the server-version callback live here for
 // every exchange, typed or raw.
-func (c *Client) send(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+func (c *Client) send(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -310,7 +440,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(encoded)
 	}
-	resp, err := c.send(ctx, method, path, body)
+	return c.exchange(ctx, method, path, body, "application/json", out)
+}
+
+// exchange is do for an already-encoded body of any content type.
+func (c *Client) exchange(ctx context.Context, method, path string, body io.Reader, contentType string, out any) error {
+	resp, err := c.send(ctx, method, path, body, contentType)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}

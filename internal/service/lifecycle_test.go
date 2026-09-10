@@ -83,6 +83,7 @@ type seamStub struct {
 	tailnetExec    string
 	webhooks       api.Webhooks // the server's scripted webhook report
 	webhookProbes  int
+	documents      api.DocumentOrigin // the server's scripted document origin report
 }
 
 func installSeams(t *testing.T, s *seamStub) {
@@ -90,9 +91,9 @@ func installSeams(t *testing.T, s *seamStub) {
 	if runtime.GOOS != "linux" {
 		t.Skip("lifecycle seam tests exercise the linux supervisor branch")
 	}
-	origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet, origWebhooks := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint, probeWebhooks
+	origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet, origWebhooks, origDocuments := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint, probeWebhooks, probeDocuments
 	t.Cleanup(func() {
-		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint, probeWebhooks = origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet, origWebhooks
+		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint, probeWebhooks, probeDocuments = origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet, origWebhooks, origDocuments
 	})
 	requireSystemctl = func() error { return nil }
 	origLive := liveTerminals
@@ -135,6 +136,9 @@ func installSeams(t *testing.T, s *seamStub) {
 	probeWebhooks = func(context.Context, Options, string) (api.Webhooks, error) {
 		s.webhookProbes++
 		return s.webhooks, nil
+	}
+	probeDocuments = func(context.Context, Options, string) (api.DocumentOrigin, error) {
+		return s.documents, nil
 	}
 }
 

@@ -14,6 +14,8 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 
 **Threads.** A Thread is one conversation with an Agent, owned by its Provider and tracked by ATC. ATC gives it a stable identity, a normalized status, its latest Turn and that Turn's final response, and its relationships. Threads are discovered when a provider starts one, or created through ATC when the provider's Integration supports that. Everything else a person does with a conversation — answering, approving, stopping — happens in the Provider's own program.
 
+**Artifacts.** Published documents: interactive explanations, comparisons, reports, and demonstrations that agents author on a shared React platform and publish through the API. An Artifact keeps a history of immutable Versions, each a complete static build plus its source, behind one stable link and a permanent link per Version. They are historical snapshots, organized by Project when useful, and served to browsers by the document origin.
+
 **Environments (future).** Where and under what runtime context work happens: shell, installed software, environment variables. Today ATC uses the user's normal environment on the local machine, and nothing is modeled yet.
 
 ## Architecture
@@ -25,6 +27,8 @@ ATC does not replace these tools. Each keeps owning what it owns: zmx owns termi
 **API.** One secure API and event stream, the same for local and remote clients. Clients can discover which Integrations are present, whether each is available, and what it supports.
 
 **Clients.** Anything that uses the API from outside ATC: the CLI, a desktop app, or an automation on another machine. Clients get no special access.
+
+**Document origin.** The one deliberate exception to "everything behind the API": a second listener that serves published Artifacts to browsers with no credential, on its own port and therefore its own browser origin, so a page it serves carries no credential and cannot read the API as its reader. It serves only published content and the read-only metadata the reader header needs; publishing, source retrieval, and every mutation stay on the API.
 
 ## Glossary
 
@@ -74,6 +78,28 @@ an issue starts one T3 Code conversation and posts the answer back. Setup
 is manual; see
 [`internal/integrations/linear/README.md`](internal/integrations/linear/README.md).
 
+## Publishing documents
+
+Agents author Artifacts with the [`atc-artifact` skill](skills/atc-artifact/SKILL.md)
+(install it through your skill manager; ATC does not distribute it) and the
+`atc artifact` commands: `new` creates a working copy on the shared platform,
+`check`, `build`, and `preview` work on it locally, and `publish` uploads the
+build and its source as a new Version. The first authoring use installs a
+private Node runtime and the platform's dependencies under
+`~/.local/share/atc/authoring`; an ATC upgrade refreshes them on the next
+use. Working copies persist there too, outside any repository, until
+`atc artifact discard`.
+
+Readers open the links `publish` prints. The document origin listens on
+`documents_port` (7332 by default; it must differ from `port`) at the same
+bind address as the API, and follows `tailscale = true` onto the tailnet.
+`atc server status` reports it; a port conflict leaves the rest of ATC
+running, with the reason in status, and publishing keeps working. Published
+content lives under `~/.local/share/atc/artifacts`, one directory per
+Artifact and Version; the metadata is in the database. `atc artifact --help`
+lists the management commands (`versions`, `restore`, `update` for the
+title and Project, `source`, `delete`).
+
 ## Using the picker
 
 Bare `atc` opens the picker against the local server, starting it if it is
@@ -118,7 +144,10 @@ Tools and tasks are managed by [mise](https://mise.jdx.dev) via
 [`mise.toml`](mise.toml); `mise install` provisions the toolchain.
 
 - `mise run build` — build a static `atc` binary into `bin/`
-- `mise run check` — build, lint, vet, and test (CI runs the same task)
+- `mise run check` — build, lint (including vet), check sqlc output, build
+  the artifact platform, and test (CI runs the same task)
+- `mise run platform:check` — type-check and build the artifact platform and
+  its examples with the pinned Node
 - `mise run refs` — fetch read-only T3 Code, Herdr, Agent Client Protocol,
   and zmx v0.6.0 source into `repos/`
 - `mise tasks` — list all tasks

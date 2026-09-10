@@ -2,6 +2,10 @@
 go = "1.26.7"
 golangci-lint = "2.13.1"
 goreleaser = "2.17.1"
+# The artifact platform's pinned runtime (internal/authoring), for the
+# platform check; atc itself provisions this version privately at
+# authoring time.
+node = "24.21.0"
 sqlc = "1.31.1"
 
 [tasks.build]
@@ -24,9 +28,39 @@ run = "sqlc generate -f internal/store/sqlc.yaml"
 description = "Fail when sqlc-generated code is stale (run mise generate)"
 run = "sqlc diff -f internal/store/sqlc.yaml"
 
+[tasks."platform:check"]
+description = "Type-check and build the artifact platform and its examples (internal/authoring/platform)"
+dir = "internal/authoring/platform"
+run = '''
+#!/usr/bin/env bash
+# Each example is checked in a scratch copy of the project so the tracked
+# starter document is never touched.
+set -euo pipefail
+npm ci --ignore-scripts --no-audit --no-fund --loglevel=error
+npx tsc --noEmit -p tsconfig.json
+npx vite build --logLevel warn
+# The document origin pins only "./"-relative references and serves under a
+# CSP that forbids inline scripts: the build must keep emitting that shape.
+if grep -qE 'src="/|href="/' dist/index.html || grep -E '<script' dist/index.html | grep -qv 'src="\./'; then
+  echo "dist/index.html must reference assets with ./ paths and carry no inline script" >&2
+  exit 1
+fi
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+for example in examples/*/; do
+  project="$scratch/$(basename "$example")"
+  mkdir -p "$project/src"
+  cp package.json package-lock.json index.html vite.config.ts tsconfig.json "$project/"
+  cp -R src/main.tsx src/platform "$project/src/"
+  cp -R "$example" "$project/src/document"
+  ln -s "$PWD/node_modules" "$project/node_modules"
+  (cd "$project" && npx tsc --noEmit -p tsconfig.json && npx vite build --logLevel warn)
+done
+'''
+
 [tasks.check]
-description = "Build, lint, generate-check, and test"
-depends = ["build", "lint", "generate:check", "test"]
+description = "Build, lint, generate-check, platform-check, and test"
+depends = ["build", "lint", "generate:check", "platform:check", "test"]
 
 [tasks.install]
 description = "Build a static atc binary into ~/.local/bin"

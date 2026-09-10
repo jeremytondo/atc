@@ -56,7 +56,7 @@ func TestEnvBeatsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Port: 9001, Bind: "::1", TailscaleExecutable: "tailscale", WebhooksPort: 443}
+	want := Config{Port: 9001, Bind: "::1", TailscaleExecutable: "tailscale", WebhooksPort: 443, DocumentsPort: 7332}
 	if diff := cmp.Diff(want, cfg); diff != "" {
 		t.Errorf("Load mismatch (-want +got):\n%s", diff)
 	}
@@ -122,6 +122,27 @@ func TestWebhookKeys(t *testing.T) {
 	}
 }
 
+func TestDocumentsPortKey(t *testing.T) {
+	if cfg := Default(); cfg.DocumentsPort != 7332 {
+		t.Errorf("defaults = %+v, want documents on port 7332", cfg)
+	}
+	cfg, err := Load(write(t, "documents_port = 9000\n"), env(map[string]string{"ATC_DOCUMENTS_PORT": "9001"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DocumentsPort != 9001 {
+		t.Errorf("cfg = %+v, want env to beat file", cfg)
+	}
+	// The API and the document origin are distinct origins by port; an
+	// ephemeral 0 on either side is allowed for tests.
+	if _, err := Load(write(t, "port = 9000\ndocuments_port = 9000\n"), noEnv); err == nil {
+		t.Error("documents_port equal to port passed")
+	}
+	if _, err := Load(write(t, "port = 0\ndocuments_port = 0\n"), noEnv); err != nil {
+		t.Errorf("both ephemeral: %v, want nil", err)
+	}
+}
+
 // Sharing a Tailscale port is a conflict only when both exposures run.
 func TestValidateExposure(t *testing.T) {
 	cfg := Config{Port: 443, WebhooksPort: 443}
@@ -133,8 +154,14 @@ func TestValidateExposure(t *testing.T) {
 			t.Errorf("tailnet=%v webhooks=%v: %v, want nil", tc[0], tc[1], err)
 		}
 	}
-	if err := (Config{Port: 7331, WebhooksPort: 443}).ValidateExposure(true, true); err != nil {
+	if err := (Config{Port: 7331, WebhooksPort: 443, DocumentsPort: 7332}).ValidateExposure(true, true); err != nil {
 		t.Errorf("distinct ports: %v, want nil", err)
+	}
+	if err := (Config{Port: 7331, WebhooksPort: 443, DocumentsPort: 443}).ValidateExposure(true, true); err == nil {
+		t.Error("webhooks and documents on one Tailscale port passed")
+	}
+	if err := (Config{Port: 7331, WebhooksPort: 443, DocumentsPort: 443}).ValidateExposure(true, false); err != nil {
+		t.Errorf("webhooks off: %v, want nil", err)
 	}
 }
 
@@ -152,6 +179,8 @@ func TestMalformedValues(t *testing.T) {
 		"non-funnel port":               {"webhooks_port = 9443\n", nil},
 		"non-numeric env webhooks port": {"", map[string]string{"ATC_WEBHOOKS_PORT": "https"}},
 		"non-boolean env webhooks":      {"", map[string]string{"ATC_WEBHOOKS": "yep"}},
+		"documents port out of range":   {"documents_port = 70000\n", nil},
+		"non-numeric env documents":     {"", map[string]string{"ATC_DOCUMENTS_PORT": "docs"}},
 	} {
 		if _, err := Load(write(t, tc.content), env(tc.env)); err == nil {
 			t.Errorf("%s: Load succeeded, want error", name)

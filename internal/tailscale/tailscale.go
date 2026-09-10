@@ -116,10 +116,17 @@ type Supervisor struct {
 // same port, same API, the bearer token doing the auth work. A nil logger
 // discards supervision events.
 func NewSupervisor(executable string, port int, logger *slog.Logger) *Supervisor {
+	return NewServeSupervisor(executable, port, nil, logger)
+}
+
+// NewServeSupervisor is NewSupervisor with an observer for every state
+// transition (nil discards) — the document origin's exposure (ATC-318)
+// reports its own readiness through it.
+func NewServeSupervisor(executable string, port int, observe func(Report), logger *slog.Logger) *Supervisor {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &Supervisor{executable: executable, publicPort: port, targetPort: port, logger: logger}
+	return &Supervisor{executable: executable, publicPort: port, targetPort: port, observe: observe, logger: logger}
 }
 
 // NewFunnelSupervisor builds a Supervisor that exposes localhost:targetPort

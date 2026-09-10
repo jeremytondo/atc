@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/application"
+	"github.com/jeremytondo/atc/internal/artifacts"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
@@ -122,7 +123,18 @@ type fixture struct {
 	t3         *t3code.Service
 	t3Server   *t3codetest.Server
 	t3Home     string
+	artifacts  *artifacts.Service
+	// artifactRoot is the artifact content directory.
+	artifactRoot string
+	origin       *fakeOrigin
 }
+
+// fakeOrigin is the document origin's status seam.
+type fakeOrigin struct {
+	status api.DocumentOrigin
+}
+
+func (o *fakeOrigin) Status(context.Context) api.DocumentOrigin { return o.status }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -227,6 +239,15 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	origin := &fakeOrigin{status: api.DocumentOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332", Tailnet: api.DocumentOriginTailnet{State: api.TailnetDisabled}}}
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	artifactService, err := artifacts.New(context.Background(), artifacts.Options{
+		Repository: db.Artifacts(), Hub: hub, Root: artifactRoot, Now: now,
+		Limits: artifacts.Limits{MaxEntries: 32, MaxFileBytes: 1 << 20, MaxTotalBytes: 4 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := NewHandler(Options{
 		Verify:         testVerify,
 		Version:        testVersion,
@@ -236,6 +257,8 @@ func newFixture(t *testing.T) *fixture {
 		Integrations:   catalog,
 		Threads:        threadService,
 		Events:         hub,
+		Artifacts:      artifactService,
+		DocumentOrigin: origin,
 		InternalRoutes: map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
 		Coordinator: application.New(application.Options{
 			Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog,
@@ -245,7 +268,8 @@ func newFixture(t *testing.T) *fixture {
 		HomeDir:           projectDir,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
-		binaries: binaries, reports: reports, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
+		binaries: binaries, reports: reports, projectDir: projectDir, t3: t3Service, t3Server: t3Server, t3Home: t3Home,
+		artifacts: artifactService, artifactRoot: artifactRoot, origin: origin}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectID = "proj-fixtr"

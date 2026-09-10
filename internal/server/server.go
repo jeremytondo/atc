@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/application"
+	"github.com/jeremytondo/atc/internal/artifacts"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/projects"
@@ -55,6 +56,11 @@ type Options struct {
 	// Webhooks reports webhook ingress (ATC-306); nil leaves the resource
 	// unmounted.
 	Webhooks WebhookReporter
+	// Artifacts serves the Artifacts resource (ATC-318); nil leaves it
+	// unmounted. DocumentOrigin reports the origin that serves them and
+	// supplies the reader links; required with Artifacts.
+	Artifacts      *artifacts.Service
+	DocumentOrigin DocumentOriginReporter
 	// InternalRoutes are handlers mounted outside the public /v1 contract
 	// and outside bearer auth (ATC-255): each authenticates itself — the
 	// Claude hook route validates its per-launch secret, and the bearer
@@ -137,6 +143,15 @@ func NewHandler(opts Options) http.Handler {
 	}
 	if opts.Webhooks != nil {
 		registerWebhooks(humaAPI, opts.Webhooks)
+	}
+	if opts.Artifacts != nil {
+		if opts.DocumentOrigin == nil {
+			panic("server.NewHandler: DocumentOrigin must accompany Artifacts")
+		}
+		registerArtifacts(humaAPI, opts.Artifacts, opts.DocumentOrigin)
+	}
+	if opts.DocumentOrigin != nil {
+		registerDocumentOrigin(humaAPI, opts.DocumentOrigin)
 	}
 	if opts.HomeDir != "" {
 		registerDirectories(humaAPI, opts.HomeDir)

@@ -74,6 +74,27 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 		{"server", "status", "extra"},
 		{"server", "logs", "extra"},
 		{"server", "uninstall", "extra"},
+		{"artifact"},
+		{"artifact", "frobnicate"},
+		{"artifact", "get"},
+		{"artifact", "list", "extra"},
+		{"artifact", "versions"},
+		{"artifact", "update", "artf-aaaaa"},
+		{"artifact", "update", "artf-aaaaa", "--project", "proj-aaaaa", "--no-project"},
+		{"artifact", "delete"},
+		{"artifact", "restore", "artf-aaaaa"},
+		{"artifact", "restore", "artf-aaaaa", "one"},
+		{"artifact", "source"},
+		{"artifact", "source", "artf-aaaaa", "one"},
+		{"artifact", "new", "extra"},
+		{"artifact", "new", "--example", "demo", "--from", "artf-aaaaa"},
+		{"artifact", "open"},
+		{"artifact", "copies", "extra"},
+		{"artifact", "discard"},
+		{"artifact", "check"},
+		{"artifact", "build"},
+		{"artifact", "preview"},
+		{"artifact", "publish"},
 	} {
 		var stdout, stderr strings.Builder
 		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {
@@ -119,7 +140,7 @@ func TestServerRunStopsOnContextCancel(t *testing.T) {
 	var stderr syncBuffer
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"server", "run", "--port", "0"}, strings.NewReader(""), &stdout, &stderr)
+		done <- run(ctx, []string{"server", "run", "--port", "0", "--documents-port", "0"}, strings.NewReader(""), &stdout, &stderr)
 	}()
 
 	// Boot now includes storage migration and the blocking startup
@@ -148,7 +169,7 @@ func TestServerRunCancelledDuringBoot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var stdout, stderr strings.Builder
-	if err := run(ctx, []string{"server", "run", "--port", "0"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := run(ctx, []string{"server", "run", "--port", "0", "--documents-port", "0"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("server run with pre-cancelled context = %v, want nil", err)
 	}
 }
@@ -159,8 +180,9 @@ func TestServerRunCancelledDuringBoot(t *testing.T) {
 func TestServerRunRejectsInvalidFlagValues(t *testing.T) {
 	isolateXDG(t)
 	for name, args := range map[string][]string{
-		"empty bind":        {"server", "run", "--bind=", "--port", "0"},
-		"port out of range": {"server", "run", "--port", "70000"},
+		"empty bind":        {"server", "run", "--bind=", "--port", "0", "--documents-port", "0"},
+		"port out of range": {"server", "run", "--port", "70000", "--documents-port", "0"},
+		"documents on port": {"server", "run", "--port", "7331", "--documents-port", "7331"},
 	} {
 		var stdout, stderr strings.Builder
 		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {

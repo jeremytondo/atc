@@ -196,3 +196,56 @@ UPDATE linear_outbox SET attempts = ?, next_attempt_at = ? WHERE id = ? AND sent
 DELETE FROM linear_outbox
 WHERE (sent_at IS NOT NULL AND sent_at < sqlc.arg(cutoff))
    OR (failed IS NOT NULL AND created_at < sqlc.arg(cutoff));
+
+-- Artifacts (ATC-318). The current version is derived (MAX(number)):
+-- versions only ever append.
+-- name: InsertArtifact :execrows
+INSERT INTO artifacts (id, title, project_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: GetArtifact :one
+SELECT artifacts.*, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
+FROM artifacts WHERE id = ?;
+
+-- A NULL project lists every artifact.
+-- name: ListArtifacts :many
+SELECT artifacts.*, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
+FROM artifacts WHERE sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id) ORDER BY created_at, id;
+
+-- name: UpdateArtifact :one
+UPDATE artifacts SET title = ?, project_id = ?, updated_at = ? WHERE id = ?
+RETURNING id, title, project_id, created_at, updated_at,
+    CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version;
+
+-- A publication sets the artifact's current title along with its version.
+-- name: RetitleArtifact :execrows
+UPDATE artifacts SET title = ?, updated_at = ? WHERE id = ?;
+
+-- name: DeleteArtifact :execrows
+DELETE FROM artifacts WHERE id = ?;
+
+-- name: InsertArtifactVersion :execrows
+INSERT INTO artifact_versions (artifact_id, number, title, platform, published_at, restored_from, publication_id,
+    thread_id, revision, links)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetArtifactVersion :one
+SELECT * FROM artifact_versions WHERE artifact_id = ? AND number = ?;
+
+-- name: GetArtifactVersionByPublication :one
+SELECT * FROM artifact_versions WHERE publication_id = ?;
+
+-- name: InsertArtifactPublication :execrows
+INSERT INTO artifact_publications (publication_id, artifact_id, number) VALUES (?, ?, ?);
+
+-- name: GetArtifactPublication :one
+SELECT * FROM artifact_publications WHERE publication_id = ?;
+
+-- name: ListArtifactVersions :many
+SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY number;
+
+-- Every stored version's identity, for reconciling the content directory
+-- against the database after a restart.
+-- name: ListArtifactVersionKeys :many
+SELECT artifact_id, number FROM artifact_versions ORDER BY artifact_id, number;

@@ -91,6 +91,18 @@ func (q *Queries) CountPendingWebhookDeliveries(ctx context.Context) (int64, err
 	return count, err
 }
 
+const deleteArtifact = `-- name: DeleteArtifact :execrows
+DELETE FROM artifacts WHERE id = ?
+`
+
+func (q *Queries) DeleteArtifact(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteArtifact, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteProject = `-- name: DeleteProject :execrows
 DELETE FROM projects WHERE id = ?
 `
@@ -159,6 +171,94 @@ func (q *Queries) FailWebhookDelivery(ctx context.Context, arg FailWebhookDelive
 	return result.RowsAffected()
 }
 
+const getArtifact = `-- name: GetArtifact :one
+SELECT artifacts.id, artifacts.title, artifacts.project_id, artifacts.created_at, artifacts.updated_at, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
+FROM artifacts WHERE id = ?
+`
+
+type GetArtifactRow struct {
+	ID             string
+	Title          string
+	ProjectID      sql.NullString
+	CreatedAt      string
+	UpdatedAt      string
+	CurrentVersion int64
+}
+
+func (q *Queries) GetArtifact(ctx context.Context, id string) (GetArtifactRow, error) {
+	row := q.db.QueryRowContext(ctx, getArtifact, id)
+	var i GetArtifactRow
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ProjectID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CurrentVersion,
+	)
+	return i, err
+}
+
+const getArtifactPublication = `-- name: GetArtifactPublication :one
+SELECT publication_id, artifact_id, number FROM artifact_publications WHERE publication_id = ?
+`
+
+func (q *Queries) GetArtifactPublication(ctx context.Context, publicationID string) (ArtifactPublication, error) {
+	row := q.db.QueryRowContext(ctx, getArtifactPublication, publicationID)
+	var i ArtifactPublication
+	err := row.Scan(&i.PublicationID, &i.ArtifactID, &i.Number)
+	return i, err
+}
+
+const getArtifactVersion = `-- name: GetArtifactVersion :one
+SELECT artifact_id, number, title, platform, published_at, restored_from, publication_id, thread_id, revision, links FROM artifact_versions WHERE artifact_id = ? AND number = ?
+`
+
+type GetArtifactVersionParams struct {
+	ArtifactID string
+	Number     int64
+}
+
+func (q *Queries) GetArtifactVersion(ctx context.Context, arg GetArtifactVersionParams) (ArtifactVersion, error) {
+	row := q.db.QueryRowContext(ctx, getArtifactVersion, arg.ArtifactID, arg.Number)
+	var i ArtifactVersion
+	err := row.Scan(
+		&i.ArtifactID,
+		&i.Number,
+		&i.Title,
+		&i.Platform,
+		&i.PublishedAt,
+		&i.RestoredFrom,
+		&i.PublicationID,
+		&i.ThreadID,
+		&i.Revision,
+		&i.Links,
+	)
+	return i, err
+}
+
+const getArtifactVersionByPublication = `-- name: GetArtifactVersionByPublication :one
+SELECT artifact_id, number, title, platform, published_at, restored_from, publication_id, thread_id, revision, links FROM artifact_versions WHERE publication_id = ?
+`
+
+func (q *Queries) GetArtifactVersionByPublication(ctx context.Context, publicationID string) (ArtifactVersion, error) {
+	row := q.db.QueryRowContext(ctx, getArtifactVersionByPublication, publicationID)
+	var i ArtifactVersion
+	err := row.Scan(
+		&i.ArtifactID,
+		&i.Number,
+		&i.Title,
+		&i.Platform,
+		&i.PublishedAt,
+		&i.RestoredFrom,
+		&i.PublicationID,
+		&i.ThreadID,
+		&i.Revision,
+		&i.Links,
+	)
+	return i, err
+}
+
 const getLinearSession = `-- name: GetLinearSession :one
 SELECT id, prompt, state, thread_id, turn_id, noticed_status, completed_seen_at, outcome, created_at, updated_at FROM linear_sessions WHERE id = ?
 `
@@ -196,6 +296,92 @@ func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertArtifact = `-- name: InsertArtifact :execrows
+INSERT INTO artifacts (id, title, project_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertArtifactParams struct {
+	ID        string
+	Title     string
+	ProjectID sql.NullString
+	CreatedAt string
+	UpdatedAt string
+}
+
+// Artifacts (ATC-318). The current version is derived (MAX(number)):
+// versions only ever append.
+func (q *Queries) InsertArtifact(ctx context.Context, arg InsertArtifactParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertArtifact,
+		arg.ID,
+		arg.Title,
+		arg.ProjectID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const insertArtifactPublication = `-- name: InsertArtifactPublication :execrows
+INSERT INTO artifact_publications (publication_id, artifact_id, number) VALUES (?, ?, ?)
+`
+
+type InsertArtifactPublicationParams struct {
+	PublicationID string
+	ArtifactID    string
+	Number        int64
+}
+
+func (q *Queries) InsertArtifactPublication(ctx context.Context, arg InsertArtifactPublicationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertArtifactPublication, arg.PublicationID, arg.ArtifactID, arg.Number)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const insertArtifactVersion = `-- name: InsertArtifactVersion :execrows
+INSERT INTO artifact_versions (artifact_id, number, title, platform, published_at, restored_from, publication_id,
+    thread_id, revision, links)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertArtifactVersionParams struct {
+	ArtifactID    string
+	Number        int64
+	Title         string
+	Platform      string
+	PublishedAt   string
+	RestoredFrom  sql.NullInt64
+	PublicationID string
+	ThreadID      sql.NullString
+	Revision      sql.NullString
+	Links         string
+}
+
+func (q *Queries) InsertArtifactVersion(ctx context.Context, arg InsertArtifactVersionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertArtifactVersion,
+		arg.ArtifactID,
+		arg.Number,
+		arg.Title,
+		arg.Platform,
+		arg.PublishedAt,
+		arg.RestoredFrom,
+		arg.PublicationID,
+		arg.ThreadID,
+		arg.Revision,
+		arg.Links,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const insertLinearOutbox = `-- name: InsertLinearOutbox :execrows
@@ -502,6 +688,123 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const listArtifactVersionKeys = `-- name: ListArtifactVersionKeys :many
+SELECT artifact_id, number FROM artifact_versions ORDER BY artifact_id, number
+`
+
+type ListArtifactVersionKeysRow struct {
+	ArtifactID string
+	Number     int64
+}
+
+// Every stored version's identity, for reconciling the content directory
+// against the database after a restart.
+func (q *Queries) ListArtifactVersionKeys(ctx context.Context) ([]ListArtifactVersionKeysRow, error) {
+	rows, err := q.db.QueryContext(ctx, listArtifactVersionKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListArtifactVersionKeysRow
+	for rows.Next() {
+		var i ListArtifactVersionKeysRow
+		if err := rows.Scan(&i.ArtifactID, &i.Number); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listArtifactVersions = `-- name: ListArtifactVersions :many
+SELECT artifact_id, number, title, platform, published_at, restored_from, publication_id, thread_id, revision, links FROM artifact_versions WHERE artifact_id = ? ORDER BY number
+`
+
+func (q *Queries) ListArtifactVersions(ctx context.Context, artifactID string) ([]ArtifactVersion, error) {
+	rows, err := q.db.QueryContext(ctx, listArtifactVersions, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ArtifactVersion
+	for rows.Next() {
+		var i ArtifactVersion
+		if err := rows.Scan(
+			&i.ArtifactID,
+			&i.Number,
+			&i.Title,
+			&i.Platform,
+			&i.PublishedAt,
+			&i.RestoredFrom,
+			&i.PublicationID,
+			&i.ThreadID,
+			&i.Revision,
+			&i.Links,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listArtifacts = `-- name: ListArtifacts :many
+SELECT artifacts.id, artifacts.title, artifacts.project_id, artifacts.created_at, artifacts.updated_at, CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
+FROM artifacts WHERE ?1 IS NULL OR project_id = ?1 ORDER BY created_at, id
+`
+
+type ListArtifactsRow struct {
+	ID             string
+	Title          string
+	ProjectID      sql.NullString
+	CreatedAt      string
+	UpdatedAt      string
+	CurrentVersion int64
+}
+
+// A NULL project lists every artifact.
+func (q *Queries) ListArtifacts(ctx context.Context, projectID interface{}) ([]ListArtifactsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listArtifacts, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListArtifactsRow
+	for rows.Next() {
+		var i ListArtifactsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.ProjectID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CurrentVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDueLinearOutbox = `-- name: ListDueLinearOutbox :many
@@ -951,6 +1254,25 @@ func (q *Queries) RecordTerminalStopIntent(ctx context.Context, arg RecordTermin
 	return result.RowsAffected()
 }
 
+const retitleArtifact = `-- name: RetitleArtifact :execrows
+UPDATE artifacts SET title = ?, updated_at = ? WHERE id = ?
+`
+
+type RetitleArtifactParams struct {
+	Title     string
+	UpdatedAt string
+	ID        string
+}
+
+// A publication sets the artifact's current title along with its version.
+func (q *Queries) RetitleArtifact(ctx context.Context, arg RetitleArtifactParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retitleArtifact, arg.Title, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const retryLinearOutbox = `-- name: RetryLinearOutbox :execrows
 UPDATE linear_outbox SET attempts = ?, next_attempt_at = ? WHERE id = ? AND sent_at IS NULL
 `
@@ -967,6 +1289,47 @@ func (q *Queries) RetryLinearOutbox(ctx context.Context, arg RetryLinearOutboxPa
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const updateArtifact = `-- name: UpdateArtifact :one
+UPDATE artifacts SET title = ?, project_id = ?, updated_at = ? WHERE id = ?
+RETURNING id, title, project_id, created_at, updated_at,
+    CAST((SELECT MAX(number) FROM artifact_versions WHERE artifact_id = artifacts.id) AS INTEGER) AS current_version
+`
+
+type UpdateArtifactParams struct {
+	Title     string
+	ProjectID sql.NullString
+	UpdatedAt string
+	ID        string
+}
+
+type UpdateArtifactRow struct {
+	ID        string
+	Title     string
+	ProjectID sql.NullString
+	CreatedAt string
+	UpdatedAt string
+	Column6   int64
+}
+
+func (q *Queries) UpdateArtifact(ctx context.Context, arg UpdateArtifactParams) (UpdateArtifactRow, error) {
+	row := q.db.QueryRowContext(ctx, updateArtifact,
+		arg.Title,
+		arg.ProjectID,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i UpdateArtifactRow
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ProjectID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Column6,
+	)
+	return i, err
 }
 
 const updateLinearSession = `-- name: UpdateLinearSession :execrows

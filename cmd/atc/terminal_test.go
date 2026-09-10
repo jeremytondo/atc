@@ -14,7 +14,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/application"
+	"github.com/jeremytondo/atc/internal/artifacts"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
@@ -190,16 +192,24 @@ func startTestServerFull(t *testing.T) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	artifactService, err := artifacts.New(context.Background(), artifacts.Options{
+		Repository: db.Artifacts(), Hub: hub, Root: filepath.Join(t.TempDir(), "artifacts"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := server.NewHandler(server.Options{
-		Coordinator:  application.New(application.Options{Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog}),
-		Verify:       func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
-		Version:      "v0.0.0-test",
-		Terminals:    service,
-		Projects:     projectService,
-		Integrations: catalog,
-		Threads:      threadService,
-		Events:       hub,
-		HomeDir:      homeDir,
+		Coordinator:    application.New(application.Options{Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog}),
+		Verify:         func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
+		Version:        "v0.0.0-test",
+		Terminals:      service,
+		Projects:       projectService,
+		Integrations:   catalog,
+		Threads:        threadService,
+		Events:         hub,
+		Artifacts:      artifactService,
+		DocumentOrigin: staticOrigin{State: api.OriginReady, URL: "http://127.0.0.1:7332", Tailnet: api.DocumentOriginTailnet{State: api.TailnetDisabled}},
+		HomeDir:        homeDir,
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -207,6 +217,11 @@ func startTestServerFull(t *testing.T) *testServer {
 	t.Setenv("ATC_TOKEN", cliTestToken)
 	return &testServer{driver: driver, threads: threadService, t3: t3Service, t3Server: t3Server, t3Home: t3Home}
 }
+
+// staticOrigin is a document origin report that never changes.
+type staticOrigin api.DocumentOrigin
+
+func (o staticOrigin) Status(context.Context) api.DocumentOrigin { return api.DocumentOrigin(o) }
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()

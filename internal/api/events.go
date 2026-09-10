@@ -20,6 +20,9 @@ const (
 	EventSpaceCreated    = "space.created"
 	EventSpaceUpdated    = "space.updated"
 	EventSpaceDeleted    = "space.deleted"
+	EventArtifactCreated = "artifact.created"
+	EventArtifactUpdated = "artifact.updated"
+	EventArtifactDeleted = "artifact.deleted"
 	// EventIntegrationUpdated fires when an Integration's connection state
 	// changes (ATC-285) — on transitions only, never per reconnect attempt.
 	// Executable availability is probed at read time and emits nothing.
@@ -75,6 +78,16 @@ type SpaceUpdatedEvent struct{ ChangeEvent }
 // SpaceDeletedEvent is the space.deleted payload; its terminals' own
 // terminal.deleted events precede it.
 type SpaceDeletedEvent struct{ ChangeEvent }
+
+// ArtifactCreatedEvent is the artifact.created payload.
+type ArtifactCreatedEvent struct{ ChangeEvent }
+
+// ArtifactUpdatedEvent is the artifact.updated payload: a new version,
+// a rename, or a Project change.
+type ArtifactUpdatedEvent struct{ ChangeEvent }
+
+// ArtifactDeletedEvent is the artifact.deleted payload.
+type ArtifactDeletedEvent struct{ ChangeEvent }
 
 // IntegrationUpdatedEvent is the integration.updated payload; the id is
 // the Integration's.

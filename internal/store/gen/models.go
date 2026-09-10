@@ -8,6 +8,33 @@ import (
 	"database/sql"
 )
 
+type Artifact struct {
+	ID        string
+	Title     string
+	ProjectID sql.NullString
+	CreatedAt string
+	UpdatedAt string
+}
+
+type ArtifactPublication struct {
+	PublicationID string
+	ArtifactID    string
+	Number        int64
+}
+
+type ArtifactVersion struct {
+	ArtifactID    string
+	Number        int64
+	Title         string
+	Platform      string
+	PublishedAt   string
+	RestoredFrom  sql.NullInt64
+	PublicationID string
+	ThreadID      sql.NullString
+	Revision      sql.NullString
+	Links         string
+}
+
 type LinearOutbox struct {
 	ID            string
 	SessionID     string
