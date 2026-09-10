@@ -413,6 +413,18 @@ func TestRequestFailureShowsErrorAndKeepsNavigation(t *testing.T) {
 	if !strings.Contains(h.m.message, "token was rotated") || !strings.Contains(h.m.message, "atc --remote ws") {
 		t.Errorf("401 in remote mode: %q", h.m.message)
 	}
+	h.client.err = &api.Problem{Status: http.StatusNotFound, Code: api.CodeNotFound}
+	h.key("r")
+	if !strings.Contains(h.m.message, "remote server v1 lacks an API") || !strings.Contains(h.m.message, "upgrade ATC on ws and relaunch") {
+		t.Errorf("route 404 in remote mode: %q", h.m.message)
+	}
+	local := newHarness(t, "")
+	local.open()
+	local.client.err = &api.Problem{Status: http.StatusNotFound, Code: api.CodeNotFound}
+	local.key("r")
+	if !strings.Contains(local.m.message, "server v1 lacks an API") || !strings.Contains(local.m.message, "`atc server restart`") {
+		t.Errorf("route 404 in local mode: %q", local.m.message)
+	}
 	h.client.err = nil
 	h.key("r")
 	if h.m.message != "" {

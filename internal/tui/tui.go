@@ -769,12 +769,23 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 	return m.startAttach(msg.terminal)
 }
 
-// describe renders a request failure for the screen. A 401 in remote
-// mode means the remote token was rotated since the bootstrap; nothing
-// but a relaunch fixes that, so the message says so.
+// describe renders a request failure for the screen. Route-level 404s
+// mean the answering server predates an API the picker needs; name the
+// version-skew remedy instead of leaving the user with "Not Found". A
+// 401 in remote mode means the remote token was rotated since bootstrap;
+// nothing but a relaunch fixes that, so the message says so too.
 func (m model) describe(action string, err error) string {
 	var problem *api.Problem
-	if m.target != "" && errors.As(err, &problem) && problem.Status == http.StatusUnauthorized {
+	if !errors.As(err, &problem) {
+		return action + ": " + err.Error()
+	}
+	if problem.Status == http.StatusNotFound && problem.Code == api.CodeNotFound {
+		if m.target != "" {
+			return fmt.Sprintf("%s: remote server %s lacks an API this picker needs; upgrade ATC on %s and relaunch", action, m.serverVersion, m.target)
+		}
+		return fmt.Sprintf("%s: server %s lacks an API this picker needs; quit and run `atc server restart`", action, m.serverVersion)
+	}
+	if m.target != "" && problem.Status == http.StatusUnauthorized {
 		return fmt.Sprintf("%s: the remote token was rotated; relaunch atc --remote %s", action, m.target)
 	}
 	return action + ": " + err.Error()
