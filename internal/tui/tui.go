@@ -56,10 +56,10 @@ type Client interface {
 type Options struct {
 	Client Client
 	// Target is the ssh target in remote mode; empty means the local
-	// server. It is shown in the status line and named in messages.
+	// server. It is shown in the title bar and named in messages.
 	Target string
-	// ClientVersion and ServerVersion are shown in the status line; a
-	// mismatch is flagged there and blocks nothing.
+	// ClientVersion and ServerVersion are shown in the help overlay; a
+	// mismatch is coloured there and blocks nothing.
 	ClientVersion string
 	ServerVersion string
 	// Attach resolves the child that hands the TTY to a running terminal:
@@ -126,16 +126,23 @@ type model struct {
 	execProcess func(*exec.Cmd, tea.ExecCallback) tea.Cmd
 	tick        func(time.Duration, uint64) tea.Cmd
 
-	height  int
+	width, height int
+	// dark is whether the terminal background is dark, which picks the
+	// palette; assumed until the terminal answers.
+	dark    bool
 	screen  screen
 	loading bool
-	// message is the current screen's notice or error; cleared by the
-	// next key press.
+	// message is the current screen's notice or error, failed telling
+	// the two apart for colour; cleared by the next key press.
 	message string
+	failed  bool
 	// seq stamps loads so a result from a superseded request is dropped.
-	seq     uint64
-	help    bool
-	confirm *confirmation
+	seq  uint64
+	help bool
+	// helpScroll is the help overlay's first visible line when it does
+	// not fit the body.
+	helpScroll int
+	confirm    *confirmation
 
 	spaces         []api.Space
 	terminalCounts map[string]int
@@ -162,6 +169,7 @@ func newModel(ctx context.Context, opts Options) model {
 		serverVersion: opts.ServerVersion,
 		attach:        opts.Attach,
 		transportLoss: opts.TransportLoss,
+		dark:          true,
 		execProcess:   tea.ExecProcess,
 		tick: func(delay time.Duration, generation uint64) tea.Cmd {
 			return tea.Tick(delay, func(time.Time) tea.Msg { return reconnectTickMsg{generation: generation} })
@@ -170,9 +178,10 @@ func newModel(ctx context.Context, opts Options) model {
 }
 
 // Init has a value receiver and cannot stamp a load, so it asks Update to
-// start the first one.
+// start the first one. It also asks the terminal for its background, so
+// the palette can follow it.
 func (m model) Init() tea.Cmd {
-	return func() tea.Msg { return startMsg{} }
+	return tea.Batch(func() tea.Msg { return startMsg{} }, tea.RequestBackgroundColor)
 }
 
 type startMsg struct{}
@@ -237,6 +246,11 @@ type reconnectPolledMsg struct {
 // requestWindowSize asks Bubble Tea to re-read the terminal size — every
 // return from an attachment does this before drawing.
 func requestWindowSize() tea.Msg { return tea.RequestWindowSize() }
+
+// fail and notify set the message: a request failure or refusal, shown
+// in red, or a neutral notice.
+func (m *model) fail(text string)   { m.message, m.failed = text, true }
+func (m *model) notify(text string) { m.message, m.failed = text, false }
 
 func (m *model) nextSeq() uint64 {
 	m.seq++
@@ -344,7 +358,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case startMsg:
 		return m, m.loadSpaces()
 	case tea.WindowSizeMsg:
-		m.height = msg.Height
+		m.width, m.height = msg.Width, msg.Height
+		m.helpScroll = min(m.helpScroll, m.helpScrollLimit())
+		return m, nil
+	case tea.BackgroundColorMsg:
+		m.dark = msg.IsDark()
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -359,7 +377,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		if msg.err != nil {
-			m.message = m.describe("loading spaces", msg.err)
+			m.fail(m.describe("loading spaces", msg.err))
 			return m, nil
 		}
 		m.setSpaces(msg.spaces, msg.terminals)
@@ -370,7 +388,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		if msg.err != nil {
-			m.message = m.describe("loading terminals", msg.err)
+			m.fail(m.describe("loading terminals", msg.err))
 			return m, nil
 		}
 		m.setTerminals(msg.terminals)
@@ -381,7 +399,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		if msg.err != nil {
-			m.message = m.describe("listing directory", msg.err)
+			m.fail(m.describe("listing directory", msg.err))
 			return m, nil
 		}
 		m.dir, m.dirInput = msg.list, ""
@@ -394,13 +412,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		if msg.spaceErr != nil {
-			m.message = m.describe("creating space", msg.spaceErr)
+			m.fail(m.describe("creating space", msg.spaceErr))
 			return m, nil
 		}
 		m.selectedSpace = msg.space.ID
 		m.enterSpace(msg.space)
 		if msg.terminalErr != nil {
-			m.message = m.describe("creating terminal", msg.terminalErr)
+			m.fail(m.describe("creating terminal", msg.terminalErr))
 			return m, m.loadTerminals()
 		}
 		m.terminals = append(m.terminals, msg.terminal)
@@ -411,7 +429,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		if msg.err != nil {
-			m.message = m.describe("creating terminal", msg.err)
+			m.fail(m.describe("creating terminal", msg.err))
 			return m, m.loadTerminals()
 		}
 		// The new terminal is the newest, so it takes the next number
@@ -424,7 +442,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = false
 		if msg.err != nil {
-			m.message = m.describe("deleting "+msg.kind, msg.err)
+			m.fail(m.describe("deleting "+msg.kind, msg.err))
 			return m, nil
 		}
 		if msg.kind == "space" && (m.screen == screenSpaces || m.space.ID == msg.id) {
@@ -453,6 +471,18 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.help {
+		// Movement scrolls the help only while it overflows the body;
+		// otherwise any key closes it.
+		if limit := m.helpScrollLimit(); limit > 0 {
+			switch key {
+			case "j", "down":
+				m.helpScroll = min(m.helpScroll+1, limit)
+				return m, nil
+			case "k", "up":
+				m.helpScroll = max(m.helpScroll-1, 0)
+				return m, nil
+			}
+		}
 		m.help = false
 		return m, nil
 	}
@@ -463,7 +493,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key == "esc" {
 			m.reconnect = nil
 			m.generation++
-			m.message = "reconnect cancelled"
+			m.notify("reconnect cancelled")
 			return m, m.loadTerminals()
 		}
 		return m, nil
@@ -472,6 +502,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// notice set beside a reload (an attachment's exit, a refused
 	// create) survives the reload that follows it.
 	m.message = ""
+	if key == "?" {
+		m.help, m.helpScroll = true, 0
+		return m, nil
+	}
 	switch m.screen {
 	case screenSpaces:
 		return m.handleSpacesKey(key)
@@ -502,8 +536,6 @@ func (m model) handleSpacesKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q":
 		return m, tea.Quit
-	case "?":
-		m.help = true
 	case "j", "down":
 		m.selectedSpace = moveSelection(spaceIDs(m.spaces), m.selectedSpace, 1)
 	case "k", "up":
@@ -525,7 +557,7 @@ func (m model) handleSpacesKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if space.IsDefault {
-			m.message = "the Default Space cannot be deleted"
+			m.fail("the Default Space cannot be deleted")
 			return m, nil
 		}
 		m.confirm = &confirmation{kind: "space", id: space.ID, name: space.Name, count: m.terminalCounts[space.ID]}
@@ -537,8 +569,6 @@ func (m model) handleTerminalsKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q":
 		return m, tea.Quit
-	case "?":
-		m.help = true
 	case "j", "down":
 		m.selectedTerminal = moveSelection(terminalIDs(m.terminals), m.selectedTerminal, 1)
 	case "k", "up":
@@ -568,7 +598,7 @@ func (m model) handleTerminalsKey(key string) (tea.Model, tea.Cmd) {
 		}
 		number := int(key[0] - '0')
 		if number > len(m.terminals) {
-			m.message = fmt.Sprintf("no terminal %d", number)
+			m.fail(fmt.Sprintf("no terminal %d", number))
 			return m, nil
 		}
 		return m.startAttach(m.terminals[number-1])
@@ -580,7 +610,9 @@ func (m model) handleTerminalsKey(key string) (tea.Model, tea.Cmd) {
 // into the field: a relative text filters the listed entries by prefix;
 // a text beginning with '/' is an absolute path Enter navigates to. '.'
 // — "this directory", a prefix no visible entry can have — confirms the
-// current directory while the field holds a filter.
+// current directory while the field holds a filter. '?' is help here as
+// everywhere and never reaches the field; a directory whose name holds
+// one is reached by the movement keys and enter, or by pasting its path.
 func (m model) handleDirectoryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	absolute := strings.HasPrefix(m.dirInput, "/")
 	switch msg.String() {
@@ -663,12 +695,12 @@ func (m model) showSpaces() (tea.Model, tea.Cmd) {
 func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 	m.selectedTerminal = terminal.ID
 	if terminal.Status != api.TerminalRunning {
-		m.message = m.refusal(terminal)
+		m.fail(m.refusal(terminal))
 		return m, m.loadTerminals()
 	}
 	cmd, err := m.attach(m.ctx, terminal)
 	if err != nil {
-		m.message = "cannot attach: " + err.Error()
+		m.fail("cannot attach: " + err.Error())
 		return m, m.loadTerminals()
 	}
 	m.message = ""
@@ -690,10 +722,10 @@ func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
 	case m.transportLoss != nil && m.transportLoss(msg.err):
 		m.generation++
 		m.reconnect = &reconnect{terminal: msg.terminal, delay: reconnectMin, generation: m.generation}
-		m.message = "connection lost, reconnecting to " + m.label(msg.terminal)
+		m.notify("connection lost, reconnecting to " + m.label(msg.terminal))
 		return m, tea.Batch(requestWindowSize, m.tick(reconnectMin, m.generation))
 	default:
-		m.message = fmt.Sprintf("attachment to %s ended: %v", m.label(msg.terminal), msg.err)
+		m.fail(fmt.Sprintf("attachment to %s ended: %v", m.label(msg.terminal), msg.err))
 	}
 	return m, tea.Batch(requestWindowSize, m.loadTerminals())
 }
@@ -705,7 +737,7 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 	r := *m.reconnect
 	stop := func(message string) (tea.Model, tea.Cmd) {
 		m.reconnect = nil
-		m.message = message
+		m.fail(message)
 		return m, m.loadTerminals()
 	}
 	if msg.err != nil {
