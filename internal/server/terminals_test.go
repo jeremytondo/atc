@@ -224,10 +224,13 @@ func newFixture(t *testing.T) *fixture {
 		ProcessAlive: func(int) bool { return true },
 	})
 	threadService.SetLinker(t3code.ID, t3Service.Links)
-	binaries := map[string]bool{"claude": true, "zmx": true}
+	binaries := map[string]bool{"claude": true}
+	zmxRuntime := func() (api.IntegrationRuntime, bool) {
+		return api.IntegrationRuntime{Active: "0.6.0", Desired: "0.6.0", Executable: "/data/atc/runtimes/zmx/0.6.0/zmx"}, true
+	}
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
-			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(zmxRuntime),
 		},
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {

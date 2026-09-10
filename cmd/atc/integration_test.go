@@ -50,6 +50,12 @@ func TestIntegrationListAndGetCLI(t *testing.T) {
 		t.Errorf("get codex = %q, %v", stdout, err)
 	}
 
+	stdout, _, err = runCLI(t, "integration", "get", "zmx")
+	if err != nil || !regexp.MustCompile(`(?m)^runtime\s+active 0\.6\.0 \(/data/atc/runtimes/zmx/0\.6\.0/zmx\); desired 0\.6\.0$`).MatchString(stdout) ||
+		strings.Contains(stdout, "pending") || strings.Contains(stdout, "install\t") {
+		t.Errorf("get zmx = %q, %v", stdout, err)
+	}
+
 	if _, _, err := runCLI(t, "integration", "get", "nonexistent"); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("get unknown = %v, want a 404 problem", err)
 	}

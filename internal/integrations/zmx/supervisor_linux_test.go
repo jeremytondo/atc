@@ -181,7 +181,8 @@ func TestRealSupervisorSessionSurvivesServiceStop(t *testing.T) {
 
 	launch := exec.Command("systemd-run", "--user", "--unit="+unit, "--quiet", "--collect", "--no-ask-password",
 		"--property=KillMode=control-group", "--setenv=PATH="+os.Getenv("PATH"), "--setenv=SHELL=/bin/sh",
-		"--", testBinary(t), "__serve", "--socket", driver.socketDir, "--report", driver.reportDir, "--id", id)
+		"--", testBinary(t), "__serve", "--socket", driver.socketDir, "--report", driver.reportDir, "--id", id,
+		"--selection", driver.runtime.selectionFile)
 	if out, err := launch.CombinedOutput(); err != nil {
 		t.Fatalf("starting the service: %v\n%s", err, out)
 	}
@@ -422,7 +423,7 @@ func TestRealSupervisorRestartReconcilesIdentity(t *testing.T) {
 // It creates one terminal through the real driver, as the ATC server
 // would, then holds the service alive until its stop signal.
 func serveTerminal(args []string) int {
-	var socketDir, reportDir, id string
+	var socketDir, reportDir, id, selectionFile string
 	for i := 0; i+1 < len(args); i += 2 {
 		switch args[i] {
 		case "--socket":
@@ -431,6 +432,8 @@ func serveTerminal(args []string) int {
 			reportDir = args[i+1]
 		case "--id":
 			id = args[i+1]
+		case "--selection":
+			selectionFile = args[i+1]
 		}
 	}
 	self, err := os.Executable()
@@ -438,7 +441,10 @@ func serveTerminal(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	driver, err := New(Options{SocketDir: socketDir, ReportDir: reportDir, MonitorExecutable: self,
+	// The subprocess resolves the runtime the parent already activated;
+	// it installs nothing of its own.
+	runtime := NewRuntime(RuntimeOptions{SelectionFile: selectionFile, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))})
+	driver, err := New(Options{SocketDir: socketDir, ReportDir: reportDir, MonitorExecutable: self, Runtime: runtime,
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

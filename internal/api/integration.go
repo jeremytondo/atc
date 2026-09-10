@@ -70,6 +70,18 @@ type IntegrationConnection struct {
 	Detail string                     `json:"detail" doc:"Human-readable explanation of the current state."`
 }
 
+// IntegrationRuntime reports the program ATC installs and runs for an
+// Integration itself (zmx, ATC-324): the version the terminal namespace
+// is recorded to run on, the version this build would activate, and what
+// stands between them.
+type IntegrationRuntime struct {
+	Active     string `json:"active,omitempty" doc:"Version the namespace runs on; empty until one is activated."`
+	Desired    string `json:"desired" doc:"Version this ATC build activates in an empty namespace."`
+	Executable string `json:"executable,omitempty" doc:"Location of the active executable on the server's machine."`
+	Pending    bool   `json:"pending" doc:"Whether the desired version is not yet the active one."`
+	Detail     string `json:"detail,omitempty" doc:"Why the runtime is unavailable or the desired version pending, with the action that resolves it."`
+}
+
 // IntegrationAgent is one agent descriptor an Integration exposes. Ids
 // are opaque and scoped to the Integration; threads record them as
 // reported, whether or not they appear here.
@@ -95,12 +107,13 @@ type Integration struct {
 	Capabilities []IntegrationCapability `json:"capabilities" doc:"Typed domain capabilities the Integration implements, for display."`
 	Agents       []IntegrationAgent      `json:"agents" doc:"Agent descriptors the Integration exposes, in display order."`
 	Apps         []App                   `json:"apps" doc:"Apps the Integration owns, in display order."`
-	Available    bool                    `json:"available" doc:"Evidence-based health: for an Integration with a connection, whether it is connected; otherwise whether its executable resolves on the server's PATH."`
+	Available    bool                    `json:"available" doc:"Evidence-based health: for an Integration with a connection, whether it is connected; for one whose program ATC installs itself, whether the active runtime is ready; otherwise whether its executable resolves on the server's PATH."`
 	// InstallHint is present whenever the Integration is backed by an
 	// executable, whether or not it currently resolves; connection-backed
 	// Integrations explain themselves through connection.
 	InstallHint string                 `json:"installHint,omitempty" doc:"How to install the tool behind the Integration."`
 	Connection  *IntegrationConnection `json:"connection,omitempty" doc:"Live connection of an Integration that observes a provider's own program; omitted otherwise."`
+	Runtime     *IntegrationRuntime    `json:"runtime,omitempty" doc:"The program ATC installs and runs for this Integration itself; omitted otherwise."`
 }
 
 // IntegrationList is the GET /v1/integrations response body, in

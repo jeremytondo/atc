@@ -105,6 +105,22 @@ func printIntegration(out io.Writer, integration api.Integration) {
 		_, _ = fmt.Fprintf(w, "connection\t%s (%s)\n", integration.Connection.State, integration.Connection.Detail)
 		_, _ = fmt.Fprintf(w, "since\t%s\n", integration.Connection.Since.Format("2006-01-02 15:04:05 MST"))
 	}
+	if rt := integration.Runtime; rt != nil {
+		active := "none"
+		if rt.Active != "" {
+			active = rt.Active
+		}
+		if rt.Executable != "" {
+			active += " (" + rt.Executable + ")"
+		}
+		_, _ = fmt.Fprintf(w, "runtime\tactive %s; desired %s\n", active, rt.Desired)
+		if rt.Pending {
+			_, _ = fmt.Fprintf(w, "runtime\tpending activation of %s\n", rt.Desired)
+		}
+		if rt.Detail != "" {
+			_, _ = fmt.Fprintf(w, "runtime\t%s\n", rt.Detail)
+		}
+	}
 	capabilities := make([]string, 0, len(integration.Capabilities))
 	for _, capability := range integration.Capabilities {
 		capabilities = append(capabilities, string(capability))

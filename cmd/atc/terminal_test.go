@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -178,12 +181,15 @@ func startTestServerFull(t *testing.T) *testServer {
 	threadService.SetLinker(t3code.ID, t3Service.Links)
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
-			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service),
+			zmx.Integration(func() (api.IntegrationRuntime, bool) {
+				return api.IntegrationRuntime{Active: "0.6.0", Desired: "0.6.0", Executable: "/data/atc/runtimes/zmx/0.6.0/zmx"}, true
+			}),
 		},
-		// The probe never consults this machine's PATH: claude and zmx
-		// "exist", codex does not.
+		// The probe never consults this machine's PATH: claude "exists",
+		// codex does not; zmx's managed runtime is ready.
 		LookPath: func(name string) (string, error) {
-			if name == "claude" || name == "zmx" {
+			if name == "claude" {
 				return "/bin/" + name, nil
 			}
 			return "", errors.New("executable file not found in $PATH")
@@ -260,13 +266,30 @@ func forceTTY(t *testing.T) {
 	t.Cleanup(func() { stdioIsTerminal, stdinIsTTY = prevStdio, prevStdin })
 }
 
-func installFakeZmx(t *testing.T) {
+// activateFakeRuntime installs a runnable stand-in zmx as the namespace's
+// active runtime under an isolated state dir, the way a real server's
+// startup would (ATC-324): the client-side attacher resolves it from the
+// selection file, never from PATH. It returns the isolated state dir so a
+// caller can inspect the empty socket directory beside the selection.
+func activateFakeRuntime(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "zmx"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("PATH", "") // prove nothing falls back to a PATH zmx
+	exe := filepath.Join(t.TempDir(), "zmx")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
+	sum := sha256.Sum256([]byte("#!/bin/sh\nexit 0\n"))
+	selection := fmt.Sprintf(`{"version":"0.6.0","executable":%q,"sha256":%q}`, exe, hex.EncodeToString(sum[:]))
+	selFile := filepath.Join(state, "atc", "terminal-runtime.json")
+	if err := os.MkdirAll(filepath.Dir(selFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(selFile, []byte(selection), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 func TestTerminalCLILifecycle(t *testing.T) {
@@ -499,16 +522,17 @@ func TestTerminalCreateWithoutTTYStillCreates(t *testing.T) {
 	}
 }
 
-// A tooling preflight — no zmx on this machine — fails before anything is
-// created; --detach sidesteps it.
-func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
+// A tooling preflight — no active terminal runtime for this namespace —
+// fails before anything is created; --detach sidesteps it.
+func TestTerminalCreateMissingRuntimeCreatesNothing(t *testing.T) {
 	forceTTY(t)
-	startTestServer(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // isolated: no runtime activated
 	t.Setenv("PATH", "")
+	startTestServer(t)
 
 	_, _, err := runCLI(t, "terminal", "create")
-	if err == nil || err.Error() != "zmx executable not found on PATH; install zmx to attach" {
-		t.Errorf("create without zmx = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no terminal runtime is active") {
+		t.Errorf("create without a runtime = %v", err)
 	}
 	stdout, _, listErr := runCLI(t, "terminal", "list")
 	if listErr != nil || !strings.Contains(stdout, "no terminals") {
@@ -521,8 +545,7 @@ func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
 
 func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
 	forceTTY(t)
-	installFakeZmx(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	activateFakeRuntime(t)
 	startTestServer(t)
 
 	stdout, _, err := runCLI(t, "terminal", "create")

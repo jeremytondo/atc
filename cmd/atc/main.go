@@ -591,14 +591,27 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// The managed zmx (ATC-324): the namespace's recorded runtime is
+	// validated offline here; installing or activating anything waits for
+	// the background startup routine below, after the API is listening.
+	runtimeDir, err := paths.RuntimeDir()
+	if err != nil {
+		return err
+	}
+	selectionFile, err := paths.TerminalRuntimeFile()
+	if err != nil {
+		return err
+	}
+	zmxRuntime := zmx.NewRuntime(zmx.RuntimeOptions{RuntimeDir: runtimeDir, SelectionFile: selectionFile, Logger: logger})
 	// New validates the socket-path budget — a state dir too deep for
-	// unix sockets is a boot error with the remedy in the message. A
-	// missing zmx binary deliberately is not: statuses degrade to
+	// unix sockets is a boot error with the remedy in the message. An
+	// unavailable runtime deliberately is not: statuses degrade to
 	// unreachable and delete keeps working.
 	driver, err := zmx.New(zmx.Options{
 		SocketDir:         socketDir,
 		ReportDir:         reportDir,
 		MonitorExecutable: selfExecutable,
+		Runtime:           zmxRuntime,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -737,7 +750,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// catalog only describes them.
 	catalog, err := integrations.NewService(integrations.Options{
 		Integrations: []integrations.Integration{
-			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(),
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Service), zmx.Integration(driver.RuntimeStatus),
 			linear.Integration(linearService),
 		},
 	})
@@ -842,6 +855,21 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	loopCtx, stopLoop := context.WithCancel(ctx)
 	defer stopLoop()
 	var background sync.WaitGroup
+	// The runtime's startup installation and activation run beside the
+	// serving API, bounded and cancelled with it: a slow download never
+	// holds the health probe, and a failed one is retried by the next
+	// start. Terminals that have not exited are the domain's evidence
+	// that a namespace with no recorded runtime is not empty.
+	background.Go(func() {
+		driver.Startup(loopCtx, func() bool {
+			for _, terminal := range terminalService.List("") {
+				if terminal.Status != api.TerminalExited {
+					return true
+				}
+			}
+			return false
+		})
+	})
 	background.Go(func() { terminalService.Run(loopCtx) })
 	background.Go(func() { threadService.Run(loopCtx) })
 	background.Go(func() { codexObserver.Run(loopCtx) })

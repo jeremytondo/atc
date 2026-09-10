@@ -25,11 +25,54 @@ func newTerminalCmd() *cobra.Command {
 		Short: "Create and manage persistent terminal sessions",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc terminal <create|get|list|update|delete|attach>")
+			return fmt.Errorf("usage: atc terminal <create|get|list|update|delete|attach|runtime>")
 		},
 	}
 	cmd.AddCommand(newTerminalCreateCmd(), newTerminalGetCmd(), newTerminalListCmd(),
-		newTerminalUpdateCmd(), newTerminalDeleteCmd(), newTerminalAttachCmd())
+		newTerminalUpdateCmd(), newTerminalDeleteCmd(), newTerminalAttachCmd(), newTerminalRuntimeCmd())
+	return cmd
+}
+
+// The runtime family (ATC-324): the zmx this build manages. `install`
+// is the installer's prefetch — bytes only, through the same routine the
+// server uses at startup, never touching which runtime a namespace runs.
+func newTerminalRuntimeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "runtime",
+		Short: "Manage the terminal runtime ATC installs for itself",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return fmt.Errorf("usage: atc terminal runtime <install>")
+		},
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "install",
+		Short: "Install this build's zmx runtime without activating it",
+		Long: `Download, verify, and install the zmx version this ATC build runs
+terminals on, so a later server start finds it ready and works offline.
+Already-installed bytes are reused without any download. Installing never
+changes which runtime a running namespace uses: the server activates one at
+startup, once no sessions remain. ` + "`atc integration get zmx`" + ` shows the
+active and desired versions.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			runtimeDir, err := paths.RuntimeDir()
+			if err != nil {
+				return err
+			}
+			selectionFile, err := paths.TerminalRuntimeFile()
+			if err != nil {
+				return err
+			}
+			rt := zmx.NewRuntime(zmx.RuntimeOptions{RuntimeDir: runtimeDir, SelectionFile: selectionFile})
+			executable, err := rt.Install(cmd.Context(), rt.Desired())
+			if err != nil {
+				return fmt.Errorf("installing zmx %s: %w", rt.Desired(), err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "zmx %s is installed at %s\n", rt.Desired(), executable)
+			return nil
+		},
+	})
 	return cmd
 }
 
@@ -41,7 +84,11 @@ func newSessionAttacher() (cli.SessionAttacher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return zmx.NewAttacher(socketDir), nil
+	selectionFile, err := paths.TerminalRuntimeFile()
+	if err != nil {
+		return nil, err
+	}
+	return zmx.NewAttacher(socketDir, selectionFile), nil
 }
 
 func newTerminalCreateCmd() *cobra.Command {

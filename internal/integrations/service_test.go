@@ -219,6 +219,36 @@ func TestListAndGetReportAvailability(t *testing.T) {
 // ResolveLaunch turns an App into launch input: the qualified App id as
 // the recorded intent, and the App's command composed with the minted
 // identity — placement is the caller's, not the catalog's business.
+// A managed-runtime Integration (zmx, ATC-324) is available exactly when
+// its runtime reports ready, carries the runtime report on the wire, and
+// is never probed on PATH.
+func TestManagedRuntimeAvailability(t *testing.T) {
+	ready := true
+	report := api.IntegrationRuntime{Active: "0.6.0", Desired: "0.7.0", Executable: "/runtimes/zmx/0.6.0/zmx", Pending: true, Detail: "waiting"}
+	service, err := NewService(Options{
+		Integrations: []Integration{{ID: "mux", Name: "Mux", Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
+			Runtime: func() (api.IntegrationRuntime, bool) { return report, ready }}},
+		LookPath: func(string) (string, error) { t.Fatal("PATH probed for a managed runtime"); return "", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := api.Integration{ID: "mux", Name: "Mux", Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
+		Agents: []api.IntegrationAgent{}, Apps: []api.App{}, Available: true, Runtime: &report}
+	if diff := cmp.Diff(want, service.List()[0]); diff != "" {
+		t.Errorf("ready (-want +got):\n%s", diff)
+	}
+	ready = false
+	report.Detail = "terminal runtime unavailable: installing zmx 0.7.0"
+	got, _ := service.Get("mux")
+	if got.Available || got.Runtime == nil || got.Runtime.Detail != report.Detail {
+		t.Errorf("not ready = %+v", got)
+	}
+	if _, _, err := service.availability(service.integrations[0]); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "installing zmx 0.7.0") {
+		t.Errorf("availability refusal = %v", err)
+	}
+}
+
 func TestResolveLaunchComposesTheCommand(t *testing.T) {
 	service := newTestService(t, "alpha")
 	launch, err := service.ResolveLaunch(context.Background(), "alpha/tui")

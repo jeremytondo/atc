@@ -66,6 +66,20 @@ mv -f "$tmp/atc" "$INSTALL_DIR/atc" || fail "cannot write to $INSTALL_DIR (this 
 
 echo "installed atc $version to $INSTALL_DIR/atc"
 
+# Prefetch the terminal runtime (ATC-324) through the binary just
+# installed, which owns the single installation routine — this script
+# never learns zmx's platforms, checksums, or archive layout. It installs
+# bytes only; the server activates a runtime at startup. A failure here
+# leaves ATC installed and working for everything else, so it is reported,
+# not fatal: the server's own startup retries, and the recovery line names
+# the exact binary to start.
+if "$INSTALL_DIR/atc" terminal runtime install; then
+    :
+else
+    echo "note: the terminal runtime could not be prefetched; atc itself is installed." >&2
+    echo "      start the server to retry:  \"$INSTALL_DIR/atc\" server start" >&2
+fi
+
 case ":$PATH:" in
 *":$INSTALL_DIR:"*) ;;
 *) echo "note: $INSTALL_DIR is not on your PATH; add it with e.g.  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;

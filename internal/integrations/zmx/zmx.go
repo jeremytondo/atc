@@ -3,6 +3,11 @@
 // creation, and attach mechanics. It implements terminals.Driver; future
 // terminal backends implement the same interface.
 //
+// The zmx executable is ATC's own (ATC-324): installed by this package
+// under the runtime directory and selected per namespace (runtime.go,
+// install.go). Nothing here consults PATH — every invocation, server-side
+// or the CLI's attach, runs the namespace's recorded active runtime.
+//
 // Environment contract (every invocation, learned the hard way in
 // experiments/zmx-supervisor and the legacy product): ZMX_DIR is forced to
 // ATC's private socket directory; ZMX_SESSION is scrubbed (inherited, it
@@ -73,7 +78,9 @@ type Options struct {
 	ReportDir string
 	// MonitorExecutable is the atc binary, re-exec'd as `atc __child`.
 	MonitorExecutable string
-	Logger            *slog.Logger
+	// Runtime is the namespace's managed zmx (NewRuntime).
+	Runtime *Runtime
+	Logger  *slog.Logger
 }
 
 // Driver implements terminals.Driver over the zmx CLI.
@@ -81,18 +88,20 @@ type Driver struct {
 	socketDir string
 	reportDir string
 	monitor   string
+	runtime   *Runtime
 	logger    *slog.Logger
 	placement *placement.Host
-
-	mu       sync.Mutex
-	resolved string // memoized successful LookPath result
 }
 
 // New validates and prepares the private namespace. A socket directory too
 // deep for the OS socket-path limit is a boot error with the remedy in the
-// message (legacy's proven guard); a missing zmx binary deliberately is
-// not — delete must keep working when zmx is unhealthy.
+// message (legacy's proven guard); an unavailable zmx runtime deliberately
+// is not — delete must keep working when zmx is unhealthy, and Startup
+// installs what is missing.
 func New(opts Options) (*Driver, error) {
+	if opts.Runtime == nil {
+		return nil, errors.New("zmx.New: Runtime must be set")
+	}
 	socketDir, err := filepath.Abs(opts.SocketDir)
 	if err != nil {
 		return nil, err
@@ -134,6 +143,7 @@ func New(opts Options) (*Driver, error) {
 		socketDir: socketDir,
 		reportDir: reportDir,
 		monitor:   opts.MonitorExecutable,
+		runtime:   opts.Runtime,
 		logger:    opts.Logger,
 		placement: host,
 	}, nil
@@ -152,20 +162,21 @@ func (d *Driver) unit(id string) string {
 	return placement.Name(placementKind, d.socketDir, id)
 }
 
-// zmx resolves the executable on PATH, memoizing success so a transiently
-// missing binary heals on a later call.
+// placementPattern matches every terminal scope of the namespace.
+func placementPattern(socketDir string) string {
+	return placement.Pattern(placementKind, socketDir)
+}
+
+// zmx resolves the namespace's active executable; the refusal, when
+// there is none, names the reason and the operator's next step.
 func (d *Driver) zmx() (string, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.resolved != "" {
-		return d.resolved, nil
-	}
-	path, err := exec.LookPath("zmx")
-	if err != nil {
-		return "", errors.New("zmx executable not found on PATH")
-	}
-	d.resolved = path
-	return path, nil
+	return d.runtime.Executable()
+}
+
+// RuntimeStatus reports the managed runtime for the Integration catalog:
+// one snapshot of the wire status and whether the runtime is ready.
+func (d *Driver) RuntimeStatus() (api.IntegrationRuntime, bool) {
+	return d.runtime.Report()
 }
 
 // lookupSession scans one inventory for a name: present reports whether
@@ -270,6 +281,17 @@ func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpe
 	notLaunched := func(err error) error {
 		return fmt.Errorf("create %s: %w: %w", id, terminals.ErrNotLaunched, err)
 	}
+	// The runtime is held from resolution until the session is visible,
+	// so an activation's emptiness proof cannot interleave with a birth.
+	// Under the hold, the committed selection is re-read: a session is
+	// never launched under a runtime a concurrent activation has already
+	// superseded, even one committed by another process on this namespace.
+	release, err := d.runtime.holdActive(ctx)
+	if err != nil {
+		return notLaunched(err)
+	}
+	defer release()
+	d.runtime.load()
 	executable, err := d.zmx()
 	if err != nil {
 		return notLaunched(err)
@@ -437,7 +459,7 @@ func (d *Driver) Leftovers(ctx context.Context, inventory []terminals.Session) (
 	if !d.placement.Scoped() {
 		return nil, nil
 	}
-	units, err := d.placement.ListActive(ctx, placement.Pattern(placementKind, d.socketDir))
+	units, err := d.placement.ListActive(ctx, placementPattern(d.socketDir))
 	if err != nil {
 		return nil, err
 	}
@@ -506,20 +528,23 @@ func (d *Driver) reap(cmd *exec.Cmd, exited <-chan struct{}) {
 // cli.SessionAttacher — an interface the cli package owns — so only this
 // package and the composition root know the driver is zmx.
 type Attacher struct {
-	socketDir string
+	socketDir     string
+	selectionFile string
 }
 
 // NewAttacher returns an Attacher over ATC's private socket directory
-// (paths.TerminalSocketDir), the same namespace the server's Driver uses.
-func NewAttacher(socketDir string) Attacher {
-	return Attacher{socketDir: socketDir}
+// (paths.TerminalSocketDir) and the runtime selection beside it
+// (paths.TerminalRuntimeFile) — the same namespace and the same runtime
+// the server's Driver uses.
+func NewAttacher(socketDir, selectionFile string) Attacher {
+	return Attacher{socketDir: socketDir, selectionFile: selectionFile}
 }
 
 // Preflight reports whether attach can possibly succeed on this machine:
-// zmx must be on PATH. Callers use it to fail before creating a terminal
-// they could never attach.
+// the namespace must have a usable active runtime. Callers use it to fail
+// before creating a terminal they could never attach.
 func (a Attacher) Preflight() error {
-	_, err := lookPathZmx()
+	_, err := ResolveActive(a.selectionFile)
 	return err
 }
 
@@ -538,19 +563,11 @@ func (a Attacher) AttachCommand(id string) (executable string, argv, env []strin
 			"terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory",
 			id, a.socketDir)
 	}
-	executable, err = lookPathZmx()
+	executable, err = ResolveActive(a.selectionFile)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	return executable, []string{"zmx", "attach", id}, Env(a.socketDir, false), nil
-}
-
-func lookPathZmx() (string, error) {
-	path, err := exec.LookPath("zmx")
-	if err != nil {
-		return "", errors.New("zmx executable not found on PATH; install zmx to attach")
-	}
-	return path, nil
 }
 
 // tailBuffer keeps the last window of client PTY output for diagnostics.
@@ -615,13 +632,13 @@ const ID = "zmx"
 
 // Integration is zmx's catalog registration (ATC-294): an infrastructure
 // Integration with no Apps and no agents, whose one capability is the
-// Terminals Driver and whose availability is its binary on the server's
-// PATH.
-func Integration() integrations.Integration {
+// Terminals Driver and whose availability is the readiness of the
+// namespace's managed runtime (ATC-324), reported by runtime.
+func Integration(runtime func() (api.IntegrationRuntime, bool)) integrations.Integration {
 	return integrations.Integration{
 		ID:           ID,
 		Name:         "zmx",
 		Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
-		Executable:   &integrations.Executable{Binary: "zmx", InstallHint: "install zmx from https://github.com/neurosnap/zmx"},
+		Runtime:      runtime,
 	}
 }

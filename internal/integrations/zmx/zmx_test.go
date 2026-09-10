@@ -112,7 +112,7 @@ func TestEnvContract(t *testing.T) {
 // A socket directory too deep for sun_path fails boot with the remedy.
 func TestNewRejectsDeepSocketDir(t *testing.T) {
 	deep := filepath.Join(t.TempDir(), strings.Repeat("d", 120))
-	_, err := New(Options{SocketDir: deep, ReportDir: t.TempDir(), MonitorExecutable: "/bin/true"})
+	_, err := New(Options{SocketDir: deep, ReportDir: t.TempDir(), MonitorExecutable: "/bin/true", Runtime: stubRuntime(t)})
 	if err == nil || !strings.Contains(err.Error(), "move your state dir") {
 		t.Errorf("New(deep dir) = %v, want the socket-path guard error", err)
 	}
@@ -123,7 +123,7 @@ func TestNewTightensPermissiveSocketDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Options{SocketDir: dir, ReportDir: t.TempDir(), MonitorExecutable: "/bin/true"}); err != nil {
+	if _, err := New(Options{SocketDir: dir, ReportDir: t.TempDir(), MonitorExecutable: "/bin/true", Runtime: stubRuntime(t)}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(dir)
@@ -145,6 +145,44 @@ func unavailable(t *testing.T, what, reason string) {
 	t.Skipf("real %s tests unavailable: %s", what, reason)
 }
 
+// stubRuntime is a Runtime that installs nothing and activates nothing:
+// New's guard requires one, but the socket-path and permission tests
+// never resolve an executable through it.
+func stubRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	return NewRuntime(RuntimeOptions{
+		RuntimeDir:    t.TempDir(),
+		SelectionFile: filepath.Join(t.TempDir(), "runtime.json"),
+	})
+}
+
+// newRealRuntime installs the managed release executable (the ATC-324
+// testing seam: the real installer against the real assets) into
+// throwaway storage and activates it, so the driver resolves the version
+// this build ships. A failed install skips, or fails under the CI job
+// that requires the real tooling.
+func newRealRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	rt := NewRuntime(RuntimeOptions{
+		RuntimeDir:    t.TempDir(),
+		SelectionFile: filepath.Join(mkShortTempDir(t), "runtime.json"),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	executable, err := rt.Install(context.Background(), rt.Desired())
+	if err != nil {
+		unavailable(t, "zmx", "installing the managed zmx: "+err.Error())
+	}
+	sel, err := selectionFor(rt.Desired(), executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSelection(rt.selectionFile, sel); err != nil {
+		t.Fatal(err)
+	}
+	rt.load()
+	return rt
+}
+
 // Integration against a real zmx in a private, throwaway socket directory
 // (never the developer's real sessions — repo doctrine). /tmp keeps the
 // socket-path budget; TempDir on macOS does not.
@@ -154,13 +192,11 @@ func newRealDriver(t *testing.T) *Driver {
 		SocketDir:         mkShortTempDir(t),
 		ReportDir:         t.TempDir(),
 		MonitorExecutable: testBinary(t),
+		Runtime:           newRealRuntime(t),
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := driver.zmx(); err != nil {
-		unavailable(t, "zmx", "zmx not installed")
 	}
 	return driver
 }
