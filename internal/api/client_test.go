@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,11 +20,22 @@ const (
 	testServerVersion = "v1.2.3-server"
 )
 
+// speaking wraps a fake handler so every response carries the protocol
+// header a real server sends; fakes that must answer otherwise override
+// it. protocolOnly is the same without a version header.
+func speaking(handler http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(ProtocolHeader, strconv.Itoa(Protocol))
+		handler(w, r)
+	})
+}
+
 // testServer answers /v1/health the way the real chassis does: version
-// header on every response, 401s included, problem+json on rejection.
+// and protocol headers on every response, 401s included, problem+json on
+// rejection.
 func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(ServerVersionHeader, testServerVersion)
 		if r.Header.Get("Authorization") != "Bearer "+testToken {
 			w.Header().Set("Content-Type", "application/problem+json")
@@ -35,7 +47,7 @@ func testServer(t *testing.T) *httptest.Server {
 			})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(Health{Status: "ok", Version: testServerVersion})
+		_ = json.NewEncoder(w).Encode(Health{Status: "ok", Version: testServerVersion, Protocol: Protocol})
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -43,27 +55,28 @@ func testServer(t *testing.T) *httptest.Server {
 
 func TestHealth(t *testing.T) {
 	srv := testServer(t)
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	health, err := client.Health(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Health{Status: "ok", Version: testServerVersion}
+	want := Health{Status: "ok", Version: testServerVersion, Protocol: Protocol}
 	if diff := cmp.Diff(want, health); diff != "" {
 		t.Errorf("Health() mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestRequestCarriesTokenAndClientVersion(t *testing.T) {
-	var authorization, clientVersion string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var authorization, clientVersion, protocol string
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		authorization = r.Header.Get("Authorization")
 		clientVersion = r.Header.Get(ClientVersionHeader)
+		protocol = r.Header.Get(ProtocolHeader)
 		_ = json.NewEncoder(w).Encode(Health{Status: "ok"})
 	}))
 	defer srv.Close()
 
-	if _, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background()); err != nil {
+	if _, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if authorization != "Bearer "+testToken {
@@ -71,6 +84,9 @@ func TestRequestCarriesTokenAndClientVersion(t *testing.T) {
 	}
 	if clientVersion != testClientVersion {
 		t.Errorf("%s = %q, want %q", ClientVersionHeader, clientVersion, testClientVersion)
+	}
+	if protocol != strconv.Itoa(Protocol) {
+		t.Errorf("%s = %q, want %d", ProtocolHeader, protocol, Protocol)
 	}
 }
 
@@ -80,7 +96,7 @@ func TestRequestCarriesTokenAndClientVersion(t *testing.T) {
 // credentials.
 func TestTokenlessProbeReadsVersionOffUnauthorized(t *testing.T) {
 	srv := testServer(t)
-	_, err := NewClient(srv.URL, "", testClientVersion, nil, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, "", testClientVersion, nil).Health(context.Background())
 	problem, ok := errors.AsType[*Problem](err)
 	if !ok {
 		t.Fatalf("err = %v, want *Problem", err)
@@ -96,33 +112,17 @@ func TestTokenlessProbeReadsVersionOffUnauthorized(t *testing.T) {
 	}
 }
 
-// The Atc-Server-Version header is reported to the callback on every
-// response that carries one, success and rejection alike — the client's
-// half of the skew handshake.
-func TestServerVersionCallbackOnEveryResponse(t *testing.T) {
-	srv := testServer(t)
-	for name, token := range map[string]string{"success": testToken, "unauthorized": ""} {
-		var reported string
-		client := NewClient(srv.URL, token, testClientVersion, nil,
-			func(version string) { reported = version })
-		_, _ = client.Health(context.Background())
-		if reported != testServerVersion {
-			t.Errorf("%s: callback got %q, want %q", name, reported, testServerVersion)
-		}
-	}
-}
-
 // A 2xx whose body cannot be decoded is still an HTTP response: it must
 // surface as *Problem carrying the real status and server version, not as
 // a plain error a caller would mistake for "nothing answered".
 func TestMalformedSuccessBodyIsAProblem(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(ServerVersionHeader, testServerVersion)
 		_, _ = w.Write([]byte("<html>not json</html>"))
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background())
 	problem, ok := errors.AsType[*Problem](err)
 	if !ok {
 		t.Fatalf("err = %v, want *Problem", err)
@@ -138,14 +138,14 @@ func TestMalformedSuccessBodyIsAProblem(t *testing.T) {
 // The problem body's status member is advisory; branching trusts what the
 // transport actually said, immune to a lying or rewritten body.
 func TestProblemStatusComesFromTransport(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(Problem{Title: "Server Error", Status: http.StatusInternalServerError, Detail: "lying body"})
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL, "", testClientVersion, nil, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, "", testClientVersion, nil).Health(context.Background())
 	problem, ok := errors.AsType[*Problem](err)
 	if !ok {
 		t.Fatalf("err = %v, want *Problem", err)
@@ -161,13 +161,15 @@ func TestProblemStatusComesFromTransport(t *testing.T) {
 // A non-problem error body (a proxy page, some other process on the port)
 // degrades to the status line; the caller still gets a typed error.
 func TestNonProblemBodyDegradesToStatus(t *testing.T) {
+	// No ATC headers at all: a proxy answering for a backend that is down
+	// is reported by its own status, not as a protocol mismatch.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte("<html>nope</html>"))
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background())
 	problem, ok := errors.AsType[*Problem](err)
 	if !ok {
 		t.Fatalf("err = %v, want *Problem", err)
@@ -181,10 +183,10 @@ func TestNonProblemBodyDegradesToStatus(t *testing.T) {
 // Only an HTTP response becomes a *Problem; transport failure stays a
 // plain error so "responding" and "rejected" remain distinguishable.
 func TestTransportErrorIsNotAProblem(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv := httptest.NewServer(speaking(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close() // nothing listening anymore
 
-	_, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background())
 	if err == nil {
 		t.Fatal("want an error from a dead server")
 	}
@@ -200,7 +202,7 @@ func TestTerminalMethods(t *testing.T) {
 		Method, Path, Query, Body string
 	}
 	var got call
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got = call{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Body: strings.TrimSpace(string(body))}
 		switch r.URL.Path {
@@ -219,7 +221,7 @@ func TestTerminalMethods(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	ctx := context.Background()
 
 	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{SpaceID: "spce-x7k2f", Command: "hx"})
@@ -273,7 +275,7 @@ func TestProjectMethods(t *testing.T) {
 		Method, Path, Body string
 	}
 	var got call
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got = call{Method: r.Method, Path: r.URL.Path, Body: strings.TrimSpace(string(body))}
 		switch {
@@ -288,7 +290,7 @@ func TestProjectMethods(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	ctx := context.Background()
 
 	project, err := client.CreateProject(ctx, ProjectCreateParams{Directory: "/proj", Name: "p"})
@@ -334,9 +336,7 @@ func TestProjectMethods(t *testing.T) {
 // returned as-is for streaming, status handling left to the caller.
 func TestRawCarriesHeadersAndReturnsResponse(t *testing.T) {
 	srv := testServer(t)
-	var reported string
-	client := NewClient(srv.URL, testToken, testClientVersion, nil,
-		func(version string) { reported = version })
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	resp, err := client.Raw(context.Background(), http.MethodGet, "v1/health", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -345,8 +345,8 @@ func TestRawCarriesHeadersAndReturnsResponse(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (leading slash added)", resp.StatusCode)
 	}
-	if reported != testServerVersion {
-		t.Errorf("version callback got %q, want %q", reported, testServerVersion)
+	if got := resp.Header.Get(ServerVersionHeader); got != testServerVersion {
+		t.Errorf("%s = %q, want %q", ServerVersionHeader, got, testServerVersion)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `"ok"`) {
@@ -374,7 +374,7 @@ func TestProblemErrorFallbacks(t *testing.T) {
 // unknown segment instead of changing the route.
 func TestIntegrationMethods(t *testing.T) {
 	var got struct{ Method, Path string }
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		got.Method, got.Path = r.Method, r.URL.EscapedPath()
 		if r.URL.Path == "/v1/integrations" {
 			_ = json.NewEncoder(w).Encode(IntegrationList{Integrations: []Integration{{ID: "claude"}, {ID: "t3code"}}})
@@ -383,7 +383,7 @@ func TestIntegrationMethods(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(Integration{ID: "t3code"})
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	ctx := context.Background()
 
 	integrations, err := client.Integrations(ctx)
@@ -415,7 +415,7 @@ func TestSpaceMethods(t *testing.T) {
 		Method, Path, Query, Body string
 	}
 	var got call
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got = call{r.Method, r.URL.Path, r.URL.RawQuery, strings.TrimSpace(string(body))}
 		if r.URL.Path == "/v1/spaces" && r.Method == http.MethodGet {
@@ -429,7 +429,7 @@ func TestSpaceMethods(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(Space{ID: "spce-x7k2f"})
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	ctx := context.Background()
 
 	if _, err := client.CreateSpace(ctx, SpaceCreateParams{Directory: "/work", Name: "work"}); err != nil {
@@ -453,5 +453,61 @@ func TestSpaceMethods(t *testing.T) {
 	}
 	if err := client.DeleteSpace(ctx, "spce-x7k2f"); err != nil || got.Method != http.MethodDelete {
 		t.Errorf("delete = %+v, %v", got, err)
+	}
+}
+
+// The client's half of the protocol contract: an ATC server on another
+// protocol, or one that predates the contract (version header, no
+// protocol), is refused on every status with a typed problem that still
+// says what answered. Raw requests are refused the same way.
+func TestClientRefusesOtherProtocols(t *testing.T) {
+	for name, tc := range map[string]struct {
+		protocol     string
+		status       int
+		wantProtocol int
+	}{
+		"newer server, success":        {protocol: strconv.Itoa(Protocol + 1), status: http.StatusOK, wantProtocol: Protocol + 1},
+		"newer server, rejected":       {protocol: strconv.Itoa(Protocol + 1), status: http.StatusUnauthorized, wantProtocol: Protocol + 1},
+		"server predates the contract": {protocol: "", status: http.StatusOK},
+		"unreadable protocol":          {protocol: "one", status: http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(ServerVersionHeader, testServerVersion)
+				if tc.protocol != "" {
+					w.Header().Set(ProtocolHeader, tc.protocol)
+				}
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(Health{Status: "ok", Version: testServerVersion})
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, testToken, testClientVersion, nil)
+			_, err := client.Health(context.Background())
+			problem, ok := errors.AsType[*Problem](err)
+			if !ok {
+				t.Fatalf("err = %v, want *Problem", err)
+			}
+			want := &Problem{
+				Title:          "protocol mismatch",
+				Status:         http.StatusUpgradeRequired,
+				Code:           CodeProtocolMismatch,
+				Detail:         problem.Detail,
+				ServerVersion:  testServerVersion,
+				ServerProtocol: tc.wantProtocol,
+			}
+			if diff := cmp.Diff(want, problem); diff != "" {
+				t.Errorf("problem mismatch (-want +got):\n%s", diff)
+			}
+			if !strings.Contains(problem.Detail, "protocol "+strconv.Itoa(Protocol)) {
+				t.Errorf("Detail = %q, want this client's protocol named", problem.Detail)
+			}
+			_, err = client.Raw(context.Background(), http.MethodGet, "/v1/health", nil)
+			rawProblem, ok := errors.AsType[*Problem](err)
+			if !ok {
+				t.Errorf("Raw err = %v, want *Problem", err)
+			} else if diff := cmp.Diff(want, rawProblem); diff != "" {
+				t.Errorf("Raw problem mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

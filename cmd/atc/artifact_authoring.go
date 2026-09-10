@@ -73,7 +73,7 @@ and remain until discarded.`,
 				return err
 			}
 			if from != "" {
-				client, _, err := cli.NewClient(cmd.ErrOrStderr())
+				client, _, err := cli.NewClient()
 				if err != nil {
 					return err
 				}
@@ -319,7 +319,7 @@ related issue or reference (repeatable).`,
 			if err != nil {
 				return err
 			}
-			client, _, err := cli.NewClient(cmd.ErrOrStderr())
+			client, _, err := cli.NewClient()
 			if err != nil {
 				return err
 			}

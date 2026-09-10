@@ -47,6 +47,11 @@ func (s Store) malformed() error {
 	return fmt.Errorf("token file %s does not hold a valid token; delete it or run `atc server token rotate`", s.Path)
 }
 
+// Read returns the current token, or "" when none has been issued. It
+// creates and changes nothing — the read-only counterpart of Ensure for
+// inspection that must leave the machine as it found it.
+func (s Store) Read() (string, error) { return s.read() }
+
 // read returns the trimmed file contents, or "" when the file does not exist.
 func (s Store) read() (string, error) {
 	data, err := os.ReadFile(s.Path)

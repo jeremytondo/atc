@@ -46,3 +46,27 @@ func TestStringIsNeverEmpty(t *testing.T) {
 		t.Error("String() = \"\", want a build identity")
 	}
 }
+
+func TestChannel(t *testing.T) {
+	for v, want := range map[string]string{
+		"v0.1.0":               ChannelStable,
+		"v10.20.30":            ChannelStable,
+		"v0.1.1-dev.3cf5189":   ChannelDev,
+		"v0.1.1-dev.":          "",
+		"v0.1.1-":              "",
+		"v0.1.1-rc.1":          "",
+		"v0.1":                 "",
+		"0.1.0":                "",
+		"devel":                "",
+		"devel-3cf5189-dirty":  "",
+		"unknown":              "",
+		"":                     "",
+		"vX.Y.Z":               "",
+		"v0.1.0-dev":           "",
+		"v0.1.1-dev.3cf5189-x": ChannelDev,
+	} {
+		if got := Channel(v); got != want {
+			t.Errorf("Channel(%q) = %q, want %q", v, got, want)
+		}
+	}
+}

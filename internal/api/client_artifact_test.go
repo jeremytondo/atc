@@ -20,7 +20,7 @@ func TestArtifactPublishMethods(t *testing.T) {
 		Parts                                  []string
 	}
 	var got upload
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
 			t.Errorf("Content-Type = %q", r.Header.Get("Content-Type"))
 		}
@@ -48,7 +48,7 @@ func TestArtifactPublishMethods(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ArtifactPublication{Artifact: Artifact{ID: "artf-x7k2f"}, Version: ArtifactVersion{Number: 2}})
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	ctx := context.Background()
 
 	result, err := client.PublishArtifact(ctx, ArtifactPublishParams{Title: "Design", PublicationID: "pub-1"},
@@ -80,7 +80,7 @@ func TestArtifactMethods(t *testing.T) {
 		Method, Path, Query, Body string
 	}
 	var got call
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(speaking(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got = call{r.Method, r.URL.Path, r.URL.RawQuery, strings.TrimSpace(string(body))}
 		switch {
@@ -102,7 +102,7 @@ func TestArtifactMethods(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil)
 	ctx := context.Background()
 
 	if list, err := client.Artifacts(ctx, "proj-aaaaa"); err != nil || len(list) != 1 {

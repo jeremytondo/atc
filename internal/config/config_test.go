@@ -187,3 +187,98 @@ func TestMalformedValues(t *testing.T) {
 		}
 	}
 }
+
+// EnableTailscale edits one key and leaves everything else — comments,
+// other keys, ordering — exactly as it was; an absent file is created.
+func TestEnableTailscale(t *testing.T) {
+	for name, tc := range map[string]struct{ before, after string }{
+		"absent file":      {before: "", after: "tailscale = true\n"},
+		"empty file":       {before: "", after: "tailscale = true\n"},
+		"other keys":       {before: "# my server\nport = 9000\n", after: "# my server\nport = 9000\ntailscale = true\n"},
+		"no final newline": {before: "port = 9000", after: "port = 9000\ntailscale = true\n"},
+		"false already":    {before: "port = 9000\ntailscale=false # off\nwebhooks = true\n", after: "port = 9000\ntailscale = true\nwebhooks = true\n"},
+		"true already":     {before: "tailscale = true\n", after: "tailscale = true\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if name != "absent file" {
+				if err := os.WriteFile(path, []byte(tc.before), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := EnableTailscale(path); err != nil {
+				t.Fatalf("EnableTailscale = %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.after, string(got)); diff != "" {
+				t.Errorf("file (-want +got):\n%s", diff)
+			}
+			cfg, err := Load(path, noEnv)
+			if err != nil || !cfg.Tailscale {
+				t.Errorf("Load after enable = %+v, %v", cfg, err)
+			}
+		})
+	}
+}
+
+// The file's mode survives, and a symlinked config is edited through the
+// link: the target changes, the link stays.
+func TestEnableTailscalePreservesModeAndSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "dotfiles-config.toml")
+	if err := os.WriteFile(real, []byte("port = 9000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnableTailscale(link); err != nil {
+		t.Fatalf("EnableTailscale = %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link replaced: %v, %v", info, err)
+	}
+	info, err := os.Stat(real)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Errorf("target mode = %v, %v; want 0644 kept", info.Mode(), err)
+	}
+	if got, _ := os.ReadFile(real); string(got) != "port = 9000\ntailscale = true\n" {
+		t.Errorf("target = %q", got)
+	}
+}
+
+// A dangling link is followed, never replaced: the file it names is
+// created and the link keeps pointing at it.
+func TestEnableTailscaleFollowsDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink("dotfiles/config.toml", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnableTailscale(link); err != nil {
+		t.Fatalf("EnableTailscale = %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link replaced: %v, %v", info, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "dotfiles", "config.toml")); err != nil || string(got) != "tailscale = true\n" {
+		t.Errorf("target = %q, %v", got, err)
+	}
+}
+
+// A file the server would refuse is left alone rather than edited into a
+// different file the server would still refuse.
+func TestEnableTailscaleRefusesUnloadableFile(t *testing.T) {
+	path := write(t, "porte = 9000\n")
+	if err := EnableTailscale(path); err == nil || !strings.Contains(err.Error(), "does not understand") {
+		t.Errorf("EnableTailscale on an invalid file = %v, want the load refusal", err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "porte = 9000\n" {
+		t.Errorf("invalid file was modified: %q", got)
+	}
+}

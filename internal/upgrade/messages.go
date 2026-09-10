@@ -17,17 +17,24 @@ func replacedMessage(oldVersion, newVersion, target string) string {
 	return fmt.Sprintf("replaced %s with %s at %s", oldVersion, newVersion, target)
 }
 
-// staleServerLine is the one clear line a headless (or declined) run gets;
-// the state stays loud afterwards in `atc server status` and skew warnings.
+// compatibleServerLine is what a server on another release, but this
+// build's protocol, gets: nothing is required of it.
+func compatibleServerLine(serverVersion string) string {
+	return fmt.Sprintf("server keeps running %s, which this build can talk to; `atc server restart` runs the new build when convenient", versionOrUnknown(serverVersion))
+}
+
+// staleServerLine is the one clear line a headless (or declined) run gets
+// for a server this build cannot talk to; the state stays loud afterwards
+// in `atc server status` and on every command.
 func staleServerLine(serverVersion string) string {
-	return fmt.Sprintf("server still on %s — run `atc server restart` or pass --restart", versionOrUnknown(serverVersion))
+	return fmt.Sprintf("server still on %s, which this build cannot talk to — run `atc server restart` or pass --restart", versionOrUnknown(serverVersion))
 }
 
 // restartPrompt carries the ATC-246 risk summary: terminals persist (zmx
 // owns them durably); in-flight agent turns served over the API are
 // interrupted. Default yes.
 func restartPrompt(serverVersion string) string {
-	return fmt.Sprintf("server is still on %s; restart it now? terminals persist, but any in-flight agent turns are interrupted [Y/n] ", versionOrUnknown(serverVersion))
+	return fmt.Sprintf("server is still on %s, which this build cannot talk to; restart it now? terminals persist, but any in-flight agent turns are interrupted [Y/n] ", versionOrUnknown(serverVersion))
 }
 
 func versionOrUnknown(version string) string {

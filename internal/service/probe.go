@@ -1,9 +1,11 @@
 package service
 
 // Health probing: GET /v1/health is the source of truth for liveness. The
-// server version rides the Atc-Server-Version header on every response,
-// 401s included, so liveness and version detection never require a valid
-// token even though health itself does.
+// server's version and protocol ride the Atc-Server-Version and
+// Atc-Protocol headers on every response, 401s and protocol refusals
+// included, so liveness, version, and compatibility detection never
+// require a valid token or a matching build even though health itself
+// does.
 
 import (
 	"context"
@@ -40,22 +42,23 @@ const (
 )
 
 type probeOutcome struct {
-	responding    bool // any HTTP response at all
-	healthy       bool // authenticated 200
-	unauthorized  bool
-	serverVersion string
+	responding   bool // any HTTP response at all
+	healthy      bool // authenticated 200 on this build's protocol
+	unauthorized bool
+	// incompatible is a server on another protocol (or none): refused by
+	// one side or the other before health could be judged.
+	incompatible   bool
+	serverVersion  string
+	serverProtocol int // 0 when the response carried none
 }
 
 // probeOnce is a seam variable for the same reason: faking the one probe
 // lets lifecycle tests exercise the real health gate hermetically.
 var probeOnce = func(ctx context.Context, opts Options, token string) probeOutcome {
-	var serverVersion string
-	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
-		&http.Client{Timeout: probeTimeout},
-		func(version string) { serverVersion = version })
-	_, err := client.Health(ctx)
+	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version, &http.Client{Timeout: probeTimeout})
+	health, err := client.Health(ctx)
 	if err == nil {
-		return probeOutcome{responding: true, healthy: true, serverVersion: serverVersion}
+		return probeOutcome{responding: true, healthy: true, serverVersion: health.Version, serverProtocol: health.Protocol}
 	}
 	// Any *Problem means an HTTP response arrived — including a 2xx whose
 	// body was not decodable; anything else means nothing answered.
@@ -64,34 +67,35 @@ var probeOnce = func(ctx context.Context, opts Options, token string) probeOutco
 		return probeOutcome{}
 	}
 	return probeOutcome{
-		responding:    true,
-		unauthorized:  problem.Status == http.StatusUnauthorized,
-		serverVersion: serverVersion,
+		responding:     true,
+		unauthorized:   problem.Status == http.StatusUnauthorized,
+		incompatible:   problem.Code == api.CodeProtocolMismatch,
+		serverVersion:  problem.ServerVersion,
+		serverProtocol: problem.ServerProtocol,
 	}
 }
 
 // probeWebhooks asks the running server for its webhook ingress report.
 // A seam variable so lifecycle tests script it.
 var probeWebhooks = func(ctx context.Context, opts Options, token string) (api.Webhooks, error) {
-	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
-		&http.Client{Timeout: probeTimeout}, nil)
+	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version, &http.Client{Timeout: probeTimeout})
 	return client.Webhooks(ctx)
 }
 
 // probeDocuments asks the running server for its document origin report.
 // A seam variable so lifecycle tests script it.
 var probeDocuments = func(ctx context.Context, opts Options, token string) (api.DocumentOrigin, error) {
-	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
-		&http.Client{Timeout: probeTimeout}, nil)
+	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version, &http.Client{Timeout: probeTimeout})
 	return client.DocumentOrigin(ctx)
 }
 
-// Probe reports whether a server answers on the configured address and the
-// version it claims. Tokenless: the Atc-Server-Version header rides every
-// response, 401s included. This is `atc upgrade`'s post-swap check.
-func Probe(ctx context.Context, opts Options) (responding bool, serverVersion string) {
+// Probe reports whether a server answers on the configured address, the
+// version it claims, and the protocol it speaks (0 when it sent none).
+// Tokenless: the identity headers ride every response, 401s and protocol
+// refusals included. This is `atc upgrade`'s post-swap check.
+func Probe(ctx context.Context, opts Options) (responding bool, serverVersion string, serverProtocol int) {
 	outcome := probeOnce(ctx, opts, "")
-	return outcome.responding, outcome.serverVersion
+	return outcome.responding, outcome.serverVersion, outcome.serverProtocol
 }
 
 // awaitHealthy gates start/restart success on the daemon answering

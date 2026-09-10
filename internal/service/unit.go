@@ -87,17 +87,31 @@ func appendFlag(args []string, name string, value *bool) []string {
 // (hand-edited or foreign content); callers fail loudly on it rather than
 // guessing.
 func unitLaunchFlags(goos, content string) (LaunchFlags, error) {
-	var args []string
-	var err error
-	if goos == "darwin" {
-		args, err = plistProgramArguments(content)
-	} else {
-		args, err = systemdExecStart(content)
-	}
+	args, err := unitExecArgs(goos, content)
 	if err != nil {
 		return LaunchFlags{}, err
 	}
 	return flagsFromArgs(args)
+}
+
+// unitExecutable is the executable the installed unit runs: the server's
+// own location, which need not be the atc on anyone's PATH (ATC-325).
+func unitExecutable(goos, content string) (string, error) {
+	args, err := unitExecArgs(goos, content)
+	if err != nil {
+		return "", err
+	}
+	if len(args) == 0 || args[0] == "" {
+		return "", errors.New("installed unit has no executable")
+	}
+	return args[0], nil
+}
+
+func unitExecArgs(goos, content string) ([]string, error) {
+	if goos == "darwin" {
+		return plistProgramArguments(content)
+	}
+	return systemdExecStart(content)
 }
 
 // flagsFromArgs recognizes exactly the argument shapes renderUnit has ever

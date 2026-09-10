@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,7 +44,8 @@ type HealthOutput struct {
 // Options wires the handler. Verify reports whether an Authorization
 // header value presents the current bearer token (authtoken.Store.Verify
 // in production); Version is the server build identity, sent on every
-// response. A nil Logger discards request-level events.
+// response for diagnostics (compatibility is api.Protocol's alone). A
+// nil Logger discards request-level events.
 type Options struct {
 	Verify       func(authorization string) bool
 	Version      string
@@ -83,9 +85,10 @@ type Options struct {
 
 // NewHandler builds the /v1 API surface plus /openapi.json and /docs.
 //
-// Middleware order (outermost first): version headers, then auth, then
-// routing — headers appear on every response including 401s, and
-// unauthenticated callers cannot probe which routes exist.
+// Middleware order (outermost first): identity headers, then auth, then
+// the protocol check, then routing — headers appear on every response
+// including 401s, unauthenticated callers cannot probe which routes
+// exist, and no operation ever runs for a client on another protocol.
 func NewHandler(opts Options) http.Handler {
 	if opts.Verify == nil {
 		// Without auth the server would panic on the first request; fail
@@ -119,7 +122,7 @@ func NewHandler(opts Options) http.Handler {
 		Summary:     "Server liveness",
 		Description: "Source of truth for whether the server is up; `atc server status` probes this first.",
 	}, func(ctx context.Context, _ *struct{}) (*HealthOutput, error) {
-		return &HealthOutput{Body: api.Health{Status: "ok", Version: opts.Version}}, nil
+		return &HealthOutput{Body: api.Health{Status: "ok", Version: opts.Version, Protocol: api.Protocol}}, nil
 	})
 
 	if (opts.Terminals != nil || opts.Projects != nil || opts.Threads != nil) && opts.Coordinator == nil {
@@ -157,7 +160,7 @@ func NewHandler(opts Options) http.Handler {
 		registerDirectories(humaAPI, opts.HomeDir)
 	}
 
-	handler := withAuth(opts.Verify, withWriteDeadlines(problemMux(mux)))
+	handler := withAuth(opts.Verify, withProtocol(withWriteDeadlines(problemMux(mux))))
 	if len(opts.InternalRoutes) > 0 {
 		root := http.NewServeMux()
 		for pattern, route := range opts.InternalRoutes {
@@ -172,14 +175,38 @@ func NewHandler(opts Options) http.Handler {
 		root.Handle("/", handler)
 		handler = root
 	}
-	return withVersionHeaders(opts.Version, opts.Logger, handler)
+	return withIdentityHeaders(opts.Version, handler)
 }
 
-func withVersionHeaders(version string, logger *slog.Logger, next http.Handler) http.Handler {
+// withIdentityHeaders stamps the server's release and protocol on every
+// response, internal routes and 401s included, so any caller — a
+// tokenless probe, an incompatible client — can learn what answered.
+func withIdentityHeaders(version string, next http.Handler) http.Handler {
+	protocol := strconv.Itoa(api.Protocol)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(api.ServerVersionHeader, version)
-		if client := r.Header.Get(api.ClientVersionHeader); client != "" && client != version {
-			logger.Debug("client version skew", "client", client, "server", version)
+		w.Header().Set(api.ProtocolHeader, protocol)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withProtocol is the server's half of the protocol contract (ATC-325):
+// every request on the public surface must declare the server's
+// protocol, or it is refused with a protocol_mismatch problem before any
+// route runs. Release identity is never compared. It sits inside auth,
+// so an unauthenticated caller still sees only a 401, and outside the
+// mux, so /openapi.json and /docs are covered like every operation;
+// internal routes never pass through it.
+func withProtocol(next http.Handler) http.Handler {
+	protocol := strconv.Itoa(api.Protocol)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if declared := r.Header.Get(api.ProtocolHeader); declared != protocol {
+			detail := fmt.Sprintf("this server speaks ATC protocol %s; the request declared protocol %q", protocol, declared)
+			if declared == "" {
+				detail = fmt.Sprintf("this server speaks ATC protocol %s; the request declared none (send %s: %s)", protocol, api.ProtocolHeader, protocol)
+			}
+			writeProblem(w, problem(http.StatusUpgradeRequired, api.CodeProtocolMismatch, detail))
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

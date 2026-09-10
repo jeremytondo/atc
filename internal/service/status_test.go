@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -16,18 +17,22 @@ import (
 // healthy, versions in agreement, loopback-only bind.
 func healthyInfo() statusInfo {
 	return statusInfo{
-		installed:     true,
-		unitFile:      "/home/ab/.config/systemd/user/atc.server.service",
-		supervisor:    "active",
-		responding:    true,
-		healthy:       true,
-		clientVersion: "v1.2.3",
-		serverVersion: "v1.2.3",
-		port:          7331,
-		bind:          "127.0.0.1",
-		hostname:      "workstation",
+		installed:      true,
+		unitFile:       "/home/ab/.config/systemd/user/atc.server.service",
+		supervisor:     "active",
+		responding:     true,
+		healthy:        true,
+		clientVersion:  "v1.2.3",
+		serverVersion:  "v1.2.3",
+		serverProtocol: api.Protocol,
+		port:           7331,
+		bind:           "127.0.0.1",
+		hostname:       "workstation",
 	}
 }
+
+// protocol is the client's protocol as the report prints it.
+var protocol = strconv.Itoa(api.Protocol)
 
 func TestRenderStatus(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -39,13 +44,13 @@ func TestRenderStatus(t *testing.T) {
 			info: healthyInfo,
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
-		"version skew flags a restart": {
+		"another release on the same protocol is compatible": {
 			info: func() statusInfo {
 				s := healthyInfo()
 				s.serverVersion = "v1.2.2"
@@ -53,11 +58,63 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.2 — differs from client v1.2.3; `atc server restart` updates it\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.2 (protocol " + protocol + "; a different release from the client, and compatible)\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
+		},
+		"another protocol needs the installed build restarted": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.healthy = false
+				s.incompatible = true
+				s.serverVersion = "v1.2.2"
+				s.serverProtocol = 0
+				return s
+			},
+			want: "atc.server: running on no protocol while this client speaks protocol " + protocol + "; `atc server restart` runs the installed build (a foreground `atc server run` holding the port must be stopped first)\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.2 (no protocol)\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 1,
+		},
+		"an incompatible foreground server is named, not hidden by not-installed": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.installed = false
+				s.supervisor = ""
+				s.healthy = false
+				s.incompatible = true
+				s.serverVersion = "v0.9.0"
+				s.serverProtocol = 0
+				return s
+			},
+			want: "atc.server: not installed, but a server on no protocol answers on the port (a foreground `atc server run` of another build?) while this client speaks protocol " + protocol + "; stop it, then `atc server start`\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v0.9.0 (no protocol)\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 1,
+		},
+		"a newer protocol is reported as such": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.healthy = false
+				s.incompatible = true
+				s.serverVersion = "v9.0.0"
+				s.serverProtocol = api.Protocol + 1
+				return s
+			},
+			want: "atc.server: running on protocol " + strconv.Itoa(api.Protocol+1) + " while this client speaks protocol " + protocol + "; `atc server restart` runs the installed build (a foreground `atc server run` holding the port must be stopped first)\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v9.0.0 (protocol " + strconv.Itoa(api.Protocol+1) + ")\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 1,
 		},
 		"installed but not responding": {
 			info: func() statusInfo {
@@ -70,7 +127,7 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: installed but not responding; try `atc server logs` or `atc server restart`\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (failed)\n" +
-				"  client: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
 				"  server: unknown (not responding)\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
@@ -87,7 +144,7 @@ func TestRenderStatus(t *testing.T) {
 				return s
 			},
 			want: "atc.server: not installed; `atc server start` registers and starts it\n" +
-				"  client: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
 				"  server: unknown (not responding)\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
@@ -101,8 +158,8 @@ func TestRenderStatus(t *testing.T) {
 				return s
 			},
 			want: "atc.server: healthy, but not installed — likely a foreground `atc server run`\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
@@ -116,8 +173,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: responding but rejected the local token; `atc server restart`, then `atc server token rotate` if it persists\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 1,
@@ -132,8 +189,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (lan): http://workstation:7331\n" +
 				"  api (tailnet): https://machine.tail1234.ts.net:7331\n" +
@@ -148,8 +205,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (lan): http://192.168.1.20:7331\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
@@ -165,8 +222,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): https://machine.tail1234.ts.net:7331\n" +
 				"  tailscale: enabled by this launch's flag; `atc server restart --tailscale=false` replaces it, stop then start returns to config.toml\n" +
@@ -183,8 +240,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
 				"  tailscale: enabled by this launch's flag; `atc server restart --tailscale=false` replaces it, stop then start returns to config.toml\n" +
@@ -202,8 +259,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): pending at https://machine.tail1234.ts.net:7331 (tailscale serve has not exposed the route yet)\n" +
 				"  tailscale: enabled by this launch's flag; `atc server restart --tailscale=false` replaces it, stop then start returns to config.toml\n" +
@@ -218,8 +275,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  launch flags: unknown (installed unit has no ExecStart line); `atc server stop`, then `atc server start` with the flags you want\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
@@ -234,8 +291,8 @@ func TestRenderStatus(t *testing.T) {
 			},
 			want: "atc.server: running and healthy\n" +
 				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-				"  client: v1.2.3\n" +
-				"  server: v1.2.3\n" +
+				"  client: v1.2.3 (protocol " + protocol + ")\n" +
+				"  server: v1.2.3 (protocol " + protocol + ")\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
@@ -367,8 +424,8 @@ func TestRenderStatusIncludesDocumentsReport(t *testing.T) {
 	got, _ := renderStatus(s)
 	want := "atc.server: running and healthy\n" +
 		"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-		"  client: v1.2.3\n" +
-		"  server: v1.2.3\n" +
+		"  client: v1.2.3 (protocol " + protocol + ")\n" +
+		"  server: v1.2.3 (protocol " + protocol + ")\n" +
 		"  api: http://127.0.0.1:7331\n" +
 		"  documents: http://127.0.0.1:7332\n" +
 		"  webhooks: https://machine.tail1234.ts.net (0 pending)\n" +
@@ -386,8 +443,8 @@ func TestRenderStatusIncludesWebhookReport(t *testing.T) {
 	got, _ := renderStatus(s)
 	want := "atc.server: running and healthy\n" +
 		"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
-		"  client: v1.2.3\n" +
-		"  server: v1.2.3\n" +
+		"  client: v1.2.3 (protocol " + protocol + ")\n" +
+		"  server: v1.2.3 (protocol " + protocol + ")\n" +
 		"  api: http://127.0.0.1:7331\n" +
 		"  webhooks: https://machine.tail1234.ts.net (0 pending)\n" +
 		"  webhooks: enabled by this launch's flag; `atc server restart --webhooks=false` replaces it, stop then start returns to config.toml\n" +

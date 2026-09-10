@@ -19,8 +19,8 @@ import (
 )
 
 // Status reports liveness (the health probe is the source of truth), unit
-// state as supplementary, client and server versions with skew flagged, and
-// ready-to-paste API URLs. Exit codes: 0 healthy, 1 installed but not
+// state as supplementary, client and server versions and protocols with
+// incompatibility flagged, and ready-to-paste API URLs. Exit codes: 0 healthy, 1 installed but not
 // responding, 2 not installed.
 func Status(ctx context.Context, opts Options) error {
 	if err := supported(); err != nil {
@@ -37,14 +37,16 @@ func Status(ctx context.Context, opts Options) error {
 	probe := probeOnce(ctx, opts, token)
 
 	info := statusInfo{
-		unitFile:      unitFile,
-		responding:    probe.responding,
-		healthy:       probe.healthy,
-		unauthorized:  probe.unauthorized,
-		clientVersion: opts.Version,
-		serverVersion: probe.serverVersion,
-		port:          opts.Config.Port,
-		bind:          opts.Config.Bind,
+		unitFile:       unitFile,
+		responding:     probe.responding,
+		healthy:        probe.healthy,
+		unauthorized:   probe.unauthorized,
+		incompatible:   probe.incompatible,
+		clientVersion:  opts.Version,
+		serverVersion:  probe.serverVersion,
+		serverProtocol: probe.serverProtocol,
+		port:           opts.Config.Port,
+		bind:           opts.Config.Bind,
 	}
 	// The installed unit records the running launch's flags, so status
 	// reads it with the same inspection lifecycle uses — displayed intent
@@ -158,17 +160,21 @@ func tailnetEndpoint(ctx context.Context, cfg config.Config, executable string) 
 }
 
 type statusInfo struct {
-	installed     bool
-	unitFile      string
-	supervisor    string // supplementary unit state; "" when not installed
-	responding    bool
-	healthy       bool
-	unauthorized  bool
-	clientVersion string
-	serverVersion string // "" when no response carried one
-	port          int
-	bind          string
-	hostname      string
+	installed    bool
+	unitFile     string
+	supervisor   string // supplementary unit state; "" when not installed
+	responding   bool
+	healthy      bool
+	unauthorized bool
+	// incompatible is a responding server on another protocol; the
+	// client's api.Protocol is the one it is compared with.
+	incompatible   bool
+	clientVersion  string
+	serverVersion  string // "" when no response carried one
+	serverProtocol int    // 0 when no response carried one
+	port           int
+	bind           string
+	hostname       string
 	// flags are the running launch's exposure flags, read from the unit;
 	// zero when no launch is running or none were supplied.
 	flags LaunchFlags
@@ -200,9 +206,21 @@ func renderStatus(s statusInfo) (string, int) {
 		fmt.Fprintf(&b, "%s: running and healthy\n", UnitName)
 	case s.healthy:
 		fmt.Fprintf(&b, "%s: healthy, but not installed — likely a foreground `atc server run`\n", UnitName)
+	case s.incompatible && !s.installed:
+		// Something answers on another protocol with no unit registered:
+		// a foreground `atc server run` of another build owns the port,
+		// so starting the supervised server would not help.
+		code = 1
+		fmt.Fprintf(&b, "%s: not installed, but a server on %s answers on the port (a foreground `atc server run` of another build?) while this client speaks protocol %d; stop it, then `atc server start`\n", UnitName, protocolText(s.serverProtocol), api.Protocol)
 	case !s.installed:
 		code = 2
 		fmt.Fprintf(&b, "%s: not installed; `atc server start` registers and starts it\n", UnitName)
+	case s.incompatible:
+		// A compatible server on another release is simply healthy; only
+		// the protocol decides, and the installed build is the remedy on
+		// this machine since restart re-renders the unit from it.
+		code = 1
+		fmt.Fprintf(&b, "%s: running on %s while this client speaks protocol %d; `atc server restart` runs the installed build (a foreground `atc server run` holding the port must be stopped first)\n", UnitName, protocolText(s.serverProtocol), api.Protocol)
 	case s.unauthorized:
 		code = 1
 		fmt.Fprintf(&b, "%s: responding but rejected the local token; `atc server restart`, then `atc server token rotate` if it persists\n", UnitName)
@@ -216,16 +234,18 @@ func renderStatus(s statusInfo) (string, int) {
 	if s.installed {
 		fmt.Fprintf(&b, "  unit: %s (%s)\n", s.unitFile, s.supervisor)
 	}
-	fmt.Fprintf(&b, "  client: %s\n", s.clientVersion)
+	fmt.Fprintf(&b, "  client: %s (protocol %d)\n", s.clientVersion, api.Protocol)
 	switch {
 	case s.serverVersion == "" && !s.responding:
 		b.WriteString("  server: unknown (not responding)\n")
 	case s.serverVersion == "":
 		b.WriteString("  server: unknown\n")
-	case s.serverVersion != s.clientVersion:
-		fmt.Fprintf(&b, "  server: %s — differs from client %s; `atc server restart` updates it\n", s.serverVersion, s.clientVersion)
+	case s.serverVersion != s.clientVersion && !s.incompatible:
+		// Release identity is shown, never acted on: a different release
+		// on the same protocol needs nothing.
+		fmt.Fprintf(&b, "  server: %s (%s; a different release from the client, and compatible)\n", s.serverVersion, protocolText(s.serverProtocol))
 	default:
-		fmt.Fprintf(&b, "  server: %s\n", s.serverVersion)
+		fmt.Fprintf(&b, "  server: %s (%s)\n", s.serverVersion, protocolText(s.serverProtocol))
 	}
 	for _, url := range apiURLs(s) {
 		fmt.Fprintf(&b, "  %s\n", url)
@@ -246,6 +266,14 @@ func renderStatus(s statusInfo) (string, int) {
 	}
 	b.WriteString("  token: `atc server token` prints the bearer token remote clients use\n")
 	return b.String(), code
+}
+
+// protocolText names a server's protocol for people.
+func protocolText(protocol int) string {
+	if protocol == 0 {
+		return "no protocol"
+	}
+	return fmt.Sprintf("protocol %d", protocol)
 }
 
 // renderLaunchFlags attributes each effective override to the running

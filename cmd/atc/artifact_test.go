@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +34,7 @@ func cliTarGz(t *testing.T, files map[string]string) []byte {
 // the authoring commands will.
 func publishArtifactCLI(t *testing.T, title string) (api.ArtifactPublication, []byte) {
 	t.Helper()
-	client, _, err := cli.NewClient(io.Discard)
+	client, _, err := cli.NewClient()
 	if err != nil {
 		t.Fatal(err)
 	}

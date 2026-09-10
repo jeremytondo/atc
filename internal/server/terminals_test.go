@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 
 	"path/filepath"
 	"strings"
@@ -337,6 +338,7 @@ func (f *fixture) request(t *testing.T, method, path, body string) *httptest.Res
 	}
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set(api.ProtocolHeader, strconv.Itoa(api.Protocol))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -508,6 +510,7 @@ func dialSSE(t *testing.T, baseURL, lastEventID string) *sseClient {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set(api.ProtocolHeader, strconv.Itoa(api.Protocol))
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}

@@ -10,10 +10,12 @@
 // staged beside the resolved os.Executable() (same filesystem), proved
 // runnable, then renamed over the target. sudo is never invoked.
 //
-// A running server is never restarted silently. Interactive runs are asked
-// (default yes); headless runs without --restart leave the server alone and
-// say exactly what to do next — the skew stays loud in `atc server status`
-// and on every subsequent command.
+// A running server is never restarted silently. A server on the old
+// release that still speaks the new build's protocol keeps running and
+// is only noted (the protocol, api.Protocol, decides compatibility — not
+// the release); --restart bounces it anyway. A server the new build
+// cannot talk to is asked about on a TTY (default yes); headless runs
+// without --restart leave it alone and say exactly what to do next.
 //
 // Boundaries (deliberate): asset naming, checksum verification, archive
 // extraction, message rendering, and the restart policy are pure and
@@ -29,9 +31,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/jeremytondo/atc/internal/service"
+	"github.com/jeremytondo/atc/internal/version"
 )
 
 const (
@@ -79,40 +83,74 @@ type Options struct {
 	Stderr    io.Writer
 }
 
+// GitHub is the release source: tokenless discovery of the latest
+// published build per channel and verified download of its executable.
+// Run uses it for this machine; guided remote setup (ATC-325) uses it for
+// the target's platform through the remote.Releases seam.
+type GitHub struct{}
+
+// Latest names the latest published build in channel (version.ChannelStable
+// or version.ChannelDev) for the platform, as its release tag. The stable
+// head comes from the releases/latest redirect; the dev head is the fixed
+// rolling tag. There is no search of older releases: latest is the only
+// candidate. An unsupported platform fails here, before any download.
+func (GitHub) Latest(ctx context.Context, channel, goos, goarch string) (string, error) {
+	if _, err := assetName(goos, goarch); err != nil {
+		return "", err
+	}
+	switch channel {
+	case version.ChannelDev:
+		return devTag, nil
+	case version.ChannelStable:
+		return latestProductionTag(ctx)
+	}
+	return "", fmt.Errorf("no release channel %q (stable or dev)", channel)
+}
+
+// Fetch downloads the tag's archive and checksums for the platform,
+// verifies the archive against checksums.txt, and returns the
+// executable's bytes.
+func (GitHub) Fetch(ctx context.Context, tag, goos, goarch string) ([]byte, error) {
+	asset, err := assetName(goos, goarch)
+	if err != nil {
+		return nil, err
+	}
+	archive, err := fetch(ctx, assetURL(tag, asset))
+	if err != nil {
+		return nil, err
+	}
+	sums, err := fetch(ctx, assetURL(tag, checksumsAsset))
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyChecksum(archive, sums, asset); err != nil {
+		return nil, err
+	}
+	return extractBinary(archive)
+}
+
 // Run downloads the selected build, verifies and installs it over this
 // binary, and then deals with a server still running the old version.
 func Run(ctx context.Context, opts Options) error {
-	asset, err := assetName(runtime.GOOS, runtime.GOARCH)
+	channel := version.ChannelStable
+	if opts.Dev {
+		channel = version.ChannelDev
+	}
+	var releases GitHub
+	tag, err := releases.Latest(ctx, channel, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
-
-	tag := devTag
 	if opts.Dev {
 		say(opts.Stdout, "downloading the current dev build...\n")
 	} else {
-		if tag, err = latestProductionTag(ctx); err != nil {
-			return err
-		}
 		if tag == opts.Version {
 			say(opts.Stdout, "%s\n", upToDateMessage(opts.Version))
 			return nil
 		}
 		say(opts.Stdout, "downloading %s...\n", tag)
 	}
-
-	archive, err := fetch(ctx, assetURL(tag, asset))
-	if err != nil {
-		return err
-	}
-	sums, err := fetch(ctx, assetURL(tag, checksumsAsset))
-	if err != nil {
-		return err
-	}
-	if err := verifyChecksum(archive, sums, asset); err != nil {
-		return err
-	}
-	binary, err := extractBinary(archive)
+	binary, err := releases.Fetch(ctx, tag, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -131,30 +169,41 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	newProtocol := binaryProtocol(ctx, staged)
 	if err := promote(staged, target); err != nil {
 		return err
 	}
 	say(opts.Stdout, "%s\n", replacedMessage(opts.Version, newVersion, target))
 
-	return checkServer(ctx, opts, newVersion)
+	return checkServer(ctx, opts, newVersion, newProtocol)
 }
 
-// checkServer handles the post-swap server via the existing handshake: not
-// running means done; a server on any other version than the one just
-// installed is restarted or deliberately left, per the policy matrix. It
-// never returns a failure for an unrestarted server — that state is loud on
+// checkServer handles the post-swap server via the existing probe: not
+// running means done; a compatible server on the old release is left
+// running with a note; a server the new build cannot talk to is
+// restarted or deliberately left, per the policy matrix. It never
+// returns a failure for an unrestarted server — that state is loud on
 // every later command.
-func checkServer(ctx context.Context, opts Options, newVersion string) error {
+func checkServer(ctx context.Context, opts Options, newVersion string, newProtocol int) error {
 	if opts.ConfigErr != nil {
 		say(opts.Stderr, "cannot check the running server (%v); run `atc server restart` if one is running\n", opts.ConfigErr)
 		return nil
 	}
-	responding, serverVersion := service.Probe(ctx, opts.Service)
+	responding, serverVersion, serverProtocol := service.Probe(ctx, opts.Service)
 	if !responding {
 		return nil
 	}
 	if serverVersion == newVersion {
 		say(opts.Stdout, "server is already running %s\n", newVersion)
+		return nil
+	}
+	// Protocol equality is the whole compatibility policy (ATC-325), and
+	// the protocol that matters is the installed build's, not this old
+	// process's: a server on another release that still speaks it keeps
+	// working and is only offered a restart on request. An installed
+	// build whose protocol could not be read is not assumed compatible.
+	if newProtocol != 0 && serverProtocol == newProtocol && opts.Restart != RestartAlways {
+		say(opts.Stdout, "%s\n", compatibleServerLine(serverVersion))
 		return nil
 	}
 	action := decideRestart(opts.Restart, opts.Interactive)
@@ -230,6 +279,21 @@ func binaryVersion(ctx context.Context, path string) (string, error) {
 		return "", errors.New("downloaded binary printed no version")
 	}
 	return version, nil
+}
+
+// binaryProtocol asks the staged binary which ATC protocol it speaks
+// (`version --protocol`); 0 when it cannot say, as a build from before
+// the protocol contract cannot.
+func binaryProtocol(ctx context.Context, path string) int {
+	out, err := exec.CommandContext(ctx, path, "version", "--protocol").Output()
+	if err != nil {
+		return 0
+	}
+	protocol, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || protocol <= 0 {
+		return 0
+	}
+	return protocol
 }
 
 // say writes a user-facing message; a failed write to the user's own
