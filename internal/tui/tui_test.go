@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"net/http"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
@@ -154,10 +157,10 @@ var (
 	}
 	exitOne   = 1
 	terminals = []api.Terminal{
-		{ID: "term-old", Process: "zsh", SpaceID: "spce-work", Status: api.TerminalRunning, CreatedAt: t0},
-		{ID: "term-dead", Process: "nvim", SpaceID: "spce-work", Status: api.TerminalExited, ExitCode: &exitOne, CreatedAt: t0.Add(time.Minute)},
-		{ID: "term-new", Name: "api", Process: "codex", SpaceID: "spce-work", Status: api.TerminalRunning, CreatedAt: t0.Add(time.Hour)},
-		{ID: "term-play", Name: "play", Process: "zsh", SpaceID: "spce-play", Status: api.TerminalRunning, CreatedAt: t0},
+		{ID: "term-old", Process: "zsh", SpaceID: "spce-work", Directory: "/home/u/work", Status: api.TerminalRunning, CreatedAt: t0},
+		{ID: "term-dead", Process: "nvim", SpaceID: "spce-work", Directory: "/home/u/work", Status: api.TerminalExited, ExitCode: &exitOne, CreatedAt: t0.Add(time.Minute)},
+		{ID: "term-new", Name: "api", Process: "codex", SpaceID: "spce-work", Directory: "/home/u/work/api", Status: api.TerminalRunning, CreatedAt: t0.Add(time.Hour)},
+		{ID: "term-play", Name: "play", Process: "zsh", SpaceID: "spce-play", Directory: "/home/u/play", Status: api.TerminalRunning, CreatedAt: t0},
 	}
 )
 
@@ -279,6 +282,37 @@ func isWindowSizeRequest(msg tea.Msg) bool {
 	return reflect.TypeOf(msg) == reflect.TypeOf(tea.RequestWindowSize())
 }
 
+// plain is the view without its styling, for text assertions.
+func plain(m model) string { return ansi.Strip(m.View().Content) }
+
+// lines are the view's lines with the border and styling removed, so a
+// footer or breadcrumb can be compared whole.
+func lines(m model) []string {
+	raw := strings.Split(plain(m), "\n")
+	out := make([]string, len(raw))
+	for i, line := range raw {
+		out[i] = strings.TrimSpace(strings.Trim(line, "│"))
+	}
+	return out
+}
+
+// rawLine is the styled view line whose text contains needle.
+func rawLine(m model, needle string) string {
+	for _, line := range strings.Split(m.View().Content, "\n") {
+		if strings.Contains(ansi.Strip(line), needle) {
+			return line
+		}
+	}
+	return ""
+}
+
+// highlighted reports whether line carries the selection's background.
+var background = regexp.MustCompile(`\x1b\[(\d+;)*48;5;\d+m`)
+
+func highlighted(line string) bool { return background.MatchString(line) }
+
+func matches(pattern, text string) bool { return regexp.MustCompile(pattern).MatchString(text) }
+
 func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
@@ -308,15 +342,11 @@ func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 	if h.m.selectedSpace != "spce-work" {
 		t.Errorf("after the selected space vanished: %q, want the adjacent row", h.m.selectedSpace)
 	}
-	if !strings.Contains(h.m.View().Content, "> work") || !strings.Contains(h.m.View().Content, "Default (default)") {
-		t.Errorf("view:\n%s", h.m.View().Content)
+	if !highlighted(rawLine(h.m, "work")) || highlighted(rawLine(h.m, "Default")) {
+		t.Errorf("selection not the highlighted row:\n%s", h.m.View().Content)
 	}
-	if strings.Contains(h.m.View().Content, "version mismatch") {
-		t.Error("matching versions flagged as a mismatch")
-	}
-	h.m.serverVersion = "v2"
-	if !strings.Contains(h.m.View().Content, "version mismatch") {
-		t.Error("differing versions not flagged")
+	if view := plain(h.m); !matches(`NAME\s+TERMINALS\s+DIRECTORY`, view) || !matches(`Default\s+0\s+/home/u\s+default`, view) || !matches(`work\s+3\s+/home/u/work`, view) {
+		t.Errorf("view:\n%s", view)
 	}
 }
 
@@ -338,19 +368,22 @@ func TestTerminalListNumberOrderAndBack(t *testing.T) {
 	if h.m.selectedTerminal != "term-old" {
 		t.Errorf("row one preselected: %q", h.m.selectedTerminal)
 	}
-	view := h.m.View().Content
-	for _, row := range []string{"> 1:zsh", "  2:nvim", "  3:api"} {
-		if !strings.Contains(view, row) {
+	view := plain(h.m)
+	for _, row := range []string{`#\s+NAME\s+STATUS\s+DIRECTORY`, `1\s+zsh\s+running\s+/home/u/work`, `2\s+nvim\s+exited \(1\)\s+/home/u/work`, `3\s+api\s+running\s+/home/u/work/api`} {
+		if !matches(row, view) {
 			t.Errorf("view lacks %q:\n%s", row, view)
 		}
+	}
+	if !highlighted(rawLine(h.m, "zsh")) || highlighted(rawLine(h.m, "nvim")) {
+		t.Errorf("row one not the highlighted row:\n%s", h.m.View().Content)
 	}
 	h.key("j")
 	h.key("enter")
 	if !strings.Contains(h.m.message, "2:nvim has exited with code 1") || len(h.exec.commands) != 0 {
 		t.Errorf("exited terminal: message %q, exec %v", h.m.message, h.exec.commands)
 	}
-	if !strings.Contains(h.m.View().Content, "exited (1)") {
-		t.Errorf("view:\n%s", h.m.View().Content)
+	if !strings.Contains(plain(h.m), "exited (1)") {
+		t.Errorf("view:\n%s", plain(h.m))
 	}
 	h.key("esc")
 	if h.m.screen != screenSpaces || h.m.selectedSpace != "spce-work" {
@@ -407,7 +440,7 @@ func TestDeleteConfirmations(t *testing.T) {
 	if diff := cmp.Diff(want, h.m.confirm, cmp.AllowUnexported(confirmation{})); diff != "" {
 		t.Fatalf("confirmation (-want +got):\n%s", diff)
 	}
-	if !strings.Contains(h.m.View().Content, "delete space work and its 3 terminals?") {
+	if !strings.Contains(plain(h.m), "delete space work and its 3 terminals?") || !strings.Contains(h.m.View().Content, newStyles(true).bold.Render("work")) {
 		t.Errorf("view:\n%s", h.m.View().Content)
 	}
 	h.key("n")
@@ -435,8 +468,8 @@ func TestDeleteConfirmations(t *testing.T) {
 	if h.m.confirm == nil || h.m.confirm.kind != "terminal" || h.m.confirm.name != "1:play" {
 		t.Fatalf("terminal confirmation = %+v", h.m.confirm)
 	}
-	if !strings.Contains(h.m.View().Content, "delete terminal 1:play?") {
-		t.Errorf("view:\n%s", h.m.View().Content)
+	if !strings.Contains(plain(h.m), "delete terminal 1:play?") {
+		t.Errorf("view:\n%s", plain(h.m))
 	}
 	h.client.terminals = terminals[:3]
 	h.key("y")
@@ -577,8 +610,8 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 		t.Error("return did not request a remeasure")
 	}
 	h.run(tea.WindowSizeMsg{Width: 100, Height: 40})
-	if h.m.height != 40 || h.m.selectedTerminal != "term-old" {
-		t.Errorf("after resize = height %d selected %q", h.m.height, h.m.selectedTerminal)
+	if h.m.width != 100 || h.m.height != 40 || h.m.selectedTerminal != "term-old" {
+		t.Errorf("after resize = %dx%d selected %q", h.m.width, h.m.height, h.m.selectedTerminal)
 	}
 	// The selected Terminal is gone on return: the adjacent row.
 	h.client.terminals = terminals[1:]
@@ -663,8 +696,11 @@ func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	h.client.err = errors.New("dial tcp: no route to host")
 	msgs := h.send(keyPress("enter"))
 	ended := h.send(msgs[0])
-	if h.m.reconnect == nil || !strings.Contains(h.m.message, "connection lost, reconnecting to 1:play") || !strings.Contains(h.m.View().Content, "waiting for 1:play") {
+	if h.m.reconnect == nil || !strings.Contains(h.m.message, "connection lost, reconnecting to 1:play") || !strings.Contains(plain(h.m), "waiting for 1:play") {
 		t.Fatalf("loss = reconnect %v message %q", h.m.reconnect, h.m.message)
+	}
+	if view := lines(h.m); view[len(view)-2] != "esc cancel" {
+		t.Errorf("reconnecting footer = %q", view[len(view)-2])
 	}
 	// The retry is modal: list keys are ignored until it ends.
 	h.key("j")
@@ -769,8 +805,8 @@ func TestHelpOverlay(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
 	h.key("?")
-	if !h.m.help || !strings.Contains(h.m.View().Content, "enter attach") || !strings.Contains(h.m.View().Content, "1-9 attach by number") {
-		t.Fatalf("help = %v view:\n%s", h.m.help, h.m.View().Content)
+	if !h.m.help || !matches(`enter\s+attach`, plain(h.m)) || !matches(`1-9\s+attach by #`, plain(h.m)) {
+		t.Fatalf("help = %v view:\n%s", h.m.help, plain(h.m))
 	}
 	h.key("1")
 	if h.m.help || h.m.selectedSpace != "spce-home" || len(h.exec.commands) != 0 {
@@ -836,5 +872,201 @@ func TestDigitAttachesByRowNumber(t *testing.T) {
 	h.key("1")
 	if h.m.confirm == nil || len(h.exec.commands) != 2 {
 		t.Errorf("digit in confirmation = confirm %v exec %v", h.m.confirm, h.exec.commands)
+	}
+}
+
+// The frame fills the terminal at any size: every line is exactly the
+// terminal's width, rows truncate rather than wrap, the selection stays
+// on screen, and a request in flight shows in the title bar.
+func TestFrameFitsTerminalAndTruncatesRows(t *testing.T) {
+	h := newHarness(t, "")
+	h.open()
+	h.run(tea.WindowSizeMsg{Width: 40, Height: 12})
+	raw := strings.Split(h.m.View().Content, "\n")
+	if len(raw) != 12 {
+		t.Fatalf("%d lines, want 12:\n%s", len(raw), plain(h.m))
+	}
+	for i, line := range raw {
+		if ansi.StringWidth(line) != 40 {
+			t.Errorf("line %d is %d wide: %q", i, ansi.StringWidth(line), ansi.Strip(line))
+		}
+	}
+	view := lines(h.m)
+	if !strings.HasPrefix(view[0], "╭ local ─") || !strings.HasSuffix(view[0], "╮") || !strings.HasPrefix(view[11], "╰") {
+		t.Errorf("frame:\n%s", plain(h.m))
+	}
+	if !strings.Contains(plain(h.m), "/home/…") {
+		t.Errorf("long directory not truncated:\n%s", plain(h.m))
+	}
+	// Two body lines: the header and one row, moved to the selection.
+	h.run(tea.WindowSizeMsg{Width: 40, Height: 9})
+	h.key("j")
+	h.key("j") // work
+	if view := plain(h.m); !strings.Contains(view, "work") || strings.Contains(view, "play") || !strings.Contains(view, "NAME") {
+		t.Errorf("window at height 9:\n%s", view)
+	}
+	h.send(keyPress("r"))
+	if view := lines(h.m); !h.m.loading || !strings.HasSuffix(view[0], " loading… ╮") {
+		t.Errorf("loading indicator: %q", view[0])
+	}
+	// Narrower than the title and the note together: the note wins,
+	// and nothing overflows.
+	for _, width := range []int{8, 12, 16} {
+		h.run(tea.WindowSizeMsg{Width: width, Height: 8})
+		for i, line := range strings.Split(h.m.View().Content, "\n") {
+			if ansi.StringWidth(line) != width {
+				t.Errorf("width %d line %d is %d wide: %q", width, i, ansi.StringWidth(line), ansi.Strip(line))
+			}
+		}
+	}
+	if view := lines(h.m); !strings.Contains(view[0], "loading…") {
+		t.Errorf("note lost at width 16: %q", view[0])
+	}
+}
+
+// Each screen's breadcrumb and footer, exactly; movement, enter, r,
+// and the digits never appear in a footer.
+func TestBreadcrumbsAndFooters(t *testing.T) {
+	h := newHarness(t, "")
+	h.open()
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 40})
+	check := func(breadcrumb, footer string) {
+		t.Helper()
+		view := lines(h.m)
+		if view[1] != breadcrumb || view[len(view)-2] != footer {
+			t.Errorf("breadcrumb %q footer %q, want %q and %q", view[1], view[len(view)-2], breadcrumb, footer)
+		}
+		for _, obvious := range []string{"j/k", "enter", "r refresh", "1-9"} {
+			if strings.Contains(footer, obvious) {
+				t.Errorf("footer %q names %q", footer, obvious)
+			}
+		}
+	}
+	check("spaces", "n new   d delete   ? help   q quit")
+	h.key("j")
+	h.key("d")
+	check("spaces", "y confirm   n/esc cancel")
+	h.key("esc")
+	h.key("j")
+	h.key("enter")
+	check("spaces › work  /home/u/work", "n new   d delete   esc back   ? help   q quit")
+	h.key("esc")
+	h.key("n")
+	h.key("C")
+	check("spaces › new space  /home/u/C▏", ". choose this directory   esc back   ? help")
+	h.key("?")
+	check("help", "any key to close")
+}
+
+// Status cells are coloured by status, failures in red and notices
+// plain, and the palette follows the terminal background.
+func TestStatusAndMessageColours(t *testing.T) {
+	h := newHarness(t, "")
+	h.client.terminals = append(h.client.terminals, api.Terminal{ID: "term-lost", Process: "ssh", SpaceID: "spce-work", Status: api.TerminalUnreachable, CreatedAt: t0.Add(2 * time.Hour)})
+	h.open()
+	h.key("j")
+	h.key("j")
+	h.key("enter")
+	st := newStyles(true)
+	for _, want := range []string{st.good.Render("running"), st.bad.Render("exited (1)"), st.warn.Render("unreachable")} {
+		if !strings.Contains(h.m.View().Content, want) {
+			t.Errorf("view lacks %q:\n%s", want, h.m.View().Content)
+		}
+	}
+	h.client.err = errors.New("boom")
+	h.key("r")
+	if !strings.Contains(h.m.View().Content, st.bad.Render("loading terminals: boom")) {
+		t.Errorf("failure not red:\n%s", h.m.View().Content)
+	}
+	h.m.notify("plain notice")
+	if line := rawLine(h.m, "plain notice"); strings.Contains(line, st.bad.Render("plain notice")) || !strings.Contains(line, " plain notice ") {
+		t.Errorf("notice styled: %q", line)
+	}
+	h.run(tea.BackgroundColorMsg{Color: color.White})
+	if h.m.dark || !strings.Contains(h.m.View().Content, newStyles(false).warn.Render("unreachable")) {
+		t.Errorf("light palette not applied (dark %v):\n%s", h.m.dark, h.m.View().Content)
+	}
+}
+
+// The help overlay lists every key and is the only place the versions
+// show: dim when equal, yellow when different, labelled for the target.
+// On a short terminal it scrolls with the movement keys instead of
+// being cut off.
+func TestHelpOverlayVersionsAndScroll(t *testing.T) {
+	h := newHarness(t, "")
+	h.open()
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 40})
+	h.key("?")
+	view := strings.Join(lines(h.m), "\n")
+	for _, group := range []string{
+		`everywhere\n.*\?\s+help\s+ctrl\+c\s+quit`,
+		`spaces\n.*↑/↓ j/k\s+move\s+enter\s+open\n.*n\s+new space\s+d\s+delete\n.*r\s+refresh\s+q\s+quit`,
+		`terminals\n.*↑/↓ j/k\s+move\s+enter\s+attach\n.*1-9\s+attach by #\s+ctrl-\\\s+detach\n.*n\s+new shell\s+d\s+delete\n.*esc h\s+back\s+r\s+refresh\n.*q\s+quit`,
+		`new space\n.*type\s+filter, or an absolute path\n.*↑/↓\s+move\s+ctrl\+p/n\s+move\n.*enter\s+descend\s+backspace up\n.*\.\s+choose\s+ctrl\+r\s+refresh\n.*esc\s+clear the field, then back`,
+		`confirm\n.*y\s+confirm\s+n esc\s+cancel`,
+		`reconnecting\n.*esc\s+cancel, back to terminals`,
+	} {
+		if !matches(group, view) {
+			t.Errorf("help lacks %q:\n%s", group, view)
+		}
+	}
+	st := newStyles(true)
+	if !strings.Contains(h.m.View().Content, st.dim.Render("client v1 · server v1")) {
+		t.Errorf("equal versions not dim:\n%s", h.m.View().Content)
+	}
+	h.key("esc")
+	h.m.serverVersion = "v2"
+	if strings.Contains(plain(h.m), "v2") || strings.Contains(plain(h.m), "v1") {
+		t.Errorf("version outside help:\n%s", plain(h.m))
+	}
+	h.key("?")
+	if !strings.Contains(h.m.View().Content, st.warn.Render("client v1 · server v2")) {
+		t.Errorf("mismatch not yellow:\n%s", h.m.View().Content)
+	}
+	h.key("x")
+	remote := newHarness(t, "devbox")
+	remote.open()
+	remote.run(tea.WindowSizeMsg{Width: 80, Height: 40})
+	remote.key("?")
+	if view := lines(remote.m); !strings.HasPrefix(view[0], "╭ devbox ") || !strings.Contains(plain(remote.m), "local v1 · remote v1") {
+		t.Errorf("remote help:\n%s", plain(remote.m))
+	}
+
+	// Five body lines: the help scrolls, the message line says so, and
+	// any key but movement still closes it.
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 12})
+	h.key("?")
+	body := func() []string { return lines(h.m)[3:8] }
+	if got := body(); got[0] != "everywhere" || lines(h.m)[9] != "↑/↓ j/k scroll · line 1 of 29" || lines(h.m)[10] != "any key to close" {
+		t.Fatalf("short help = body %q message %q footer %q", got, lines(h.m)[9], lines(h.m)[10])
+	}
+	h.key("j")
+	if got := body(); !h.m.help || !strings.HasPrefix(got[0], "?          help") {
+		t.Errorf("after j: help %v body %q", h.m.help, got)
+	}
+	for range 40 {
+		h.key("down")
+	}
+	if got := body(); got[4] != "client v1 · server v2" {
+		t.Errorf("scrolled to the end: %q", got)
+	}
+	h.key("k")
+	if got := body(); got[4] != "" || !h.m.help {
+		t.Errorf("after k: %q", got)
+	}
+	// Growing the terminal clamps the offset so k answers at once.
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 30})
+	if h.m.helpScroll != h.m.helpScrollLimit() || lines(h.m)[25] != "client v1 · server v2" {
+		t.Errorf("after growing: scroll %d limit %d line 25 %q", h.m.helpScroll, h.m.helpScrollLimit(), lines(h.m)[25])
+	}
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 12})
+	h.key("enter")
+	if h.m.help || h.m.screen != screenSpaces || len(h.exec.commands) != 0 {
+		t.Error("closing key was also applied to the list")
+	}
+	// Reopening starts at the top.
+	h.key("?")
+	if got := body(); got[0] != "everywhere" {
+		t.Errorf("reopened help: %q", got)
 	}
 }

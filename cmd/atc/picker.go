@@ -69,8 +69,8 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 // attaches through the local zmx namespace.
 func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 	ctx := cmd.Context()
-	// The skew warning would land on the picker's screen; its status
-	// line reports the same fact.
+	// The skew warning would land on the picker's screen; its help
+	// overlay reports the same fact.
 	client, baseURL, err := cli.NewClient(io.Discard)
 	if err != nil {
 		return err
