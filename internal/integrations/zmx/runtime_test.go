@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
 )
@@ -195,5 +196,54 @@ func TestSelectionMustMatchPinnedIdentity(t *testing.T) {
 	}
 	if rt.Available() {
 		t.Error("Available() = true for a non-pinned selection")
+	}
+}
+
+// An executable replaced after it was validated at load is caught on the
+// next resolution — availability does not stay true for altered bytes.
+func TestActiveRevalidatedAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	selFile := filepath.Join(t.TempDir(), "runtime.json")
+	path, sel := installed(t, dir, "0.6.0")
+	rt := newRuntimeWith(t, dir, selFile, &sel)
+	if _, err := rt.Executable(); err != nil {
+		t.Fatalf("Executable() = %v before tampering", err)
+	}
+	// Replace the bytes in place, keeping it a regular executable file.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Force a distinct mtime so the stat guard notices even on a coarse
+	// filesystem clock.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Executable(); err == nil || !strings.Contains(err.Error(), "became unusable") {
+		t.Fatalf("Executable() after tampering = %v, want an unusable refusal", err)
+	}
+	if rt.Available() {
+		t.Error("Available() = true after the executable was altered")
+	}
+}
+
+// Dropping the execute bit keeps the file regular with the same size and
+// mtime, so the stat fast path must not accept it.
+func TestActiveRejectedWhenExecBitCleared(t *testing.T) {
+	dir := t.TempDir()
+	selFile := filepath.Join(t.TempDir(), "runtime.json")
+	path, sel := installed(t, dir, "0.6.0")
+	rt := newRuntimeWith(t, dir, selFile, &sel)
+	if _, err := rt.Executable(); err != nil {
+		t.Fatalf("Executable() = %v before chmod", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Executable(); err == nil {
+		t.Fatal("Executable() accepted a non-executable file via the stat fast path")
+	}
+	if rt.Available() {
+		t.Error("Available() = true after the execute bit was cleared")
 	}
 }

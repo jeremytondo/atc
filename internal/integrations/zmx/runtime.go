@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
 )
@@ -126,6 +127,12 @@ type Runtime struct {
 	mu sync.Mutex
 	// active is the validated selection; nil while none is usable.
 	active *selection
+	// activeSize and activeMod are the active executable's size and
+	// modification time when its full identity was last verified. A later
+	// resolution re-hashes only when the file has changed, so tampering or
+	// replacement is caught without hashing megabytes on every inventory.
+	activeSize int64
+	activeMod  time.Time
 	// problem explains an unusable active runtime: an unreadable
 	// selection, an unsupported version, or a missing or damaged
 	// executable (the last is repaired at startup).
@@ -206,7 +213,30 @@ func (r *Runtime) load() {
 		r.problem, r.repairable = err, true
 		return
 	}
+	if info, err := os.Stat(sel.Executable); err == nil {
+		r.activeSize, r.activeMod = info.Size(), info.ModTime()
+	}
 	r.active = &sel
+}
+
+// checkActive confirms the active executable still carries the identity it
+// was validated with. Callers hold mu. The full hash runs only when the
+// file's size or modification time has changed since the last check, so a
+// replacement, truncation, or deletion is caught while an unchanged file
+// costs one stat.
+func (r *Runtime) checkActive() error {
+	info, err := os.Stat(r.active.Executable)
+	if err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() && info.Mode()&0o100 != 0 && info.Size() == r.activeSize && info.ModTime().Equal(r.activeMod) {
+		return nil
+	}
+	if err := validExecutable(r.active.Executable, r.active.SHA256); err != nil {
+		return err
+	}
+	r.activeSize, r.activeMod = info.Size(), info.ModTime()
+	return nil
 }
 
 // Executable returns the active runtime's validated executable, or the
@@ -218,7 +248,7 @@ func (r *Runtime) Executable() (string, error) {
 	if r.active == nil {
 		return "", r.unavailable()
 	}
-	if _, err := os.Stat(r.active.Executable); err != nil {
+	if err := r.checkActive(); err != nil {
 		return "", fmt.Errorf("active zmx %s became unusable: %w; restart the server (`atc server restart`) to reinstall it", r.active.Version, err)
 	}
 	return r.active.Executable, nil
@@ -282,8 +312,9 @@ func (r *Runtime) Report() (api.IntegrationRuntime, bool) {
 		status.Pending = true
 		return status, false
 	}
-	if _, err := os.Stat(r.active.Executable); err != nil {
-		// Recorded and validated at load, but the file has since gone.
+	if err := r.checkActive(); err != nil {
+		// Recorded and validated at load, but the file has since gone or
+		// no longer carries its verified identity.
 		status.Pending = true
 		status.Detail = fmt.Sprintf("active zmx %s became unusable: %v; restart the server (`atc server restart`) to reinstall it", r.active.Version, err)
 		return status, false

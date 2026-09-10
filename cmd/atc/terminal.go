@@ -25,7 +25,7 @@ func newTerminalCmd() *cobra.Command {
 		Short: "Create and manage persistent terminal sessions",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc terminal <create|get|list|update|delete|attach>")
+			return fmt.Errorf("usage: atc terminal <create|get|list|update|delete|attach|runtime>")
 		},
 	}
 	cmd.AddCommand(newTerminalCreateCmd(), newTerminalGetCmd(), newTerminalListCmd(),

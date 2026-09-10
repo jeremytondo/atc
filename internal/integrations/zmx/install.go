@@ -11,6 +11,7 @@ package zmx
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -78,6 +79,12 @@ func (r *Runtime) Install(ctx context.Context, version string) (string, error) {
 	target := filepath.Join(r.installDir, version)
 	executable := filepath.Join(target, executableName)
 	if err := validExecutable(executable, a.ExecutableSHA256); err == nil {
+		// Reused bytes are trusted, but the attribution beside them may
+		// have been removed or altered; restore it from the embedded copy
+		// without a download so a reused installation is never incomplete.
+		if err := ensureNotices(target); err != nil {
+			return "", err
+		}
 		return executable, nil
 	}
 	// Under the lock no install is in flight, so every staging directory
@@ -108,7 +115,7 @@ func (r *Runtime) Install(ctx context.Context, version string) (string, error) {
 	if err := checkVersion(ctx, staged, version, staging); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(staging, noticesName), notices, 0o600); err != nil {
+	if err := ensureNotices(staging); err != nil {
 		return "", err
 	}
 	// A damaged installation is replaced whole, never patched in place:
@@ -310,4 +317,24 @@ func reportedVersion(output string) string {
 		return fields[1]
 	}
 	return ""
+}
+
+// ensureNotices writes the embedded attribution into dir when it is absent
+// or altered, atomically. No download is ever needed — the notices ship in
+// the binary — so it can heal a reused installation as well as populate a
+// fresh one.
+func ensureNotices(dir string) error {
+	path := filepath.Join(dir, noticesName)
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, notices) {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, notices, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
