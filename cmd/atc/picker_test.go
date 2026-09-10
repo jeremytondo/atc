@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -160,7 +161,18 @@ func installFakeSSH(t *testing.T, stdout, stderr string, exit int) (argsFile str
 			t.Fatal(err)
 		}
 	}
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$FAKE_SSH_DIR/args\"\ncat \"$FAKE_SSH_DIR/stdout\"\ncat \"$FAKE_SSH_DIR/stderr\" >&2\nexit \"$FAKE_SSH_EXIT\"\n"
+	script := `#!/bin/sh
+if [ "$3" = "-O" ]; then
+  printf '%s\n' "$*" > "$FAKE_SSH_DIR/close-args"
+  rm -f "$2"
+  exit 0
+fi
+printf '%s\n' "$*" > "$FAKE_SSH_DIR/args"
+: > "$2"
+cat "$FAKE_SSH_DIR/stdout"
+cat "$FAKE_SSH_DIR/stderr" >&2
+exit "$FAKE_SSH_EXIT"
+`
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -184,8 +196,9 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(args)); got != "-- ws atc __bootstrap" {
-		t.Errorf("bootstrap ssh args = %q", got)
+	bootstrapArgs := strings.Fields(string(args))
+	if len(bootstrapArgs) != 15 || bootstrapArgs[0] != "-S" || !strings.HasSuffix(string(args), "-T -- ws atc __bootstrap\n") {
+		t.Fatalf("bootstrap ssh args = %q", args)
 	}
 	if !strings.Contains(stderr, "starting atc.server") {
 		t.Errorf("remote stderr not shown live: %q", stderr)
@@ -200,10 +213,13 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	if !strings.HasSuffix(cmd.Path, "/ssh") {
 		t.Errorf("attach executable = %q", cmd.Path)
 	}
-	want := []string{cmd.Args[0], "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
+	controlPath := bootstrapArgs[1]
+	want := []string{cmd.Args[0], "-S", controlPath, "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-tt", "-o", "LogLevel=ERROR", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("attach args (-want +got):\n%s", diff)
 	}
+	checkSSHClosed(t, argsFile, controlPath)
 	// The token stays in picker memory: not in the attach child's argv or
 	// environment, and not in this process's environment either.
 	for _, arg := range cmd.Args {
@@ -221,7 +237,7 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 func TestRootRemoteBootstrapFailureEndsLaunch(t *testing.T) {
 	forceTTY(t)
 	captured := capturePicker(t)
-	installFakeSSH(t, "", "tailnet exposure is not enabled on this machine: add `tailscale = true` to /home/u/.config/atc/config.toml\n", 1)
+	argsFile := installFakeSSH(t, "", "tailnet exposure is not enabled on this machine: add `tailscale = true` to /home/u/.config/atc/config.toml\n", 1)
 	_, stderr, err := runCLI(t, "--remote", "ws")
 	if err == nil || !strings.Contains(err.Error(), "bootstrap on ws failed") || !strings.Contains(err.Error(), "tailscale = true") {
 		t.Fatalf("err = %v", err)
@@ -232,9 +248,57 @@ func TestRootRemoteBootstrapFailureEndsLaunch(t *testing.T) {
 	if captured.Client != nil {
 		t.Error("picker opened after a failed bootstrap")
 	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkSSHClosed(t, argsFile, strings.Fields(string(args))[1])
 	if _, _, err := runCLI(t, "--remote", "ws\x07"); err == nil {
 		t.Error("target with a control character accepted")
 	}
+}
+
+func checkSSHClosed(t *testing.T, argsFile, controlPath string) {
+	t.Helper()
+	args, err := os.ReadFile(filepath.Join(filepath.Dir(argsFile), "close-args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-S", controlPath, "-O", "exit", "--", "ws"}
+	if diff := cmp.Diff(want, strings.Fields(string(args))); diff != "" {
+		t.Errorf("close args (-want +got):\n%s", diff)
+	}
+	if _, err := os.Stat(filepath.Dir(controlPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("private control directory remains: %v", err)
+	}
+}
+
+func TestRootRemoteClosesSSHAfterCancelledPicker(t *testing.T) {
+	forceTTY(t)
+	argsFile := installFakeSSH(t, `{"url":"https://ws.tailnet.ts.net:7331","token":"test","version":"v1"}`, "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previous := runPicker
+	t.Cleanup(func() { runPicker = previous })
+	controlPath := ""
+	runPicker = func(ctx context.Context, opts tui.Options) error {
+		cmd, err := opts.Attach(ctx, api.Terminal{ID: "term-test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		controlPath = cmd.Args[2]
+		if _, err := os.Stat(controlPath); err != nil {
+			t.Fatalf("connection closed before picker returned: %v", err)
+		}
+		cancel()
+		return ctx.Err()
+	}
+	root := newRootCmd()
+	root.SetArgs([]string{"--remote", "ws"})
+	if err := root.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled picker = %v", err)
+	}
+	checkSSHClosed(t, argsFile, controlPath)
 }
 
 func TestRemoteFlagIsRootOnlyAndBootstrapIsHidden(t *testing.T) {

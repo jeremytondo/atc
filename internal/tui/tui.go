@@ -704,6 +704,9 @@ func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 		return m, m.loadTerminals()
 	}
 	m.message = ""
+	// A return refresh may still be in flight when the user attaches
+	// again. Its result must not redraw stale state after this handoff.
+	m.seq++
 	return m, m.execProcess(cmd, func(err error) tea.Msg {
 		return attachEndedMsg{terminal: terminal, err: err}
 	})
@@ -727,7 +730,13 @@ func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
 	default:
 		m.fail(fmt.Sprintf("attachment to %s ended: %v", m.label(msg.terminal), msg.err))
 	}
-	return m, tea.Batch(requestWindowSize, m.loadTerminals())
+	// Keep the last list visible and usable while refreshing on return.
+	// A routine detach should neither flash a loading label nor make the
+	// next attachment wait for an API round trip. Explicit loads and
+	// mutations still use the loading gate; failures still reach the view.
+	refresh := m.loadTerminals()
+	m.loading = false
+	return m, tea.Batch(requestWindowSize, refresh)
 }
 
 func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {

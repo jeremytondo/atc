@@ -53,11 +53,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	}
 	opts := tui.Options{ClientVersion: version.String()}
 	if target != "" {
-		err = connectRemote(cmd, target, &opts)
-	} else {
-		err = connectLocal(cmd, &opts)
+		return runRemotePicker(cmd, target, opts)
 	}
-	if err != nil {
+	if err := connectLocal(cmd, &opts); err != nil {
 		return err
 	}
 	return runPicker(cmd.Context(), opts)
@@ -115,14 +113,15 @@ func connectLocal(cmd *cobra.Command, opts *tui.Options) error {
 	return nil
 }
 
-// connectRemote bootstraps over ssh and points the picker at the remote
-// server's tailnet URL with the token it returned, held in memory only.
-func connectRemote(cmd *cobra.Command, target string, opts *tui.Options) error {
-	ssh, err := remote.NewSSH()
+// runRemotePicker owns the private SSH connection for the whole run,
+// including cleanup after a bootstrap failure or cancellation.
+func runRemotePicker(cmd *cobra.Command, target string, opts tui.Options) (err error) {
+	ssh, err := remote.NewSSH(target)
 	if err != nil {
 		return err
 	}
-	bootstrap, err := ssh.Bootstrap(cmd.Context(), target, cmd.InOrStdin(), cmd.ErrOrStderr())
+	defer func() { err = errors.Join(err, ssh.Close()) }()
+	bootstrap, err := ssh.Bootstrap(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -130,8 +129,8 @@ func connectRemote(cmd *cobra.Command, target string, opts *tui.Options) error {
 	opts.Target = target
 	opts.ServerVersion = bootstrap.Version
 	opts.Attach = func(ctx context.Context, terminal api.Terminal) (*exec.Cmd, error) {
-		return ssh.AttachCommand(ctx, target, terminal.ID), nil
+		return ssh.AttachCommand(ctx, terminal.ID), nil
 	}
 	opts.TransportLoss = remote.IsTransportLoss
-	return nil
+	return runPicker(cmd.Context(), opts)
 }

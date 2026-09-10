@@ -2,10 +2,12 @@
 // (ATC-316): the launch-time bootstrap over plain OpenSSH that returns
 // the remote server's tailnet URL, bearer token, and version, and the
 // interactive attach command that hands the caller's TTY to a remote
-// terminal. SSH is used for exactly those two things; control traffic
-// rides the server's HTTPS tailnet exposure, nothing is forwarded, and
-// nothing is cached on disk. The target is any OpenSSH target and is
-// passed through unmodified beyond a control-character check.
+// terminal. Control traffic rides the server's HTTPS tailnet exposure;
+// credentials stay in memory. Bootstrap and attachments share a private
+// OpenSSH control socket, so switching sessions need not authenticate
+// again. Close shuts down only this picker's connection and removes its
+// socket directory. The target is any OpenSSH target and is passed
+// through unmodified beyond a control-character check.
 package remote
 
 import (
@@ -16,8 +18,11 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -49,16 +54,68 @@ const maxBootstrapOutput = 16 << 10
 // production, a scripted double in tests.
 type SSH struct {
 	executable string
+	target     string
+	controlDir string
 	run        func(*exec.Cmd) error
 }
 
-// NewSSH resolves the OpenSSH client on PATH.
-func NewSSH() (*SSH, error) {
+// NewSSH resolves OpenSSH and reserves a private control socket directory
+// for one target. The caller must Close it, including after bootstrap fails.
+func NewSSH(target string) (*SSH, error) {
+	if err := validateTarget(target); err != nil {
+		return nil, err
+	}
 	executable, err := exec.LookPath("ssh")
 	if err != nil {
 		return nil, errors.New("ssh executable not found on PATH; install an OpenSSH client to use --remote")
 	}
-	return &SSH{executable: executable, run: (*exec.Cmd).Run}, nil
+	// Both supported OS families provide /tmp. Keep the socket path short:
+	// macOS's per-user TMPDIR and nested test directories can exceed the
+	// Unix socket path limit. MkdirTemp creates an owner-only directory.
+	dir, err := os.MkdirTemp("/tmp", "atc-ssh-")
+	if err != nil {
+		return nil, fmt.Errorf("create private ssh socket directory: %w", err)
+	}
+	return &SSH{executable: executable, target: target, controlDir: dir, run: (*exec.Cmd).Run}, nil
+}
+
+func (s *SSH) controlPath() string { return filepath.Join(s.controlDir, "control") }
+
+// command reuses the bootstrap connection, or creates a new one if it
+// expired or the transport failed. Keepalives belong on the master too.
+// The idle lease bounds a leftover master's life if ATC is killed before
+// Close can run; an active attachment does not count as idle.
+func (s *SSH) command(ctx context.Context, options, command []string) *exec.Cmd {
+	args := []string{"-S", s.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"}
+	args = append(args, options...)
+	args = append(args, "--", s.target)
+	args = append(args, command...)
+	return exec.CommandContext(ctx, s.executable, args...)
+}
+
+// Close stops this picker's master even when the run context was cancelled.
+// An expired or never-started master needs no shutdown. Repeated calls are
+// harmless, and neither the user's control sockets nor another picker is
+// addressed. The bounded idle lease also covers a failed shutdown.
+func (s *SSH) Close() error {
+	var stopErr error
+	if _, err := os.Stat(s.controlPath()); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, s.executable, "-S", s.controlPath(), "-O", "exit", "--", s.target)
+		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+		cmd.WaitDelay = time.Second
+		if err := s.run(cmd); err != nil {
+			// The master can expire between Stat and the control request.
+			if _, statErr := os.Stat(s.controlPath()); !errors.Is(statErr, os.ErrNotExist) {
+				stopErr = fmt.Errorf("close private ssh connection: %w", err)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		stopErr = err
+	}
+	return errors.Join(stopErr, os.RemoveAll(s.controlDir))
 }
 
 // validateTarget rejects only control characters; anything else is
@@ -79,11 +136,8 @@ func validateTarget(target string) error {
 // behave as for any ssh invocation and the remote's progress is visible
 // live. Stdout is captured and decoded strictly. Any failure ends the
 // launch: there is no retry, the user re-runs the command.
-func (s *SSH) Bootstrap(ctx context.Context, target string, stdin io.Reader, stderr io.Writer) (Bootstrap, error) {
-	if err := validateTarget(target); err != nil {
-		return Bootstrap{}, err
-	}
-	cmd := exec.CommandContext(ctx, s.executable, "--", target, "atc", "__bootstrap")
+func (s *SSH) Bootstrap(ctx context.Context, stdin io.Reader, stderr io.Writer) (Bootstrap, error) {
+	cmd := s.command(ctx, []string{"-T"}, []string{"atc", "__bootstrap"})
 	cmd.Stdin = stdin
 	stdout := &cappedBuffer{limit: maxBootstrapOutput}
 	tail := &cappedBuffer{limit: 4 << 10}
@@ -93,12 +147,12 @@ func (s *SSH) Bootstrap(ctx context.Context, target string, stdin io.Reader, std
 		if ctx.Err() != nil {
 			return Bootstrap{}, ctx.Err()
 		}
-		return Bootstrap{}, bootstrapFailure(target, err, tail.String())
+		return Bootstrap{}, bootstrapFailure(s.target, err, tail.String())
 	}
 	if stdout.overflowed {
-		return Bootstrap{}, fmt.Errorf("bootstrap on %s printed more than %d bytes; expected one small JSON object", target, maxBootstrapOutput)
+		return Bootstrap{}, fmt.Errorf("bootstrap on %s printed more than %d bytes; expected one small JSON object", s.target, maxBootstrapOutput)
 	}
-	return decodeBootstrap(target, stdout.Bytes())
+	return decodeBootstrap(s.target, stdout.Bytes())
 }
 
 // bootstrapFailure names the failure a non-zero exit most likely means:
@@ -152,12 +206,12 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 // AttachCommand is the interactive channel: `ssh -tt <target> atc
 // terminal attach <id>`, run as a child so the picker takes the terminal
 // back when it exits. The keepalives bound transport-loss detection to
-// roughly fifteen seconds; connection sharing is deliberately left to the
-// user's SSH configuration. The remote attach uses the remote's own token
-// file; nothing secret rides argv or the environment.
-func (s *SSH) AttachCommand(ctx context.Context, target, terminalID string) *exec.Cmd {
-	return exec.CommandContext(ctx, s.executable, "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
-		"--", target, "atc", "terminal", "attach", terminalID)
+// roughly fifteen seconds. The remote attach uses the remote's own token
+// file; nothing secret rides argv or the environment. LogLevel=ERROR
+// keeps the routine "Connection to ... closed" line from flashing on
+// detach, while leaving errors and authentication prompts visible.
+func (s *SSH) AttachCommand(ctx context.Context, terminalID string) *exec.Cmd {
+	return s.command(ctx, []string{"-tt", "-o", "LogLevel=ERROR"}, []string{"atc", "terminal", "attach", terminalID})
 }
 
 // IsTransportLoss reports whether an attach child ended because the SSH

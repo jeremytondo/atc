@@ -108,8 +108,10 @@ to the picker). `atc --remote <target>` opens the same picker against the
 machine an ordinary ssh target names. The remote's server is started if
 needed and must expose the API on the tailnet (`tailscale = true` in its
 `config.toml`); control traffic uses that HTTPS endpoint, and ssh carries
-only the launch-time bootstrap and the interactive attach. Nothing is
-cached locally. Terminal rows are numbered per space and labelled by the
+only the launch-time bootstrap and the interactive attach. Each picker
+reuses its SSH connection through a private socket directory under `/tmp`,
+removed when it exits; credentials stay in memory. Terminal rows are
+numbered per space and labelled by the
 program in their foreground (`1:zsh`, `2:nvim`) or by a name you set
 (`3:api`); press a row's number to attach. `atc --help` and `?` inside the
 picker list the keys.
@@ -137,6 +139,15 @@ the binary keeps itself current:
 Releases are cut by the [Release workflow](.github/workflows/release.yml):
 `mise run release:patch|minor|major|dev`, `gh workflow run release.yml`, or
 the Actions "Run workflow" button.
+
+To publish a dev build from a pushed branch without merging it:
+
+```sh
+mise run release:dev --ref <branch>
+```
+
+Omitting `--ref` builds from the repository's default branch. Each dev
+publication replaces the shared rolling dev build.
 
 ## Building and testing
 
