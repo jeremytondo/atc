@@ -154,9 +154,11 @@ func decodeBootstrap(target string, out []byte) (Bootstrap, error) {
 // back when it exits. The keepalives bound transport-loss detection to
 // roughly fifteen seconds; connection sharing is deliberately left to the
 // user's SSH configuration. The remote attach uses the remote's own token
-// file; nothing secret rides argv or the environment.
+// file; nothing secret rides argv or the environment. LogLevel=ERROR
+// keeps the routine "Connection to ... closed" line from flashing on
+// detach, while leaving errors and authentication prompts visible.
 func (s *SSH) AttachCommand(ctx context.Context, target, terminalID string) *exec.Cmd {
-	return exec.CommandContext(ctx, s.executable, "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+	return exec.CommandContext(ctx, s.executable, "-tt", "-o", "LogLevel=ERROR", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
 		"--", target, "atc", "terminal", "attach", terminalID)
 }
 

@@ -638,6 +638,47 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 	}
 }
 
+func TestDetachRefreshKeepsViewAndAllowsImmediateAttach(t *testing.T) {
+	for _, target := range []string{"", "workstation"} {
+		t.Run("target="+target, func(t *testing.T) {
+			h := newHarness(t, target)
+			h.open()
+			h.key("j")
+			h.key("j")
+			h.key("enter") // work
+			before := h.m.View().Content
+			ended := h.send(keyPress("enter"))
+			refresh := h.send(ended[0])
+			if diff := cmp.Diff(before, h.m.View().Content); diff != "" {
+				t.Fatalf("view while return refresh is pending (-want +got):\n%s", diff)
+			}
+
+			// Reattach before the API reply arrives. The old reply must
+			// not replace the selection or report an obsolete failure.
+			ended = h.send(keyPress("3"))
+			if diff := cmp.Diff([][]string{{"/bin/attach", "term-old"}, {"/bin/attach", "term-new"}}, h.exec.commands); diff != "" {
+				t.Fatalf("immediate reattach (-want +got):\n%s", diff)
+			}
+			for _, msg := range refresh {
+				if loaded, ok := msg.(terminalsLoadedMsg); ok {
+					loaded.err = errors.New("obsolete refresh")
+					h.run(loaded)
+				}
+			}
+			if h.m.selectedTerminal != "term-new" || h.m.message != "" {
+				t.Fatalf("obsolete refresh changed selection %q or message %q", h.m.selectedTerminal, h.m.message)
+			}
+
+			// The next return still refreshes and exposes real failures.
+			h.client.err = errors.New("refresh unavailable")
+			h.run(ended[0])
+			if h.m.loading || !strings.Contains(h.m.message, "loading terminals: refresh unavailable") {
+				t.Errorf("failed refresh: loading %v message %q", h.m.loading, h.m.message)
+			}
+		})
+	}
+}
+
 func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()

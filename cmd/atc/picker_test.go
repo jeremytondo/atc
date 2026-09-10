@@ -200,7 +200,7 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	if !strings.HasSuffix(cmd.Path, "/ssh") {
 		t.Errorf("attach executable = %q", cmd.Path)
 	}
-	want := []string{cmd.Args[0], "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
+	want := []string{cmd.Args[0], "-tt", "-o", "LogLevel=ERROR", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("attach args (-want +got):\n%s", diff)
 	}

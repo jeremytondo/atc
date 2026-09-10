@@ -108,7 +108,7 @@ func TestBootstrapRejectsBadTargets(t *testing.T) {
 func TestAttachCommandAndTransportLoss(t *testing.T) {
 	ssh := &SSH{executable: "/usr/bin/ssh"}
 	cmd := ssh.AttachCommand(context.Background(), "ws", "term-abcde")
-	want := []string{"/usr/bin/ssh", "-tt", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
+	want := []string{"/usr/bin/ssh", "-tt", "-o", "LogLevel=ERROR", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("argv (-want +got):\n%s", diff)
 	}
