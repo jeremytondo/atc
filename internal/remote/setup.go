@@ -229,7 +229,7 @@ func render(target string, local Identity, d Discovery, plan Plan) string {
 	if goos, goarch, err := d.Platform(); err == nil {
 		platform = goos + "/" + goarch
 	}
-	fmt.Fprintf(&b, "%s (%s) needs setup before the picker can open:\n", target, platform)
+	fmt.Fprintf(&b, "%s (%s) needs setup before it can be used:\n", target, platform)
 	if in := plan.Install; in != nil {
 		release := "the current " + in.Channel + " build"
 		if in.Tag != "" && in.Channel != version.ChannelDev {
@@ -273,21 +273,71 @@ func render(target string, local Identity, d Discovery, plan Plan) string {
 	return b.String()
 }
 
+// prepared is what Run and Probe decide before any change: the plan,
+// with its release resolved, and the discovery it came from.
+type prepared struct {
+	plan      Plan
+	discovery Discovery
+}
+
 // Run performs the whole launch-time flow and returns a proven-ready
 // connection. Every run rediscovers: nothing from an earlier success is
 // trusted.
 func (s *Setup) Run(ctx context.Context) (Connection, error) {
 	target := s.SSH.target
-	discovery, err := s.SSH.Discover(ctx, s.Stderr)
+	p, err := s.prepare(ctx)
 	if err != nil {
 		return Connection{}, err
+	}
+	if p.plan.Changes() {
+		say(s.Stdout, "%s", render(target, s.Local, p.discovery, p.plan))
+		if !s.confirm(fmt.Sprintf("Apply these changes to %s? [y/N] ", target)) {
+			return Connection{}, fmt.Errorf("%w; nothing was changed on %s", ErrDeclined, target)
+		}
+	}
+	return s.apply(ctx, p)
+}
+
+// ErrSetupRequired marks a target that needs approved changes before it
+// can be used: the error's text is the plan as Run would show it before
+// its question.
+var ErrSetupRequired = errors.New("setup required")
+
+// Probe is the unattended launch (ATC-327): the same discovery and
+// decision as Run over the connection's batch mode, so nothing prompts
+// and nothing is applied. A ready target is bootstrapped and proven, as a
+// stopped compatible server's start never needed approval; one that needs
+// changes is reported as ErrSetupRequired, and one ssh cannot reach
+// without a person as ErrLoginRequired. Nothing is written to Stdin,
+// Stdout, or Stderr.
+func (s *Setup) Probe(ctx context.Context) (Connection, error) {
+	batch := *s
+	batch.SSH = s.SSH.Batch()
+	batch.Stdin, batch.Stdout, batch.Stderr = strings.NewReader(""), io.Discard, io.Discard
+	p, err := batch.prepare(ctx)
+	if err != nil {
+		return Connection{}, err
+	}
+	if p.plan.Changes() {
+		return Connection{}, fmt.Errorf("%w:\n%s", ErrSetupRequired, strings.TrimRight(render(s.SSH.target, s.Local, p.discovery, p.plan), "\n"))
+	}
+	return batch.apply(ctx, p)
+}
+
+// prepare discovers the target, inspects what it found, decides the
+// plan, and resolves the release an installation would use.
+func (s *Setup) prepare(ctx context.Context) (prepared, error) {
+	target := s.SSH.target
+	discovery, err := s.SSH.Discover(ctx, s.Stderr)
+	if err != nil {
+		return prepared{}, err
 	}
 	f := facts{discovery: discovery}
 	serviceExe := discovery.Unit
 	if executable := discovery.Executable(); executable != "" {
 		insp, err := s.SSH.Inspect(ctx, executable, s.Stderr)
 		if err != nil {
-			return Connection{}, predatesRemedy(target, executable, err)
+			return prepared{}, predatesRemedy(target, executable, err)
 		}
 		f.found = &insp
 		if insp.Server.Executable != "" {
@@ -301,7 +351,7 @@ func (s *Setup) Run(ctx context.Context) (Connection, error) {
 		service, err := s.SSH.Inspect(ctx, serviceExe, s.Stderr)
 		switch {
 		case errors.Is(err, ErrPredatesSetup):
-			return Connection{}, predatesRemedy(target, serviceExe, err)
+			return prepared{}, predatesRemedy(target, serviceExe, err)
 		case err != nil:
 			say(s.Stderr, "note: the server on %s is registered with %s, which could not be inspected (%v); it is left alone\n", target, serviceExe, err)
 		default:
@@ -310,28 +360,31 @@ func (s *Setup) Run(ctx context.Context) (Connection, error) {
 	}
 	plan, err := decide(target, s.Local, f)
 	if err != nil {
-		return Connection{}, err
+		return prepared{}, err
 	}
 	goos, goarch, _ := discovery.Platform()
 	if in := plan.Install; in != nil {
 		tag, err := s.Releases.Latest(ctx, in.Channel, goos, goarch)
 		if err != nil {
-			return Connection{}, err
+			return prepared{}, err
 		}
 		if in.Current != nil && tag == in.Current.Version {
-			return Connection{}, fmt.Errorf("%s already runs the latest %s release (%s), which is not on this atc's protocol %d; publish a compatible %s release, or update this machine to match, then rerun", target, in.Channel, tag, s.Local.Protocol, in.Channel)
+			return prepared{}, fmt.Errorf("%s already runs the latest %s release (%s), which is not on this atc's protocol %d; publish a compatible %s release, or update this machine to match, then rerun", target, in.Channel, tag, s.Local.Protocol, in.Channel)
 		}
 		if in.Current != nil && in.Channel == version.ChannelStable && olderRelease(tag, in.Current.Version) {
-			return Connection{}, fmt.Errorf("the latest stable release (%s) is older than the %s on %s; nothing is downgraded — publish a newer compatible release, or update it there by hand, then rerun", tag, in.Current.Version, target)
+			return prepared{}, fmt.Errorf("the latest stable release (%s) is older than the %s on %s; nothing is downgraded — publish a newer compatible release, or update it there by hand, then rerun", tag, in.Current.Version, target)
 		}
 		in.Tag = tag
 	}
-	if plan.Changes() {
-		say(s.Stdout, "%s", render(target, s.Local, discovery, plan))
-		if !s.confirm(fmt.Sprintf("Apply these changes to %s? [y/N] ", target)) {
-			return Connection{}, fmt.Errorf("%w; nothing was changed on %s", ErrDeclined, target)
-		}
-	}
+	return prepared{plan: plan, discovery: discovery}, nil
+}
+
+// apply carries out an approved plan, bootstraps the server, and proves
+// the connection from here.
+func (s *Setup) apply(ctx context.Context, p prepared) (Connection, error) {
+	target := s.SSH.target
+	plan := p.plan
+	goos, goarch, _ := p.discovery.Platform()
 	installed := ""
 	if plan.Install != nil {
 		insp, err := s.install(ctx, target, goos, goarch, plan.Executable, *plan.Install)

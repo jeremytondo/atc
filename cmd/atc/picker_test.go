@@ -37,6 +37,14 @@ func capturePicker(t *testing.T) *tui.Options {
 	return captured
 }
 
+func connectionNames(opts tui.Options) []string {
+	names := make([]string, len(opts.Connections))
+	for i, c := range opts.Connections {
+		names[i] = c.Name
+	}
+	return names
+}
+
 func TestRootWithoutTTYPrintsUsageAndFails(t *testing.T) {
 	captured := capturePicker(t)
 	stdout, _, err := runCLI(t)
@@ -46,7 +54,7 @@ func TestRootWithoutTTYPrintsUsageAndFails(t *testing.T) {
 	if !strings.Contains(stdout, "Usage:") {
 		t.Errorf("stdout = %q, want usage", stdout)
 	}
-	if captured.Client != nil {
+	if captured.Connections != nil {
 		t.Error("picker opened without a TTY")
 	}
 }
@@ -54,6 +62,7 @@ func TestRootWithoutTTYPrintsUsageAndFails(t *testing.T) {
 func TestRootOpensLocalPicker(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	startTestServer(t)
 	forceTTY(t)
 	captured := capturePicker(t)
@@ -65,19 +74,29 @@ func TestRootOpensLocalPicker(t *testing.T) {
 	if _, _, err := runCLI(t); err != nil {
 		t.Fatal(err)
 	}
+	if diff := cmp.Diff([]string{"Local"}, connectionNames(*captured)); diff != "" {
+		t.Fatalf("connections (-want +got):\n%s", diff)
+	}
+	if captured.ClientVersion != version.String() || !captured.Connections[0].Local || captured.Open == nil || captured.Save == nil {
+		t.Errorf("options = %+v", *captured)
+	}
+	session, err := captured.Connections[0].Connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if started {
 		t.Error("a healthy server was started again")
 	}
-	if captured.Target != "" || captured.ServerVersion != "v0.0.0-test" || captured.ClientVersion != version.String() || captured.TransportLoss != nil {
-		t.Errorf("options = target %q server %q client %q transportLoss set %v", captured.Target, captured.ServerVersion, captured.ClientVersion, captured.TransportLoss != nil)
+	if session.ServerVersion != "v0.0.0-test" || session.TransportLoss != nil {
+		t.Errorf("session = server %q transportLoss set %v", session.ServerVersion, session.TransportLoss != nil)
 	}
-	spaces, err := captured.Client.Spaces(context.Background())
+	spaces, err := session.Client.Spaces(context.Background())
 	if err != nil || len(spaces) != 1 || !spaces[0].IsDefault {
 		t.Errorf("picker client Spaces = %+v, %v; want the Default space", spaces, err)
 	}
 	// The private state has no managed zmx runtime selected. The picker
 	// learns why per attach attempt, instead of the launch failing.
-	if _, err := captured.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}); err == nil || !strings.Contains(err.Error(), "zmx") {
+	if _, err := session.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}); err == nil || !strings.Contains(err.Error(), "zmx") {
 		t.Errorf("attach without zmx = %v", err)
 	}
 }
@@ -92,8 +111,8 @@ func TestRootRefusesRemoteATCServerWithoutRemoteFlag(t *testing.T) {
 	}
 }
 
-// A stopped local server is started through the lifecycle, and the
-// picker opens once it answers.
+// A stopped local server is started through the lifecycle when Local
+// connects, and the session opens once it answers.
 func TestRootStartsStoppedLocalServer(t *testing.T) {
 	forceTTY(t)
 	captured := capturePicker(t)
@@ -144,11 +163,77 @@ func TestRootStartsStoppedLocalServer(t *testing.T) {
 	if _, _, err := runCLI(t); err != nil {
 		t.Fatal(err)
 	}
+	if startedWith.Config.Port != 0 {
+		t.Fatal("the server was started before the picker opened")
+	}
+	session, err := captured.Connections[0].Connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if startedWith.Config.Port != port {
 		t.Errorf("lifecycle started with port %d, want %d", startedWith.Config.Port, port)
 	}
-	if captured.ServerVersion != "v0.0.0-started" {
-		t.Errorf("picker opened against %q", captured.ServerVersion)
+	if session.ServerVersion != "v0.0.0-started" {
+		t.Errorf("session opened against %q", session.ServerVersion)
+	}
+}
+
+// A plain launch opens every saved connection beside Local, offers the
+// ssh configuration's aliases to Add, and saves choices to the
+// connections file. Nothing is saved by a launch itself.
+func TestRootOpensSavedConnections(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configHome := filepath.Join(home, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	startTestServer(t)
+	forceTTY(t)
+	captured := capturePicker(t)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte("Host ws\n  HostName ws.example\nHost devbox\nHost *.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connectionsFile := filepath.Join(configHome, "atc", "connections.json")
+
+	if _, _, err := runCLI(t); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"Local"}, connectionNames(*captured)); diff != "" {
+		t.Errorf("first launch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"ws", "devbox"}, captured.Aliases); diff != "" {
+		t.Errorf("aliases (-want +got):\n%s", diff)
+	}
+	if _, err := os.Stat(connectionsFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a launch wrote the connections file: %v", err)
+	}
+	// The picker saves a choice; the next launch opens it.
+	if err := captured.Save([]string{"ws"}); err != nil {
+		t.Fatal(err)
+	}
+	if saved, err := remote.LoadSaved(connectionsFile); err != nil || !cmp.Equal(saved, []string{"ws"}) {
+		t.Errorf("saved = %v, %v", saved, err)
+	}
+	if _, _, err := runCLI(t); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"Local", "ws"}, connectionNames(*captured)); diff != "" {
+		t.Errorf("second launch (-want +got):\n%s", diff)
+	}
+	if captured.Connections[1].Local {
+		t.Error("a saved remote is marked Local")
+	}
+	// Opened connectors are the same kind as the saved ones; nothing
+	// touches ssh until a connection is attempted.
+	if c, ok := captured.Open("devbox").(*remoteConnector); !ok || c.target != "devbox" || c.ssh != nil {
+		t.Errorf("Open(devbox) = %#v", captured.Open("devbox"))
+	}
+	if err := captured.Connections[1].Connector.Close(); err != nil {
+		t.Errorf("closing an unopened connection: %v", err)
 	}
 }
 
@@ -160,6 +245,10 @@ type fakeRemote struct {
 	bootstrap  string // stdout of the bootstrap command
 	stderr     string // stderr of the bootstrap command
 	exit       int    // exit code of the bootstrap command
+	// sshErr and sshExit make every command fail the way ssh itself
+	// does, before anything runs on the target.
+	sshErr  string
+	sshExit int
 }
 
 // readyRemote is a target that needs nothing: compatible executable on
@@ -191,7 +280,7 @@ func installFakeSSH(t *testing.T, target fakeRemote) (argsFile string) {
 	}
 	// The scripted output lives in files, not the environment: the test
 	// checks that the token never reaches this process's environment.
-	for name, content := range map[string]string{"discovery": target.discovery, "inspection": string(inspection), "stdout": target.bootstrap, "stderr": target.stderr} {
+	for name, content := range map[string]string{"discovery": target.discovery, "inspection": string(inspection), "stdout": target.bootstrap, "stderr": target.stderr, "ssh-err": target.sshErr} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -201,6 +290,10 @@ if [ "$3" = "-O" ]; then
   printf '%s\n' "$*" > "$FAKE_SSH_DIR/close-args"
   rm -f "$2"
   exit 0
+fi
+if [ "$FAKE_SSH_EXIT_ALL" != "0" ]; then
+  cat "$FAKE_SSH_DIR/ssh-err" >&2
+  exit "$FAKE_SSH_EXIT_ALL"
 fi
 : > "$2"
 case "$*" in
@@ -221,6 +314,7 @@ exit 2
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_SSH_DIR", dir)
 	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(target.exit))
+	t.Setenv("FAKE_SSH_EXIT_ALL", strconv.Itoa(target.sshExit))
 	return argsFile
 }
 
@@ -232,10 +326,14 @@ func verifyRemote(t *testing.T, err error) {
 	t.Cleanup(func() { verifyRemoteHealth = prev })
 }
 
+// `atc --remote` keeps its single-machine behavior: the guided setup runs
+// on the plain terminal, the picker opens on that one proven machine, and
+// nothing is saved.
 func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	forceTTY(t)
 	captured := capturePicker(t)
 	verifyRemote(t, nil)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	const token = "atc_remote-secret-token"
 	argsFile := installFakeSSH(t, readyRemote(token))
 
@@ -257,10 +355,22 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	if strings.Contains(stdout, "[y/N]") {
 		t.Errorf("a ready target was asked to approve changes:\n%s", stdout)
 	}
-	if captured.Target != "ws" || captured.ServerVersion != "v9.9.9" || captured.TransportLoss == nil || captured.Client == nil {
-		t.Errorf("options = target %q server %q transportLoss set %v client %v", captured.Target, captured.ServerVersion, captured.TransportLoss != nil, captured.Client)
+	if diff := cmp.Diff([]string{"ws"}, connectionNames(*captured)); diff != "" {
+		t.Fatalf("connections (-want +got):\n%s", diff)
 	}
-	cmd, err := captured.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning})
+	if captured.Aliases != nil || captured.Save != nil || captured.Open != nil || captured.Connections[0].Local {
+		t.Errorf("single-machine picker manages connections: %+v", *captured)
+	}
+	// The picker's first attempt gets the session setup proved; no
+	// second probe runs.
+	session, err := captured.Connections[0].Connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ServerVersion != "v9.9.9" || session.TransportLoss == nil || session.Client == nil {
+		t.Errorf("session = server %q transportLoss set %v client %v", session.ServerVersion, session.TransportLoss != nil, session.Client)
+	}
+	cmd, err := session.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +379,7 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 	}
 	controlPath := bootstrapArgs[1]
 	// The attach runs the executable discovery found, not a PATH lookup.
-	want := []string{cmd.Args[0], "-S", controlPath, "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+	want := []string{cmd.Args[0], "-S", controlPath, "-o", "ControlMaster=auto", "-o", "ControlPersist=8h",
 		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-tt", "-o", "LogLevel=ERROR", "--", "ws", "/home/u/.local/bin/atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("attach args (-want +got):\n%s", diff)
@@ -287,6 +397,9 @@ func TestRootRemoteBootstrapsOverSSH(t *testing.T) {
 			t.Errorf("token in environment: %s", kv)
 		}
 	}
+	if saved, err := remote.LoadSaved(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "atc", "connections.json")); err != nil || saved != nil {
+		t.Errorf("--remote saved %v, %v", saved, err)
+	}
 }
 
 func TestRootRemoteBootstrapFailureEndsLaunch(t *testing.T) {
@@ -302,7 +415,7 @@ func TestRootRemoteBootstrapFailureEndsLaunch(t *testing.T) {
 	if !strings.Contains(stderr, "tailnet exposure is not enabled") {
 		t.Errorf("remote stderr not shown: %q", stderr)
 	}
-	if captured.Client != nil {
+	if captured.Connections != nil {
 		t.Error("picker opened after a failed bootstrap")
 	}
 	args, err := os.ReadFile(argsFile)
@@ -340,7 +453,11 @@ func TestRootRemoteClosesSSHAfterCancelledPicker(t *testing.T) {
 	t.Cleanup(func() { runPicker = previous })
 	controlPath := ""
 	runPicker = func(ctx context.Context, opts tui.Options) error {
-		cmd, err := opts.Attach(ctx, api.Terminal{ID: "term-test"})
+		session, err := opts.Connections[0].Connector.Connect(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd, err := session.Attach(ctx, api.Terminal{ID: "term-test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -357,6 +474,82 @@ func TestRootRemoteClosesSSHAfterCancelledPicker(t *testing.T) {
 		t.Fatalf("cancelled picker = %v", err)
 	}
 	checkSSHClosed(t, argsFile, controlPath)
+}
+
+// A saved connection's unattended attempt runs the same discovery and
+// bootstrap over batch-mode ssh, applying nothing; the interactive setup
+// then applies what the machine needs on the streams the picker hands it.
+func TestRemoteConnectorConnectsWithoutAPerson(t *testing.T) {
+	verifyRemote(t, nil)
+	argsFile := installFakeSSH(t, readyRemote("atc_secret"))
+	connector := newRemoteConnector("ws")
+	session, err := connector.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), " -o BatchMode=yes -o ConnectTimeout=15 -T -- ws /home/u/.local/bin/atc __remote bootstrap") {
+		t.Errorf("unattended bootstrap args = %q", args)
+	}
+	if session.ServerVersion != "v9.9.9" || session.TransportLoss == nil {
+		t.Errorf("session = %+v", session)
+	}
+	cmd, err := session.Attach(context.Background(), api.Terminal{ID: "term-1"})
+	if err != nil || strings.Contains(strings.Join(cmd.Args, " "), "BatchMode") {
+		t.Errorf("attach = %v, %v; want an interactive command", cmd.Args, err)
+	}
+	if err := connector.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkSSHClosed(t, argsFile, cmd.Args[2])
+
+	// A target needing changes is reported with its plan, never changed;
+	// the interactive setup applies them after the person's answer.
+	stale := readyRemote("atc_secret")
+	stale.inspection.Server.Protocol, stale.inspection.Server.Healthy = api.Protocol+1, false
+	installFakeSSH(t, stale)
+	connector = newRemoteConnector("ws")
+	_, err = connector.Connect(context.Background())
+	if !errors.Is(err, tui.ErrSetupRequired) || !strings.Contains(err.Error(), "restart it") || strings.Contains(err.Error(), "setup required: setup required") {
+		t.Errorf("stale server = %v", err)
+	}
+	var stdout, stderr strings.Builder
+	session, err = connector.Setup(context.Background(), strings.NewReader("y\n"), &stdout, &stderr)
+	if err != nil || session.ServerVersion != "v9.9.9" {
+		t.Fatalf("Setup = %+v, %v\n%s", session, err, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[y/N]") || !strings.Contains(stderr.String(), "starting atc.server") {
+		t.Errorf("setup streams: stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	_ = connector.Close()
+}
+
+// classify maps the remote package's outcomes onto the picker's actions
+// and keeps the remote package's words.
+func TestClassifyRemoteOutcomes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err    error
+		login  bool
+		update bool
+	}{
+		"login":       {err: fmt.Errorf("ssh to ws %w: Permission denied", remote.ErrLoginRequired), login: true},
+		"setup":       {err: fmt.Errorf("%w:\nws needs setup", remote.ErrSetupRequired), update: true},
+		"declined":    {err: fmt.Errorf("%w; nothing was changed on ws", remote.ErrDeclined), update: true},
+		"unreachable": {err: errors.New("ssh to ws failed (exit 255): Connection refused")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := classify(tc.err)
+			if errors.Is(got, tui.ErrLoginRequired) != tc.login || errors.Is(got, tui.ErrSetupRequired) != tc.update || !errors.Is(got, tc.err) {
+				t.Errorf("classify(%v) = %v", tc.err, got)
+			}
+			if got.Error() != tc.err.Error() {
+				t.Errorf("classify changed the words: %q", got.Error())
+			}
+		})
+	}
 }
 
 func TestRemoteFlagIsRootOnlyAndBootstrapIsHidden(t *testing.T) {

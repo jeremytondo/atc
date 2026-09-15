@@ -289,7 +289,7 @@ func TestDecide(t *testing.T) {
 
 func TestRenderPlan(t *testing.T) {
 	fresh := Plan{Executable: "/home/u/.local/bin/atc", Install: &Install{Channel: "stable", Tag: "v0.3.1"}, EnableTailscale: true}
-	want := "ws (linux/amd64) needs setup before the picker can open:\n" +
+	want := "ws (linux/amd64) needs setup before it can be used:\n" +
 		"  atc: not installed; install v0.3.1 (stable) to /home/u/.local/bin/atc\n" +
 		"  tailscale: enable `tailscale = true` in ATC's config.toml (unless already enabled)\n" +
 		"  server: start it with /home/u/.local/bin/atc\n" +
@@ -301,7 +301,7 @@ func TestRenderPlan(t *testing.T) {
 		Install: &Install{Channel: "dev", Tag: "dev", Current: &Executable{Path: "/home/u/.local/bin/atc", Version: "v0.2.1-dev.abc1234", Channel: "dev", Protocol: 6}},
 		Restart: true, Server: Server{Responding: true, Version: "v0.2.1-dev.abc1234", Protocol: 6},
 		Notes: []string{"atc on ws is at /home/u/.local/bin/atc, which is not on its non-interactive PATH; it is used directly"}}
-	want = "ws (linux/amd64) needs setup before the picker can open:\n" +
+	want = "ws (linux/amd64) needs setup before it can be used:\n" +
 		"  atc: v0.2.1-dev.abc1234, dev, protocol 6 at /home/u/.local/bin/atc; update it to the current dev build, this atc's protocol 7\n" +
 		"  server: running v0.2.1-dev.abc1234 (protocol 6); restart it so it runs /home/u/.local/bin/atc — terminals keep running, active agent turns are interrupted\n" +
 		"note: atc on ws is at /home/u/.local/bin/atc, which is not on its non-interactive PATH; it is used directly\n"
@@ -309,7 +309,7 @@ func TestRenderPlan(t *testing.T) {
 		t.Errorf("update (-want +got):\n%s", diff)
 	}
 	exposure := Plan{Executable: "/home/u/.local/bin/atc", EnableTailscale: true, Restart: true, TailscaleFlag: true, Server: Server{Responding: true, Healthy: true, Version: "v0.3.0", Protocol: 7}}
-	want = "ws (linux/amd64) needs setup before the picker can open:\n" +
+	want = "ws (linux/amd64) needs setup before it can be used:\n" +
 		"  tailscale: enable `tailscale = true` in ATC's config.toml\n" +
 		"  server: running v0.3.0 (protocol 7); restart it so it exposes the API on the tailnet — terminals keep running, active agent turns are interrupted\n"
 	if diff := cmp.Diff(want, render("ws", local, linux, exposure)); diff != "" {
@@ -349,6 +349,7 @@ type fakeHost struct {
 	bootstrapErr string
 
 	commands       [][]string
+	argvs          [][]string
 	stagedBytes    string
 	promoted       []string
 	removed        []string
@@ -368,6 +369,7 @@ func (h *fakeHost) run(cmd *exec.Cmd) error {
 	}
 	words := cmd.Args[sep+2:]
 	h.commands = append(h.commands, words)
+	h.argvs = append(h.argvs, cmd.Args)
 	fail := func(stderr string, code int) error {
 		_, _ = io.WriteString(cmd.Stderr, stderr+"\n")
 		return scriptedExit(code)
@@ -750,5 +752,87 @@ func TestRunInspectsTheServersOwnExecutable(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "could not be inspected") {
 		t.Errorf("missing unit executable not noted: %q", stderr.String())
+	}
+}
+
+// Probe is the unattended launch (ATC-327): the same decision as Run
+// over batch-mode ssh, applying nothing. A ready target is bootstrapped
+// and proven; one that needs changes reports the plan; one ssh cannot
+// reach without a person reports that.
+func TestProbeConnectsReadyTargetsAndReportsTheRest(t *testing.T) {
+	host := &fakeHost{
+		discovery:   "os=Linux\narch=x86_64\nhome=/home/u\npath=/home/u/.local/bin/atc\n",
+		inspections: map[string]Inspection{"/home/u/.local/bin/atc": compatible()},
+		bootstrap:   ready,
+	}
+	s, out := newSetup(t, host, &fakeReleases{}, "y\n")
+	got, err := s.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe = %v", err)
+	}
+	if diff := cmp.Diff(Connection{Bootstrap: ready, Executable: "/home/u/.local/bin/atc"}, got); diff != "" {
+		t.Errorf("Connection (-want +got):\n%s", diff)
+	}
+	if out.Len() != 0 {
+		t.Errorf("an unattended probe wrote to stdout: %q", out.String())
+	}
+	for _, argv := range host.argvs {
+		if !strings.Contains(strings.Join(argv, " "), "-o BatchMode=yes -o ConnectTimeout=15 -T -- ws") {
+			t.Errorf("command not in batch mode: %v", argv)
+		}
+	}
+	if len(host.bootstrapFlags) != 0 {
+		t.Errorf("bootstrap flags %v; want a plain start", host.bootstrapFlags)
+	}
+
+	// Changes are reported as the plan, and nothing runs but discovery.
+	host = &fakeHost{
+		discovery: "os=Linux\narch=x86_64\nhome=/home/u\npath=/home/u/.local/bin/atc\n",
+		inspections: map[string]Inspection{"/home/u/.local/bin/atc": with(func(i *Inspection) {
+			i.Server.Version, i.Server.Protocol, i.Server.Healthy = "v0.2.0", localProtocol-1, false
+		})},
+		bootstrap: ready,
+	}
+	s, _ = newSetup(t, host, &fakeReleases{}, "y\n")
+	_, err = s.Probe(context.Background())
+	if !errors.Is(err, ErrSetupRequired) {
+		t.Fatalf("stale server = %v, want ErrSetupRequired", err)
+	}
+	for _, want := range []string{"setup required:\nws (linux/amd64) needs setup", "server: running v0.2.0 (protocol 6); restart it so it runs /home/u/.local/bin/atc", "terminals keep running, active agent turns are interrupted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want containing %q", err, want)
+		}
+	}
+	if host.bootstrapFlags != nil || host.configured || host.promoted != nil {
+		t.Errorf("a probe changed the target: bootstrap %v configured %v promoted %v", host.bootstrapFlags, host.configured, host.promoted)
+	}
+
+	// A fresh installation needs approval too; the release is resolved
+	// for the plan but never fetched.
+	releases := &fakeReleases{tags: map[string]string{"stable": "v0.3.1"}, bytes: "ELF"}
+	s, _ = newSetup(t, &fakeHost{discovery: "os=Linux\narch=x86_64\nhome=/home/u\n"}, releases, "")
+	if _, err := s.Probe(context.Background()); !errors.Is(err, ErrSetupRequired) || !strings.Contains(err.Error(), "install v0.3.1 (stable)") || len(releases.fetched) != 0 {
+		t.Errorf("fresh target = %v, fetched %v", err, releases.fetched)
+	}
+}
+
+func TestLoginRequiredIsRecognised(t *testing.T) {
+	for stderr, want := range map[string]bool{
+		"u@ws: Permission denied (publickey,password).\n":                 true,
+		"Host key verification failed.\n":                                 true,
+		"Received disconnect: Too many authentication failures\n":         true,
+		"ssh: connect to host ws port 22: Connection refused\n":           false,
+		"ssh: Could not resolve hostname ws: Name or service not known\n": false,
+	} {
+		err := remoteFailure("ws", "discovery", scriptedExit(255), stderr)
+		if errors.Is(err, ErrLoginRequired) != want {
+			t.Errorf("%q: %v (login required %v), want %v", stderr, err, !want, want)
+		}
+		if !strings.Contains(err.Error(), strings.TrimSpace(stderr)) {
+			t.Errorf("%q: reason lost in %v", stderr, err)
+		}
+	}
+	if err := remoteFailure("ws", "inspection", scriptedExit(1), "Permission denied\n"); errors.Is(err, ErrLoginRequired) {
+		t.Errorf("a command's own refusal read as a login: %v", err)
 	}
 }

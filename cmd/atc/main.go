@@ -1,7 +1,8 @@
 // Command atc is the ATC command-line interface. It is the single entrypoint
 // for the product: client commands and the server lifecycle both live under
 // this binary, per the ATC-246 layout. The command tree is Cobra-based; bare
-// `atc` opens the picker (ATC-316), locally or with --remote over ssh.
+// `atc` opens the picker (ATC-316, ATC-327) over the local server and the
+// saved remote connections, or one machine with --remote over ssh.
 package main
 
 import (
@@ -100,13 +101,16 @@ func newRootCmd() *cobra.Command {
 		Short: "The ATC terminal client and server",
 		Long: `atc is the ATC terminal client and server.
 
-Bare ` + "`atc`" + ` opens the picker: choose a space, then a terminal, and attach to
-it (ctrl-\ detaches back to the picker). ` + "`atc --remote <target>`" + ` opens
-the same picker against the machine an ssh target names. If that machine
-needs atc installed or updated, its tailscale setting enabled, or its
-server restarted, the changes are shown and applied after one
-confirmation; a ready machine connects without one, and a stopped
-compatible server is started without one.
+Bare ` + "`atc`" + ` opens the picker: one list of the spaces on this machine and on
+every saved remote connection; choose a space, then a terminal, and attach
+to it (ctrl-\ detaches back to the picker). Press c for the connections
+screen, which adds remote machines from the Host aliases in ~/.ssh/config,
+shows each connection's state, and runs the setup a machine needs.
+` + "`atc --remote <target>`" + ` opens the picker on one machine an ssh target
+names, without saving it. If a machine needs atc installed or updated,
+its tailscale setting enabled, or its server restarted, the changes are
+shown and applied after one confirmation; a ready machine connects
+without one, and a stopped compatible server is started without one.
 
 For ` + "`atc server run`" + `, configuration precedence is:
   flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
