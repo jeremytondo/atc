@@ -200,9 +200,10 @@ func (s *Service) Run(ctx context.Context) {
 //	absent without evidence           → missing
 //
 // Absence from the inventory is never by itself an exit. Every pass also
-// reads every terminal's report for the observed foreground process; a
-// process change refreshes the view but publishes nothing, since only
-// status changes are events. Reconcile is otherwise status-only — it is
+// reads every terminal's report for the observed foreground process and
+// directory. Directory changes are persisted; observations refresh the
+// view but publish nothing, since only status changes are events.
+// Reconcile is otherwise status-only — it is
 // called on the request path (startup, mutations), and orphan reaping
 // means bounded kill verification (~seconds per orphan) that must never
 // block an HTTP handler. The background loop reaps.
@@ -227,8 +228,8 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 
 	// Each pass carries one candidate per terminal through its phases:
-	// the identity snapshot, the status decided so far, the process the
-	// report observed, and any exit evidence recorded this pass.
+	// the identity snapshot, the status decided so far, the observations,
+	// and any exit evidence recorded this pass.
 	type candidate struct {
 		id            string
 		createdAt     time.Time
@@ -236,6 +237,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		absent        bool
 		status        api.TerminalStatus // empty: leave untouched this pass
 		process       string
+		directory     string
 		exit          *store.TerminalRecord // ExitedAt, ExitCode, UpdatedAt
 	}
 
@@ -249,7 +251,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		if _, ok := s.settling[id]; ok {
 			continue
 		}
-		c := candidate{id: id, createdAt: e.record.CreatedAt, stopRequested: e.record.StopRequestedAt != nil}
+		c := candidate{id: id, createdAt: e.record.CreatedAt, stopRequested: e.record.StopRequestedAt != nil, directory: e.record.Directory}
 		switch {
 		case e.record.ExitedAt != nil:
 			c.status = api.TerminalExited
@@ -313,12 +315,19 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 			// A report predating the record belongs to an earlier
 			// incarnation of a reused ID (a reaped orphan's late write, a
 			// stale file the create could not remove): neither its
-			// process nor its exit is this terminal's.
+			// observations nor its exit are this terminal's.
 			s.logger.Warn("stale report ignored", "terminal", c.id)
 			rep = nil
 		}
 		if rep != nil {
 			c.process = rep.Process
+			if filepath.IsAbs(rep.Directory) && rep.Directory != c.directory {
+				if err := s.repository.RecordDirectory(ctx, c.id, c.createdAt, rep.Directory); err != nil {
+					s.logger.Error("recording terminal directory", "terminal", c.id, "error", err)
+				} else {
+					c.directory = rep.Directory
+				}
+			}
 		}
 		if !c.absent {
 			continue
@@ -347,7 +356,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 
 	// Phase 3: apply, skipping entries that were deleted, re-created
 	// (another incarnation of the id), or entered a create's settling
-	// window while the locks were down. Observed processes refresh the
+	// window while the locks were down. Observations refresh the
 	// view silently: only status changes publish.
 	var changed []string
 	s.mu.Lock()
@@ -362,6 +371,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		if c.process != "" {
 			e.process = c.process
 		}
+		e.record.Directory = c.directory
 		if c.exit != nil && e.record.ExitedAt == nil {
 			e.record.ExitedAt = c.exit.ExitedAt
 			e.record.ExitCode = c.exit.ExitCode

@@ -10,7 +10,8 @@
 // /v1 contract through the Client seam, imports no server, store, or
 // domain package, and holds the remote token only in memory. It loads
 // state when a screen opens and when an attachment returns, refreshes on
-// demand, and never consumes the event stream.
+// demand, and polls observations while the terminal list is visible.
+// It never consumes the event stream.
 //
 // Children are started only through the exec seam, which waits for them,
 // so nothing the picker started outlives Run; Bubble Tea restores the
@@ -34,9 +35,10 @@ import (
 )
 
 const (
-	reconnectMin   = time.Second
-	reconnectMax   = 30 * time.Second
-	requestTimeout = 15 * time.Second
+	reconnectMin    = time.Second
+	reconnectMax    = 30 * time.Second
+	requestTimeout  = 15 * time.Second
+	refreshInterval = 2 * time.Second
 )
 
 // Client is the slice of the /v1 API the picker uses; *api.Client
@@ -125,6 +127,9 @@ type model struct {
 	// tea.ExecProcess and tea.Tick in production, scripted in tests.
 	execProcess func(*exec.Cmd, tea.ExecCallback) tea.Cmd
 	tick        func(time.Duration, uint64) tea.Cmd
+	refreshTick func() tea.Cmd
+	polling     bool
+	attached    bool
 
 	width, height int
 	// dark is whether the terminal background is dark, which picks the
@@ -174,6 +179,9 @@ func newModel(ctx context.Context, opts Options) model {
 		tick: func(delay time.Duration, generation uint64) tea.Cmd {
 			return tea.Tick(delay, func(time.Time) tea.Msg { return reconnectTickMsg{generation: generation} })
 		},
+		refreshTick: func() tea.Cmd {
+			return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} })
+		},
 	}
 }
 
@@ -181,10 +189,12 @@ func newModel(ctx context.Context, opts Options) model {
 // start the first one. It also asks the terminal for its background, so
 // the palette can follow it.
 func (m model) Init() tea.Cmd {
-	return tea.Batch(func() tea.Msg { return startMsg{} }, tea.RequestBackgroundColor)
+	return tea.Batch(func() tea.Msg { return startMsg{} }, tea.RequestBackgroundColor, m.refreshTick())
 }
 
 type startMsg struct{}
+type refreshTickMsg struct{}
+type terminalsPolledMsg struct{ terminalsLoadedMsg }
 
 // Messages: every load and mutation answers with one of these, stamped
 // so a superseded request cannot overwrite a newer screen.
@@ -357,6 +367,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startMsg:
 		return m, m.loadSpaces()
+	case refreshTickMsg:
+		next := m.refreshTick()
+		if !m.canPollTerminals() || m.polling {
+			return m, next
+		}
+		m.polling = true
+		seq, spaceID, client, ctx := m.seq, m.space.ID, m.client, m.ctx
+		return m, tea.Batch(next, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+			defer cancel()
+			terminals, err := client.Terminals(ctx, spaceID)
+			return terminalsPolledMsg{terminalsLoadedMsg{seq: seq, spaceID: spaceID, terminals: terminals, err: err}}
+		})
+	case terminalsPolledMsg:
+		m.polling = false
+		if m.canPollTerminals() && msg.seq == m.seq && msg.spaceID == m.space.ID && msg.err == nil {
+			m.setTerminals(msg.terminals)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.helpScroll = min(m.helpScroll, m.helpScrollLimit())
@@ -463,6 +492,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.reconnectPolled(msg)
 	}
 	return m, nil
+}
+
+// Background reads never block an action, interrupt an attachment or
+// confirmation, or replace a newer explicit request's result.
+func (m model) canPollTerminals() bool {
+	return m.screen == screenTerminals && !m.loading && !m.attached && m.reconnect == nil && m.confirm == nil && !m.help
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -707,6 +742,7 @@ func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 	// A return refresh may still be in flight when the user attaches
 	// again. Its result must not redraw stale state after this handoff.
 	m.seq++
+	m.attached = true
 	return m, m.execProcess(cmd, func(err error) tea.Msg {
 		return attachEndedMsg{terminal: terminal, err: err}
 	})
@@ -717,6 +753,7 @@ func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 // exit is reported and not retried. Every path asks for the terminal size
 // again: it may have changed while the child held the TTY.
 func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
+	m.attached = false
 	m.screen = screenTerminals
 	m.selectedTerminal = msg.terminal.ID
 	switch {

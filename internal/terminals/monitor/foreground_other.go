@@ -8,3 +8,5 @@ package monitor
 func readProcess(int) (process, bool) { return process{}, false }
 
 func groupMembers(int) []int { return nil }
+
+func readDirectory(int) string { return "" }

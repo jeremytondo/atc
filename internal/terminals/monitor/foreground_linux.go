@@ -5,7 +5,28 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
+
+func readDirectory(pid int) string {
+	path := "/proc/" + strconv.Itoa(pid) + "/cwd"
+	directory, err := os.Readlink(path)
+	// A removed cwd has no usable path. The kernel appends this marker;
+	// keep the last observation rather than expose the synthetic name.
+	if err != nil {
+		return ""
+	}
+	if strings.HasSuffix(directory, " (deleted)") {
+		// The suffix is also legal in a live directory's name. The cwd
+		// inode distinguishes that name from the kernel's deletion marker.
+		var stat unix.Stat_t
+		if err := unix.Stat(path, &stat); err != nil || stat.Nlink == 0 {
+			return ""
+		}
+	}
+	return directory
+}
 
 // readProcess reads pid's command line and short name from /proc. ok is
 // false when the process does not exist or is a zombie — exited, so no

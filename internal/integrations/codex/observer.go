@@ -49,8 +49,8 @@ type ThreadObserver interface {
 }
 
 // TerminalReader resolves a terminal's record: evidence applies only
-// while the terminal is live, and its directory is the origin of a
-// conversation whose announcement carried no cwd.
+// while the terminal is live, and its last known directory supplies the
+// origin of a conversation whose announcement carried no cwd.
 type TerminalReader interface {
 	Get(id string) (api.Terminal, error)
 }

@@ -300,3 +300,41 @@ func TestRealZmxLifecycle(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// No client attaches and no command is injected through zmx: the workload
+// changes directory itself while the monitor continues observing it.
+func TestRealZmxDetachedDirectory(t *testing.T) {
+	driver := newRealDriver(t)
+	ctx := context.Background()
+	const id = "term-testd"
+	t.Cleanup(func() { _ = driver.Kill(context.Background(), id) })
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := filepath.Join(dir, "change-directory")
+	t.Setenv("SHELL", "/bin/sh")
+	command := "while [ ! -f '" + trigger + "' ]; do sleep 0.1; done; cd '" + dir + "'; sleep 60"
+	if err := driver.Create(ctx, id, terminals.CreateSpec{Directory: "/", Command: command}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor := func(directory string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			rep, err := report.Read(driver.reportDir, id)
+			if err == nil && rep != nil && rep.Directory == directory && !rep.Exited() {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("detached directory never became %q; last %+v (%v)", directory, rep, err)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	waitFor("/")
+	if err := os.WriteFile(trigger, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(dir)
+}

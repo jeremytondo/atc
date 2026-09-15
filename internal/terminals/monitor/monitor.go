@@ -2,7 +2,7 @@
 // of every terminal session (ATC-251). It starts the real workload with
 // inherited descriptors, records atomic start and exit evidence around it
 // in the per-terminal report, forwards HUP/INT/TERM, and observes which
-// program is in the terminal's foreground (ATC-317) — standard process
+// program and directory are in the terminal's foreground — standard process
 // supervision in the containerd-shim/tini shape. It never sits on the
 // PTY data path; zmx remains the sole durable supervisor, and the
 // monitor only records.
@@ -33,7 +33,8 @@ import (
 const LaunchFailureCode = 127
 
 // PollInterval is how often the foreground group is read while the
-// workload runs, attached or not. Flat: an idle poll is one ioctl.
+// workload runs, attached or not. Each poll reads process metadata only;
+// no command is injected into the shell.
 const PollInterval = 2 * time.Second
 
 // Options names the monitor's inputs, passed as flags by the zmx driver
@@ -61,7 +62,7 @@ func Run(opts Options) int {
 		interval = PollInterval
 	}
 	started := time.Now().UTC()
-	rep := report.Report{TerminalID: opts.TerminalID, StartedAt: started}
+	rep := report.Report{TerminalID: opts.TerminalID, StartedAt: started, Directory: opts.Directory}
 
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -94,11 +95,10 @@ func Run(opts Options) int {
 	}
 	rep.PID = cmd.Process.Pid
 	// The first observation rides on the start write; later ones are
-	// written only when the resolved name changes.
-	foreground := newObserver(int(os.Stdin.Fd()), cmd.Process.Pid)
-	if name, changed := foreground.poll(); changed {
-		rep.Process = name
-	}
+	// written only when the resolved name or directory changes.
+	foreground := newObserver(int(os.Stdin.Fd()), cmd.Process.Pid, opts.Directory)
+	observed, _ := foreground.poll()
+	rep.Process, rep.Directory = observed.process, observed.directory
 	writeReport(opts.ReportPath, rep)
 
 	waited := make(chan error, 1)
@@ -108,8 +108,8 @@ func Run(opts Options) int {
 	for {
 		select {
 		case <-ticker.C:
-			if name, changed := foreground.poll(); changed {
-				rep.Process = name
+			if observed, changed := foreground.poll(); changed {
+				rep.Process, rep.Directory = observed.process, observed.directory
 				writeReport(opts.ReportPath, rep)
 			}
 		case received := <-signals:

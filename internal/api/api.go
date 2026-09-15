@@ -20,7 +20,7 @@ package api
 // protocol_mismatch problem, the client before it reads a body) while
 // the headers below still let a probe explain what it found. There is
 // no negotiation, capability list, or supported range: one generation.
-const Protocol = 1
+const Protocol = 2 // Terminal.directory now follows the foreground process (ATC-326).
 
 // Headers ride both ways on every request/response. Atc-Protocol carries
 // the sender's Protocol; the version headers carry release identity for

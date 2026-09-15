@@ -1,7 +1,7 @@
 // Package report reads and writes the monitor's per-terminal report: one
 // <terminal-id>.json per session under the paths.ReportDir location. The
 // monitor (atc __child) writes it at start, whenever the observed
-// foreground program changes, and at exit; the terminals reconciler
+// foreground program or directory changes, and at exit; the terminals reconciler
 // reads it. A report counts as exit evidence only once ExitedAt is set —
 // every earlier write is observation, not an exit.
 package report
@@ -40,6 +40,10 @@ type Report struct {
 	// observation. It survives exit: an exited terminal keeps what last
 	// ran in it.
 	Process string `json:"process,omitempty"`
+	// Directory starts at the requested directory and follows the
+	// foreground process. Failed observations and exit keep the last value.
+	// Empty in reports written by older monitors.
+	Directory string `json:"directory,omitempty"`
 }
 
 // Exited reports whether the report is actual exit evidence.

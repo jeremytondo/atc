@@ -409,13 +409,13 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	f := newFixture(t)
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
 	for name, body := range map[string]string{
-		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
-		"immutable command":   `{"command":"vim"}`,
-		"immutable app":       `{"name":"x","appId":"claude/tui"}`,
-		"unknown field":       `{"name":"x","frobnicate":true}`,
-		"empty name":          `{"name":""}`,
-		"blank name":          `{"name":"  "}`,
-		"null space":          `{"spaceId":null}`,
+		"server-observed directory": `{"name":"x","directory":"/elsewhere"}`,
+		"immutable command":         `{"command":"vim"}`,
+		"immutable app":             `{"name":"x","appId":"claude/tui"}`,
+		"unknown field":             `{"name":"x","frobnicate":true}`,
+		"empty name":                `{"name":""}`,
+		"blank name":                `{"name":"  "}`,
+		"null space":                `{"spaceId":null}`,
 	} {
 		rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, body)
 		if rec.Code != http.StatusUnprocessableEntity {

@@ -16,8 +16,9 @@ type TerminalRecord struct {
 	ID string
 	// SpaceID is the owning space; required, enforced by the schema's
 	// foreign key, and mutable (a move).
-	SpaceID   string
-	Name      string
+	SpaceID string
+	Name    string
+	// Directory is initialized at creation, then replaced by observations.
 	Directory string
 	// Command is the free-form command the terminal was created with;
 	// empty means a plain interactive shell.
@@ -81,7 +82,7 @@ func (t *Terminals) List(ctx context.Context) ([]TerminalRecord, error) {
 	return records, nil
 }
 
-// Update writes the two mutable columns; false means no such record. A
+// Update writes the two user-editable columns; false means no such record. A
 // space deleted since the caller chose it surfaces as
 // ErrForeignKeyViolation.
 func (t *Terminals) Update(ctx context.Context, id, name, spaceID string, at time.Time) (bool, error) {
@@ -89,6 +90,14 @@ func (t *Terminals) Update(ctx context.Context, id, name, spaceID string, at tim
 		Name: name, SpaceID: spaceID, UpdatedAt: formatTime(at), ID: id,
 	})
 	return n > 0, foreignKeyError(err)
+}
+
+// RecordDirectory keeps the last known directory durable even if the
+// report becomes unavailable. Observations do not change UpdatedAt.
+func (t *Terminals) RecordDirectory(ctx context.Context, id string, createdAt time.Time, directory string) error {
+	return t.writes.RecordTerminalDirectory(ctx, gen.RecordTerminalDirectoryParams{
+		ID: id, CreatedAt: formatTime(createdAt), Directory: directory,
+	})
 }
 
 // RecordStopIntent persists the delete verb's stop intent; false means no

@@ -114,6 +114,12 @@ program in their foreground (`1:zsh`, `2:nvim`) or by a name you set
 (`3:api`); press a row's number to attach. `atc --help` and `?` inside the
 picker list the keys.
 
+The directory column follows the foreground shell or program, including
+nested shells, and refreshes while the terminal list is open. Monitoring
+continues while detached. Failed lookups and exited terminals keep their
+last known directory. Sessions started by an older ATC monitor keep their
+starting directory; newly created terminals report directory changes.
+
 ### Remote setup
 
 Every `atc --remote` launch discovers the target first: its platform, the

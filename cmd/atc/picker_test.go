@@ -52,6 +52,8 @@ func TestRootWithoutTTYPrintsUsageAndFails(t *testing.T) {
 }
 
 func TestRootOpensLocalPicker(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	startTestServer(t)
 	forceTTY(t)
 	captured := capturePicker(t)
@@ -73,9 +75,8 @@ func TestRootOpensLocalPicker(t *testing.T) {
 	if err != nil || len(spaces) != 1 || !spaces[0].IsDefault {
 		t.Errorf("picker client Spaces = %+v, %v; want the Default space", spaces, err)
 	}
-	// The local attach runs the zmx preflight: with no zmx on PATH the
-	// picker learns why, per attempt, instead of the launch failing.
-	t.Setenv("PATH", t.TempDir())
+	// The private state has no managed zmx runtime selected. The picker
+	// learns why per attach attempt, instead of the launch failing.
 	if _, err := captured.Attach(context.Background(), api.Terminal{ID: "term-abcde", Status: api.TerminalRunning}); err == nil || !strings.Contains(err.Error(), "zmx") {
 		t.Errorf("attach without zmx = %v", err)
 	}
