@@ -202,6 +202,8 @@ func newHarness(t *testing.T, target string) *harness {
 	}
 	h.m.execProcess = h.exec.exec
 	h.m.tick = h.clock.tick
+	// Periodic refreshes are delivered explicitly by the tests that need them.
+	h.m.refreshTick = func() tea.Cmd { return nil }
 	return h
 }
 
@@ -393,6 +395,67 @@ func TestTerminalListNumberOrderAndBack(t *testing.T) {
 	h.key("h")
 	if h.m.screen != screenSpaces {
 		t.Errorf("h did not go back")
+	}
+}
+
+func TestDirectoryRefreshWhileTerminalListVisible(t *testing.T) {
+	h := newHarness(t, "")
+	h.open()
+	h.key("j")
+	h.key("j")
+	h.key("enter")
+	selected := h.m.selectedTerminal
+	h.client.terminals[0].Directory = "/home/u/other-worktree"
+	msgs := h.send(refreshTickMsg{})
+	if h.m.loading || !h.m.polling {
+		t.Fatal("background refresh must leave actions available")
+	}
+	if extra := h.send(refreshTickMsg{}); len(extra) != 0 {
+		t.Fatal("overlapping background requests")
+	}
+	for _, msg := range msgs {
+		h.run(msg)
+	}
+	if h.m.selectedTerminal != selected || !strings.Contains(plain(h.m), "/home/u/other-worktree") {
+		t.Fatalf("directory refresh lost selection or path:\n%s", plain(h.m))
+	}
+	// A failed poll preserves both the list and any user-facing notice.
+	before := plain(h.m)
+	h.client.err = errors.New("offline")
+	h.run(refreshTickMsg{})
+	if diff := cmp.Diff(before, plain(h.m)); diff != "" {
+		t.Fatalf("failed background poll changed the view:\n%s", diff)
+	}
+	h.client.err = nil
+	// A delayed response cannot overwrite an explicit refresh or a new screen.
+	h.client.terminals[0].Directory = "/obsolete"
+	stale := h.send(refreshTickMsg{})
+	h.client.terminals[0].Directory = "/current"
+	h.key("r")
+	for _, msg := range stale {
+		h.run(msg)
+	}
+	if !strings.Contains(plain(h.m), "/current") || strings.Contains(plain(h.m), "/obsolete") {
+		t.Fatalf("stale background result applied:\n%s", plain(h.m))
+	}
+	for _, state := range []string{"confirmation", "help", "attachment", "spaces"} {
+		t.Run(state, func(t *testing.T) {
+			m := h.m
+			switch state {
+			case "confirmation":
+				m.confirm = &confirmation{}
+			case "help":
+				m.help = true
+			case "attachment":
+				m.attached = true
+			case "spaces":
+				m.screen = screenSpaces
+			}
+			_, cmd := m.Update(refreshTickMsg{})
+			if msgs := drain(cmd); len(msgs) != 0 {
+				t.Fatalf("polled during %s: %v", state, msgs)
+			}
+		})
 	}
 }
 

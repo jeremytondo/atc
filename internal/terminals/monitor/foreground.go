@@ -87,8 +87,14 @@ type process struct {
 	short string
 }
 
-// observer polls the terminal's foreground group and resolves a name
-// only when the group changes.
+type observation struct {
+	process   string
+	directory string
+}
+
+// observer samples the foreground process even when its group stays the
+// same: cd and exec do not require a new process group. Failed reads keep
+// the last successful values.
 type observer struct {
 	tty int
 	// workload is the monitor's direct child. While the foreground group
@@ -97,48 +103,50 @@ type observer struct {
 	// program in front, never the monitor.
 	workload int
 	own      int
-	pgrp     int
-	process  string
+	last     observation
 }
 
-func newObserver(tty, workload int) *observer {
-	return &observer{tty: tty, workload: workload, own: unix.Getpgrp()}
+func newObserver(tty, workload int, directory string) *observer {
+	return &observer{tty: tty, workload: workload, own: unix.Getpgrp(), last: observation{directory: directory}}
 }
 
-// poll reads the foreground group and returns the program name when it
-// differs from the last one returned. A failed read, or a group whose
-// members cannot be named, changes nothing.
-func (o *observer) poll() (string, bool) {
+// poll returns the last known observation and whether either value changed.
+func (o *observer) poll() (observation, bool) {
 	pgrp, err := unix.IoctlGetInt(o.tty, unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 || pgrp == o.pgrp {
-		return "", false
+	if err != nil || pgrp <= 0 {
+		return o.last, false
 	}
-	o.pgrp = pgrp
-	name := o.name(pgrp)
-	if name == "" || name == o.process {
-		return "", false
+	pid, p := o.foreground(pgrp)
+	if pid == 0 {
+		return o.last, false
 	}
-	o.process = name
-	return name, true
+	previous := o.last
+	if name := resolve(p.argv, p.short); name != "" {
+		o.last.process = name
+	}
+	if directory := readDirectory(pid); filepath.IsAbs(directory) {
+		o.last.directory = directory
+	}
+	return o.last, o.last != previous
 }
 
-// name resolves the group by its leader — a live leader whose command
-// line is unreadable still names itself by short name — or, once the
-// leader has exited, by any live member.
-func (o *observer) name(pgrp int) string {
+// foreground chooses the group leader, falling back to a live member
+// after the leader exits. The directory follows this same process,
+// including nested shells and foreground programs, never a background job.
+func (o *observer) foreground(pgrp int) (int, process) {
 	if pgrp == o.own {
 		if p, ok := readProcess(o.workload); ok {
-			return resolve(p.argv, p.short)
+			return o.workload, p
 		}
-		return ""
+		return 0, process{}
 	}
 	if leader, ok := readProcess(pgrp); ok {
-		return resolve(leader.argv, leader.short)
+		return pgrp, leader
 	}
 	for _, pid := range groupMembers(pgrp) {
 		if p, ok := readProcess(pid); ok {
-			return resolve(p.argv, p.short)
+			return pid, p
 		}
 	}
-	return ""
+	return 0, process{}
 }

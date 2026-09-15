@@ -1209,6 +1209,23 @@ func (q *Queries) PruneLinearOutbox(ctx context.Context, cutoff sql.NullString) 
 	return result.RowsAffected()
 }
 
+const recordTerminalDirectory = `-- name: RecordTerminalDirectory :exec
+UPDATE terminals SET directory = ? WHERE id = ? AND created_at = ?
+`
+
+type RecordTerminalDirectoryParams struct {
+	Directory string
+	ID        string
+	CreatedAt string
+}
+
+// Directory observations replace the initial value. Guard the incarnation
+// so a report read before deletion cannot overwrite a reused ID.
+func (q *Queries) RecordTerminalDirectory(ctx context.Context, arg RecordTerminalDirectoryParams) error {
+	_, err := q.db.ExecContext(ctx, recordTerminalDirectory, arg.Directory, arg.ID, arg.CreatedAt)
+	return err
+}
+
 const recordTerminalExit = `-- name: RecordTerminalExit :execrows
 UPDATE terminals SET exited_at = ?, exit_code = ?, updated_at = ?
 WHERE id = ? AND exited_at IS NULL
@@ -1441,7 +1458,7 @@ type UpdateTerminalParams struct {
 	ID        string
 }
 
-// The two mutable terminal columns move together (a merge patch).
+// The two user-editable terminal columns move together (a merge patch).
 func (q *Queries) UpdateTerminal(ctx context.Context, arg UpdateTerminalParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateTerminal,
 		arg.Name,

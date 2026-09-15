@@ -13,9 +13,14 @@ ON CONFLICT (id) DO NOTHING;
 -- name: ListTerminals :many
 SELECT * FROM terminals ORDER BY created_at, id;
 
--- The two mutable terminal columns move together (a merge patch).
+-- The two user-editable terminal columns move together (a merge patch).
 -- name: UpdateTerminal :execrows
 UPDATE terminals SET name = ?, space_id = ?, updated_at = ? WHERE id = ?;
+
+-- Directory observations replace the initial value. Guard the incarnation
+-- so a report read before deletion cannot overwrite a reused ID.
+-- name: RecordTerminalDirectory :exec
+UPDATE terminals SET directory = ? WHERE id = ? AND created_at = ?;
 
 -- name: RecordTerminalStopIntent :execrows
 UPDATE terminals SET stop_requested_at = ?, updated_at = ? WHERE id = ?;

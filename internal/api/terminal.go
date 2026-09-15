@@ -27,7 +27,7 @@ type Terminal struct {
 	ID        string `json:"id" doc:"Server-minted identifier; also the zmx session name."`
 	Name      string `json:"name" doc:"User-set display name; mutable, empty when the terminal is labelled by its foreground program instead."`
 	SpaceID   string `json:"spaceId" doc:"Space the terminal belongs to; mutable — moving a terminal changes nothing but this."`
-	Directory string `json:"directory" doc:"Working directory the session started in: the one supplied at creation, else the space's directory at that moment — never a thread's own directory. Immutable."`
+	Directory string `json:"directory" doc:"Last known current working directory of the foreground process, including nested shells and programs. Initialized from the requested starting directory (else the space's); server-observed while attached or detached. Failed observations and exit keep the last value. Older sessions without directory observations keep their starting directory."`
 	Command   string `json:"command,omitempty" doc:"User-supplied command launched in the session; empty means a plain shell or an App launch (an App's resolved command is Integration-private and never exposed). Immutable."`
 	AppID     string `json:"appId,omitempty" doc:"Integration-qualified App id (integration/app) the terminal was launched with; omitted for plain terminals. Server-set launch intent only, immutable, no liveness meaning."`
 	Process   string `json:"process" doc:"Short name of the program last observed in the terminal's foreground, kept after exit. Before the first observation: the App's short name, else the launch command's first word, else shell. Never empty; server-observed, not user-set."`

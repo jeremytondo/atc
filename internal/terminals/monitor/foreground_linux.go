@@ -7,6 +7,16 @@ import (
 	"strings"
 )
 
+func readDirectory(pid int) string {
+	directory, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+	// A removed cwd has no usable path. The kernel appends this marker;
+	// keep the last observation rather than expose the synthetic name.
+	if err != nil || strings.HasSuffix(directory, " (deleted)") {
+		return ""
+	}
+	return directory
+}
+
 // readProcess reads pid's command line and short name from /proc. ok is
 // false when the process does not exist or is a zombie — exited, so no
 // longer what the terminal is running.
