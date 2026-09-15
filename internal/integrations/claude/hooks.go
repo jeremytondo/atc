@@ -361,8 +361,8 @@ func (h *Hooks) mapped(sessionID string) bool {
 // first prompt's title rides along: an observed title only ever fills an
 // untitled thread, so a mint that the prompt's own delivery failed to
 // land still gets it. The payload's cwd is the conversation's origin
-// (the threads domain only takes it at first observation); the launch
-// directory stands in when a payload carries none.
+// (the threads domain only takes it at first observation); the terminal's
+// last known directory stands in when a payload carries none.
 func (h *Hooks) observe(ctx context.Context, terminalID string, st *session, p payload, status api.ThreadStatus) bool {
 	terminal, err := h.terminals.Get(terminalID)
 	if err != nil {

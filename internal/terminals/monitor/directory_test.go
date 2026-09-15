@@ -77,7 +77,7 @@ func TestObservesCurrentDirectory(t *testing.T) {
 		deadline := time.Now().Add(10 * time.Second)
 		for {
 			rep, err := report.Read(dir, "term-aaaaa")
-			if err == nil && rep != nil && rep.Process == process && rep.Directory == directory {
+			if err == nil && rep != nil && (process == "" || rep.Process == process) && rep.Directory == directory {
 				return rep
 			}
 			if time.Now().After(deadline) {
@@ -105,6 +105,14 @@ func TestObservesCurrentDirectory(t *testing.T) {
 	waitFor("sh", dir)
 	send("sh -c 'cd \"" + worktree + "\"; exec sleep 30'")
 	waitFor("sleep", worktree)
+	if _, err := ptmx.Write([]byte{3}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("sh", dir)
+	// The pipeline leader exits first; a surviving group member must
+	// still supply the directory on subsequent polls of the same group.
+	send("true | sh -c 'cd \"" + worktree + "\"; sleep 30'")
+	waitFor("", worktree)
 	if _, err := ptmx.Write([]byte{3}); err != nil {
 		t.Fatal(err)
 	}

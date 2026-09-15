@@ -202,8 +202,8 @@ func (s *Service) Run(ctx context.Context) {
 // Absence from the inventory is never by itself an exit. Every pass also
 // reads every terminal's report for the observed foreground process and
 // directory. Directory changes are persisted; observations refresh the
-// view but publish nothing, since only
-// status changes are events. Reconcile is otherwise status-only — it is
+// view but publish nothing, since only status changes are events.
+// Reconcile is otherwise status-only — it is
 // called on the request path (startup, mutations), and orphan reaping
 // means bounded kill verification (~seconds per orphan) that must never
 // block an HTTP handler. The background loop reaps.
@@ -228,8 +228,8 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 
 	// Each pass carries one candidate per terminal through its phases:
-	// the identity snapshot, the status decided so far, the process the
-	// report observed, and any exit evidence recorded this pass.
+	// the identity snapshot, the status decided so far, the observations,
+	// and any exit evidence recorded this pass.
 	type candidate struct {
 		id            string
 		createdAt     time.Time
@@ -315,7 +315,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 			// A report predating the record belongs to an earlier
 			// incarnation of a reused ID (a reaped orphan's late write, a
 			// stale file the create could not remove): neither its
-			// process nor its exit is this terminal's.
+			// observations nor its exit are this terminal's.
 			s.logger.Warn("stale report ignored", "terminal", c.id)
 			rep = nil
 		}
@@ -356,7 +356,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 
 	// Phase 3: apply, skipping entries that were deleted, re-created
 	// (another incarnation of the id), or entered a create's settling
-	// window while the locks were down. Observed processes refresh the
+	// window while the locks were down. Observations refresh the
 	// view silently: only status changes publish.
 	var changed []string
 	s.mu.Lock()
