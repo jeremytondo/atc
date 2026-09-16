@@ -465,7 +465,7 @@ func highlighted(line string) bool { return background.MatchString(line) }
 // dimmedRow reports whether the Spaces row for conn/name is rendered
 // faint: its name cell carries the attribute, selected or not.
 func dimmedRow(m model, conn, name string) bool {
-	row := regexp.MustCompile(`^│ ` + conn + `\s+` + name + `\s`)
+	row := regexp.MustCompile(`^│ ` + name + `\s+` + conn + `\s`)
 	for _, line := range strings.Split(m.View().Content, "\n") {
 		if row.MatchString(ansi.Strip(line)) {
 			return regexp.MustCompile(`\x1b\[2[;\d]*m` + name).MatchString(line)
@@ -517,7 +517,7 @@ func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 	if !highlighted(rawLine(h.m, "work")) || highlighted(rawLine(h.m, "Default")) {
 		t.Errorf("selection not the highlighted row:\n%s", h.m.View().Content)
 	}
-	if view := plain(h.m); !matches(`CONNECTION\s+NAME\s+TERMINALS\s+DIRECTORY`, view) || !matches(`Local\s+Default\s+0\s+/home/u\s+default`, view) || !matches(`Local\s+work\s+3\s+/home/u/work`, view) {
+	if view := plain(h.m); !matches(`NAME\s+CONNECTION\s+TERMINALS\s+DIRECTORY`, view) || !matches(`Default\s+Local\s+0\s+/home/u\s+default`, view) || !matches(`work\s+Local\s+3\s+/home/u/work`, view) {
 		t.Errorf("view:\n%s", view)
 	}
 }
@@ -1436,7 +1436,7 @@ func TestConnectionsLoadIndependentlyAndRouteByConnection(t *testing.T) {
 	if view := lines(h.m); !strings.HasPrefix(view[0], "╭ atc ─") || view[1] != "spaces  devbox: needs login" {
 		t.Errorf("title %q breadcrumb %q", view[0], view[1])
 	}
-	if !matches(`ws\s+work\s+3\s+/home/u/work`, plain(h.m)) {
+	if !matches(`work\s+ws\s+3\s+/home/u/work`, plain(h.m)) {
 		t.Errorf("view:\n%s", plain(h.m))
 	}
 	// Down through Local's rows into ws's: the same Space ID, the other

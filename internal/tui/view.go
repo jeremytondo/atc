@@ -349,7 +349,7 @@ func (m model) spacesBody(st styles, l layout) []string {
 			tagWidth = len("default")
 		}
 	}
-	t := newTable(st, l.inner, min(connWidth, maxNameWidth), min(nameWidth, maxNameWidth), len("TERMINALS"), flex, tagWidth)
+	t := newTable(st, l.inner, min(nameWidth, maxNameWidth), min(connWidth, maxNameWidth), len("TERMINALS"), flex, tagWidth)
 	lines := make([]string, len(rows))
 	selected := max(0, slices.Index(spaceRefs(rows), m.selectedSpace))
 	for i, row := range rows {
@@ -362,8 +362,8 @@ func (m model) spacesBody(st styles, l layout) []string {
 			style = st.dim
 		}
 		lines[i] = t.row([]cell{
-			{text: safeText(row.conn), style: style},
 			{text: safeText(row.space.Name), style: style},
+			{text: safeText(row.conn), style: style},
 			{text: strconv.Itoa(m.connection(row.conn).counts[row.space.ID]), style: style},
 			{text: safeText(row.space.Directory), style: style},
 			{text: tag, style: st.dim},
@@ -373,7 +373,7 @@ func (m model) spacesBody(st styles, l layout) []string {
 	if m.anyLoading() {
 		empty = "loading spaces…"
 	}
-	return listBody(st, l.body, t.header("CONNECTION", "NAME", "TERMINALS", "DIRECTORY", ""), lines, selected, empty)
+	return listBody(st, l.body, t.header("NAME", "CONNECTION", "TERMINALS", "DIRECTORY", ""), lines, selected, empty)
 }
 
 // connectionsBody is the table of connections with their state, then the
