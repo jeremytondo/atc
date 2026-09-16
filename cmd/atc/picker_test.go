@@ -112,7 +112,9 @@ func TestRootRefusesRemoteATCServerWithoutRemoteFlag(t *testing.T) {
 }
 
 // A stopped local server is started through the lifecycle when Local
-// connects, and the session opens once it answers.
+// connects, and the session opens once it answers. The lifecycle's
+// report never reaches the terminal — the picker owns it by then — and
+// its first-run notice rides on the session as one line.
 func TestRootStartsStoppedLocalServer(t *testing.T) {
 	forceTTY(t)
 	captured := capturePicker(t)
@@ -147,6 +149,8 @@ func TestRootStartsStoppedLocalServer(t *testing.T) {
 	prev := startLocalServer
 	startLocalServer = func(_ context.Context, opts service.Options) error {
 		startedWith = opts
+		_, _ = fmt.Fprintf(opts.Stderr, "registered atc.server (unit)\nundo at any time with `atc server uninstall`\n")
+		_, _ = fmt.Fprintf(opts.Stdout, "started atc.server\n  api: http://127.0.0.1:%d\n", port)
 		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 		if err != nil {
 			return err
@@ -160,7 +164,8 @@ func TestRootStartsStoppedLocalServer(t *testing.T) {
 	}
 	t.Cleanup(func() { startLocalServer = prev })
 
-	if _, _, err := runCLI(t); err != nil {
+	var stdout, stderr strings.Builder
+	if err := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if startedWith.Config.Port != 0 {
@@ -175,6 +180,56 @@ func TestRootStartsStoppedLocalServer(t *testing.T) {
 	}
 	if session.ServerVersion != "v0.0.0-started" {
 		t.Errorf("session opened against %q", session.ServerVersion)
+	}
+	if stdout.String() != "" || stderr.String() != "" {
+		t.Errorf("the lifecycle wrote to the picker's terminal:\nstdout: %q\nstderr: %q", stdout.String(), stderr.String())
+	}
+	if want := "registered atc.server (unit); undo at any time with `atc server uninstall`"; session.Notice != want {
+		t.Errorf("session notice = %q, want %q", session.Notice, want)
+	}
+}
+
+// When the start fails, what the lifecycle said on stderr (the last
+// logs) follows the error so the Connections screen can show it.
+func TestRootReportsFailedLocalStart(t *testing.T) {
+	forceTTY(t)
+	captured := capturePicker(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("ATC_SERVER", "")
+	t.Setenv("ATC_TOKEN", cliTestToken)
+	// A reserved, released port: nothing answers there, so Local starts.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	configDir := filepath.Join(home, "config", "atc")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("port = "+strconv.Itoa(port)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := startLocalServer
+	startLocalServer = func(_ context.Context, opts service.Options) error {
+		_, _ = fmt.Fprintln(opts.Stderr, "last log lines:")
+		_, _ = fmt.Fprintln(opts.Stderr, "  bind: address already in use")
+		return errors.New("atc.server did not become healthy")
+	}
+	t.Cleanup(func() { startLocalServer = prev })
+
+	if _, _, err := runCLI(t); err != nil {
+		t.Fatal(err)
+	}
+	_, err = captured.Connections[0].Connector.Connect(context.Background())
+	want := "atc.server did not become healthy\nlast log lines:\n  bind: address already in use"
+	if err == nil || err.Error() != want {
+		t.Errorf("Connect error = %v, want %q", err, want)
 	}
 }
 

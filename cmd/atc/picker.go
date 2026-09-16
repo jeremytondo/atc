@@ -132,6 +132,7 @@ func (c *localConnector) Connect(ctx context.Context) (tui.Session, error) {
 	if !cli.IsLocalServer(baseURL) {
 		return tui.Session{}, fmt.Errorf("ATC_SERVER names %s, which is not this machine", baseURL)
 	}
+	var notice string
 	health, err := client.Health(ctx)
 	if err != nil {
 		var problem *api.Problem
@@ -150,9 +151,20 @@ func (c *localConnector) Connect(ctx context.Context) (tui.Session, error) {
 		if server := os.Getenv("ATC_SERVER"); server != "" && server != fmt.Sprintf("http://127.0.0.1:%d", lifecycle.Config.Port) {
 			return tui.Session{}, fmt.Errorf("no server answers at %s: %w", baseURL, err)
 		}
+		// The picker owns the terminal while this runs, so the lifecycle
+		// must not print to it: the start report is implied by the
+		// connection turning ready, and what it says on stderr — the
+		// first-run registration notice, or the last logs after a failed
+		// start — is carried in the session or the error instead.
+		var said strings.Builder
+		lifecycle.Stdout, lifecycle.Stderr = io.Discard, &said
 		if err := startLocalServer(ctx, lifecycle); err != nil {
+			if text := strings.TrimSpace(said.String()); text != "" {
+				return tui.Session{}, fmt.Errorf("%w\n%s", err, text)
+			}
 			return tui.Session{}, err
 		}
+		notice = oneLine(said.String())
 		if health, err = client.Health(ctx); err != nil {
 			return tui.Session{}, err
 		}
@@ -170,7 +182,20 @@ func (c *localConnector) Connect(ctx context.Context) (tui.Session, error) {
 			}
 			return cli.PrepareAttach(ctx, terminal, attacher)
 		},
+		Notice: notice,
 	}, nil
+}
+
+// oneLine folds a multi-line notice into the picker's single message
+// line.
+func oneLine(text string) string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "; ")
 }
 
 func (c *localConnector) Setup(ctx context.Context, _ io.Reader, _, _ io.Writer) (tui.Session, error) {

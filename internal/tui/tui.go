@@ -125,6 +125,11 @@ type Session struct {
 	// transport failed and the same terminal should be re-attached once
 	// it answers again; nil never reconnects (local mode).
 	TransportLoss func(err error) bool
+	// Notice is one line the connection wants shown when the session
+	// opens — what connecting changed, such as the local server being
+	// registered with the supervisor on a first run. Connect runs while
+	// the picker owns the terminal, so this is its only voice.
+	Notice string
 }
 
 // ErrLoginRequired and ErrSetupRequired classify a Connect failure for

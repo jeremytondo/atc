@@ -205,6 +205,9 @@ func (m model) connected(msg connectedMsg) (tea.Model, tea.Cmd) {
 // the connection: its Spaces, and its Terminals when they are on screen.
 func (m *model) becameReady(c *connection, session Session) tea.Cmd {
 	c.status, c.err, c.session, c.delay = connReady, nil, session, 0
+	if session.Notice != "" {
+		m.notify(session.Notice)
+	}
 	cmds := []tea.Cmd{m.loadConnectionSpaces(c)}
 	if m.screen == screenTerminals && m.conn == c.name && m.reconnect == nil {
 		cmds = append(cmds, m.loadTerminals())

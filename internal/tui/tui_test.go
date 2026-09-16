@@ -133,6 +133,7 @@ type fakeConnector struct {
 	connectErr error
 	setupErr   error
 	setupSays  string
+	notice     string
 	connects   int
 	setups     int
 	closes     int
@@ -174,6 +175,7 @@ func (c *fakeConnector) session() Session {
 	if c.remote {
 		s.TransportLoss = transportLoss
 	}
+	s.Notice = c.notice
 	return s
 }
 
@@ -992,6 +994,22 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 
 // A create still in flight when the user leaves the screen must not act
 // on where they went: no attach, no navigation.
+// What connecting changed — the local server registered on a first run —
+// is shown on the message line once the connection is ready, since the
+// connector had no terminal to say it on.
+func TestSessionNoticeIsShownWhenConnected(t *testing.T) {
+	h := newMultiHarness(t, "ws")
+	h.connectors["Local"].notice = "registered atc.server; undo with `atc server uninstall`"
+	h.open()
+	if h.m.message != "registered atc.server; undo with `atc server uninstall`" || h.m.failed {
+		t.Errorf("message after connecting = %q (failed %v)", h.m.message, h.m.failed)
+	}
+	view := lines(h.m)
+	if view[len(view)-3] != "registered atc.server; undo with `atc server uninstall`" {
+		t.Errorf("message line %q", view[len(view)-3])
+	}
+}
+
 func TestCreateAnsweredAfterLeavingScreenIsDropped(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
