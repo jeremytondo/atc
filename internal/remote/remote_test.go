@@ -91,7 +91,7 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 			if printed := fmt.Sprintf("%v %+v %s %#v", got, got, got, got); strings.Contains(printed, got.Token) {
 				t.Errorf("formatting a Bootstrap prints the token: %s", printed)
 			}
-			wantArgs := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+			wantArgs := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=" + controlPersist,
 				"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-T", "--", "ws", "/home/u/.local/bin/atc", "__remote", "bootstrap", "--restart", "--tailscale"}
 			if diff := cmp.Diff(wantArgs, script.cmd.Args); diff != "" {
 				t.Errorf("argv (-want +got):\n%s", diff)
@@ -107,7 +107,7 @@ func TestBootstrapDecodesStrictly(t *testing.T) {
 // with the executable discovery named quoted for the login shell.
 func TestRemoteCommandShapes(t *testing.T) {
 	prefix := func(ssh *SSH) []string {
-		return []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+		return []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=" + controlPersist,
 			"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-T", "--", "ws"}
 	}
 	ctx := context.Background()
@@ -280,7 +280,7 @@ func TestBootstrapRejectsBadTargets(t *testing.T) {
 func TestAttachCommandAndTransportLoss(t *testing.T) {
 	ssh := &SSH{executable: "/usr/bin/ssh", target: "ws", controlDir: t.TempDir()}
 	cmd := ssh.AttachCommand(context.Background(), "atc", "term-abcde")
-	want := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+	want := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=" + controlPersist,
 		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-tt", "-o", "LogLevel=ERROR", "--", "ws", "atc", "terminal", "attach", "term-abcde"}
 	if diff := cmp.Diff(want, cmd.Args); diff != "" {
 		t.Errorf("argv (-want +got):\n%s", diff)
@@ -419,5 +419,31 @@ func TestDiscoverScriptUnderSh(t *testing.T) {
 	}
 	if got.Path != "" || got.Candidate != filepath.Join(home, ".local", "bin", "atc") || got.Unit != "/srv/atc/atc" || got.Home != home {
 		t.Errorf("Discovery = %+v\n%s", got, out)
+	}
+}
+
+// Batch is the same connection with prompts refused: it shares the
+// control socket, so an unattended command after an interactive login
+// needs nothing more, and Close on either releases the one master.
+func TestBatchSharesTheConnectionAndRefusesPrompts(t *testing.T) {
+	script := &scriptedSSH{stdout: "os=Linux\narch=x86_64\nhome=/home/u\n"}
+	ssh := &SSH{executable: "/usr/bin/ssh", target: "ws", controlDir: t.TempDir(), run: script.run}
+	batch := ssh.Batch()
+	if _, err := batch.Discover(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/usr/bin/ssh", "-S", ssh.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=" + controlPersist,
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-T", "--", "ws", "sh"}
+	if diff := cmp.Diff(want, script.cmd.Args); diff != "" {
+		t.Errorf("batch argv (-want +got):\n%s", diff)
+	}
+	if _, err := ssh.Discover(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(script.cmd.Args, " "), "BatchMode") {
+		t.Errorf("the interactive connection refuses prompts: %v", script.cmd.Args)
+	}
+	if batch.target != "ws" || batch.controlPath() != ssh.controlPath() {
+		t.Errorf("batch connection = %q at %q", batch.target, batch.controlPath())
 	}
 }

@@ -61,12 +61,20 @@ func (b Bootstrap) GoString() string {
 // is not a bootstrap.
 const maxBootstrapOutput = 16 << 10
 
+// controlPersist is how long the shared master outlives its last
+// command (ATC-327): long enough that a picker left open across a working
+// day never asks a person to authenticate again for an attachment, and
+// bounded so a master orphaned by a killed picker still goes away.
+const controlPersist = "8h"
+
 // SSH runs OpenSSH children. run is the process seam: (*exec.Cmd).Run in
-// production, a scripted double in tests.
+// production, a scripted double in tests. batch is the unattended mode:
+// every command refuses to prompt and fails instead.
 type SSH struct {
 	executable string
 	target     string
 	controlDir string
+	batch      bool
 	run        func(*exec.Cmd) error
 }
 
@@ -92,13 +100,27 @@ func NewSSH(target string) (*SSH, error) {
 
 func (s *SSH) controlPath() string { return filepath.Join(s.controlDir, "control") }
 
+// Batch is the same connection in unattended mode (ATC-327): its commands
+// never prompt for a password, passphrase, or host key — they fail with
+// ssh's reason instead — and a connection attempt is bounded. A master an
+// interactive command authenticated is reused all the same, so an
+// unattended command after a person logged in needs nothing from them.
+func (s *SSH) Batch() *SSH {
+	batch := *s
+	batch.batch = true
+	return &batch
+}
+
 // command reuses the bootstrap connection, or creates a new one if it
 // expired or the transport failed. Keepalives belong on the master too.
 // The idle lease bounds a leftover master's life if ATC is killed before
 // Close can run; an active attachment does not count as idle.
 func (s *SSH) command(ctx context.Context, options, command []string) *exec.Cmd {
-	args := []string{"-S", s.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+	args := []string{"-S", s.controlPath(), "-o", "ControlMaster=auto", "-o", "ControlPersist=" + controlPersist,
 		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"}
+	if s.batch {
+		args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15")
+	}
 	args = append(args, options...)
 	args = append(args, "--", s.target)
 	args = append(args, command...)
@@ -172,6 +194,12 @@ func (s *SSH) output(ctx context.Context, what string, limit int, stdin io.Reade
 // protocol).
 var ErrPredatesSetup = errors.New("predates guided setup")
 
+// ErrLoginRequired marks an ssh failure only a person can clear: an
+// authentication ssh could not complete without prompting, or a host key
+// nobody has accepted. An interactive command on the same connection
+// gets the prompts.
+var ErrLoginRequired = errors.New("login required")
+
 // remoteFailure names the failure a non-zero exit most likely means:
 // ssh itself (255), a command the remote shell could not find (127), an
 // atc too old to know the command, or the command's own refusal.
@@ -183,6 +211,8 @@ func remoteFailure(target, what string, err error, stderr string) error {
 	code := exit.ExitCode()
 	last := lastLine(stderr)
 	switch {
+	case code == 255 && needsLogin(stderr):
+		return fmt.Errorf("ssh to %s %w: %s", target, ErrLoginRequired, last)
 	case code == 255:
 		return fmt.Errorf("ssh to %s failed (exit 255): %s", target, last)
 	case code == 127 || strings.Contains(stderr, "command not found") || strings.Contains(stderr, "No such file or directory"):
@@ -191,6 +221,18 @@ func remoteFailure(target, what string, err error, stderr string) error {
 		return fmt.Errorf("%s on %s: the atc there %w (%s)", what, target, ErrPredatesSetup, last)
 	}
 	return fmt.Errorf("%s on %s failed (exit %d): %s", what, target, code, last)
+}
+
+// needsLogin recognises the ssh failures a person clears at a prompt:
+// every authentication method refused or unavailable without one, and an
+// unverified host key.
+func needsLogin(stderr string) bool {
+	for _, mark := range []string{"Permission denied", "Host key verification failed", "Too many authentication failures"} {
+		if strings.Contains(stderr, mark) {
+			return true
+		}
+	}
+	return false
 }
 
 // Discover runs the discovery script under `sh` on the target — the

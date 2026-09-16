@@ -4,6 +4,7 @@
 // may derive these locations independently.
 //
 //	config  $XDG_CONFIG_HOME/atc/config.toml  (~/.config/atc/config.toml)
+//	config  $XDG_CONFIG_HOME/atc/connections.json
 //	data    $XDG_DATA_HOME/atc/auth-token     (~/.local/share/atc/auth-token)
 //	data    $XDG_DATA_HOME/atc/atc.db         (~/.local/share/atc/atc.db)
 //	data    $XDG_DATA_HOME/atc/t3code-session.json
@@ -56,6 +57,13 @@ func CanonicalDir(path string) (string, error) {
 // ConfigFile is the TOML configuration file the server reads.
 func ConfigFile() (string, error) {
 	return resolve("XDG_CONFIG_HOME", []string{".config"}, "config.toml")
+}
+
+// ConnectionsFile is the picker's saved remote connections (ATC-327): the
+// SSH aliases a plain launch opens beside Local. A preference of this
+// client, so it lives with the configuration, never with server state.
+func ConnectionsFile() (string, error) {
+	return resolve("XDG_CONFIG_HOME", []string{".config"}, "connections.json")
 }
 
 // AuthTokenFile is the bearer-token credential file.

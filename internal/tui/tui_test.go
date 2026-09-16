@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"io"
 	"net/http"
 	"os/exec"
 	"reflect"
@@ -36,6 +37,15 @@ type fakeClient struct {
 	createStatus api.TerminalStatus
 	nextID       int
 	polls        int
+	healths      int
+}
+
+func (c *fakeClient) Health(context.Context) (api.Health, error) {
+	c.healths++
+	if c.err != nil {
+		return api.Health{}, c.err
+	}
+	return api.Health{Status: "ok"}, nil
 }
 
 func (c *fakeClient) Spaces(context.Context) ([]api.Space, error) {
@@ -111,12 +121,73 @@ func (c *fakeClient) Directories(_ context.Context, path string) (api.DirectoryL
 	return list, nil
 }
 
+// fakeConnector plays one machine's transport: Connect and Setup answer
+// with the scripted session or failure and count their calls, Setup
+// writes what a guided setup would to the released terminal, and Close
+// records the release.
+type fakeConnector struct {
+	name       string
+	remote     bool
+	client     *fakeClient
+	version    string
+	connectErr error
+	setupErr   error
+	setupSays  string
+	notice     string
+	connects   int
+	setups     int
+	closes     int
+	attached   []string
+}
+
+func (c *fakeConnector) Connect(ctx context.Context) (Session, error) {
+	c.connects++
+	if _, bounded := ctx.Deadline(); !bounded {
+		panic("an unattended attempt was not bounded")
+	}
+	if c.connectErr != nil {
+		return Session{}, c.connectErr
+	}
+	return c.session(), nil
+}
+
+func (c *fakeConnector) Setup(_ context.Context, _ io.Reader, stdout, _ io.Writer) (Session, error) {
+	c.setups++
+	_, _ = io.WriteString(stdout, c.setupSays)
+	if c.setupErr != nil {
+		return Session{}, c.setupErr
+	}
+	return c.session(), nil
+}
+
+func (c *fakeConnector) Close() error {
+	c.closes++
+	return nil
+}
+
+func (c *fakeConnector) session() Session {
+	s := Session{Client: c.client, ServerVersion: c.version, Attach: func(_ context.Context, terminal api.Terminal) (*exec.Cmd, error) {
+		c.attached = append(c.attached, terminal.ID)
+		cmd := exec.Command("/bin/attach", terminal.ID)
+		cmd.Env = []string{"TERM=xterm"}
+		return cmd, nil
+	}}
+	if c.remote {
+		s.TransportLoss = transportLoss
+	}
+	s.Notice = c.notice
+	return s
+}
+
 // fakeExec is the process seam: it records every child the picker asked
-// for and answers each with the next scripted exit.
+// for and answers each with the next scripted exit, and runs every
+// interactive setup handed the terminal, keeping what it printed there.
 type fakeExec struct {
 	commands [][]string
 	envs     [][]string
 	exits    []error
+	setups   int
+	terminal strings.Builder
 }
 
 func (f *fakeExec) exec(cmd *exec.Cmd, done tea.ExecCallback) tea.Cmd {
@@ -126,6 +197,15 @@ func (f *fakeExec) exec(cmd *exec.Cmd, done tea.ExecCallback) tea.Cmd {
 	if len(f.exits) > 0 {
 		err, f.exits = f.exits[0], f.exits[1:]
 	}
+	return func() tea.Msg { return done(err) }
+}
+
+func (f *fakeExec) execCommand(c tea.ExecCommand, done tea.ExecCallback) tea.Cmd {
+	f.setups++
+	c.SetStdin(strings.NewReader(""))
+	c.SetStdout(&f.terminal)
+	c.SetStderr(io.Discard)
+	err := c.Run()
 	return func() tea.Msg { return done(err) }
 }
 
@@ -139,13 +219,17 @@ func transportLoss(err error) bool {
 	return errors.As(err, &exit) && exit.ExitCode() == 255
 }
 
-// fakeClock records the reconnect delays and fires each tick immediately
-// when its Cmd runs — no wall-clock sleeps.
-type fakeClock struct{ delays []time.Duration }
+// fakeClock records every scheduled delay and holds the message for the
+// test to fire — no wall-clock sleeps, and no tick fires on its own.
+type fakeClock struct {
+	delays  []time.Duration
+	pending []tea.Msg
+}
 
-func (c *fakeClock) tick(delay time.Duration, generation uint64) tea.Cmd {
+func (c *fakeClock) tick(delay time.Duration, msg tea.Msg) tea.Cmd {
 	c.delays = append(c.delays, delay)
-	return func() tea.Msg { return reconnectTickMsg{generation: generation} }
+	c.pending = append(c.pending, msg)
+	return nil
 }
 
 var (
@@ -164,19 +248,10 @@ var (
 	}
 )
 
-type harness struct {
-	t      *testing.T
-	m      model
-	client *fakeClient
-	exec   *fakeExec
-	clock  *fakeClock
-}
-
-func newHarness(t *testing.T, target string) *harness {
-	t.Helper()
+func newFakeClient() *fakeClient {
 	home := api.DirectoryList{Path: "/home/u", Parent: ptr("/home"), Entries: []api.DirectoryEntry{
 		{Name: "Code", Path: "/home/u/Code"}, {Name: "play", Path: "/home/u/play"}, {Name: "work", Path: "/home/u/work"}}}
-	client := &fakeClient{
+	return &fakeClient{
 		spaces:    append([]api.Space(nil), spaces...),
 		terminals: append([]api.Terminal(nil), terminals...),
 		directories: map[string]api.DirectoryList{
@@ -188,19 +263,63 @@ func newHarness(t *testing.T, target string) *harness {
 			"/home/u/.cfg": {Path: "/home/u/.cfg", Parent: ptr("/home/u"), Entries: []api.DirectoryEntry{}},
 		},
 	}
-	h := &harness{t: t, client: client, exec: &fakeExec{}, clock: &fakeClock{}}
-	h.m = newModel(context.Background(), Options{
-		Client: client, Target: target, ClientVersion: "v1", ServerVersion: "v1",
-		Attach: func(_ context.Context, terminal api.Terminal) (*exec.Cmd, error) {
-			cmd := exec.Command("/bin/attach", terminal.ID)
-			cmd.Env = []string{"TERM=xterm"}
-			return cmd, nil
-		},
-	})
-	if target != "" {
-		h.m.transportLoss = transportLoss
+}
+
+type harness struct {
+	t          *testing.T
+	m          model
+	client     *fakeClient // the first connection's
+	connectors map[string]*fakeConnector
+	exec       *fakeExec
+	clock      *fakeClock
+	saves      [][]string
+}
+
+// newHarness is the single-machine picker: Local alone, or one remote
+// target as `atc --remote` opens it — no Add, no Remove.
+func newHarness(t *testing.T, target string) *harness {
+	t.Helper()
+	if target == "" {
+		return build(t, Options{ClientVersion: "v1", Connections: []Connection{{Name: "Local", Local: true}}})
 	}
+	return build(t, Options{ClientVersion: "v1", Connections: []Connection{{Name: target}}})
+}
+
+// newMultiHarness is the plain launch: Local and the saved remotes, with
+// the Host aliases Add may offer.
+func newMultiHarness(t *testing.T, remotes ...string) *harness {
+	t.Helper()
+	connections := []Connection{{Name: "Local", Local: true}}
+	for _, remote := range remotes {
+		connections = append(connections, Connection{Name: remote})
+	}
+	h := build(t, Options{ClientVersion: "v1", Connections: connections, Aliases: append(append([]string(nil), remotes...), "build", "tablet")})
+	h.m.open = func(alias string) Connector {
+		c := &fakeConnector{name: alias, remote: true, client: newFakeClient(), version: "v1"}
+		h.connectors[alias] = c
+		return c
+	}
+	h.m.save = func(remotes []string) error {
+		h.saves = append(h.saves, append([]string(nil), remotes...))
+		return nil
+	}
+	return h
+}
+
+func build(t *testing.T, opts Options) *harness {
+	t.Helper()
+	h := &harness{t: t, connectors: map[string]*fakeConnector{}, exec: &fakeExec{}, clock: &fakeClock{}}
+	for i := range opts.Connections {
+		c := &fakeConnector{name: opts.Connections[i].Name, remote: !opts.Connections[i].Local, client: newFakeClient(), version: "v1"}
+		h.connectors[c.name] = c
+		opts.Connections[i].Connector = c
+		if i == 0 {
+			h.client = c.client
+		}
+	}
+	h.m = newModel(context.Background(), opts)
 	h.m.execProcess = h.exec.exec
+	h.m.execCommand = h.exec.execCommand
 	h.m.tick = h.clock.tick
 	// Periodic refreshes are delivered explicitly by the tests that need them.
 	h.m.refreshTick = func() tea.Cmd { return nil }
@@ -208,6 +327,15 @@ func newHarness(t *testing.T, target string) *harness {
 }
 
 func ptr(s string) *string { return &s }
+
+func (h *harness) conn(name string) *connection {
+	h.t.Helper()
+	c := h.m.connection(name)
+	if c == nil {
+		h.t.Fatalf("no connection %q", name)
+	}
+	return c
+}
 
 // run applies msg and then every message its command produces, batches
 // flattened, so a test reads like the program: key, load, result.
@@ -227,6 +355,17 @@ func (h *harness) send(msg tea.Msg) []tea.Msg {
 	updated, cmd := h.m.Update(msg)
 	h.m = updated.(model)
 	return drain(cmd)
+}
+
+// fire delivers the oldest scheduled tick and everything it leads to.
+func (h *harness) fire() {
+	h.t.Helper()
+	if len(h.clock.pending) == 0 {
+		h.t.Fatal("no tick scheduled")
+	}
+	msg := h.clock.pending[0]
+	h.clock.pending = h.clock.pending[1:]
+	h.run(msg)
 }
 
 func drain(cmd tea.Cmd) []tea.Msg {
@@ -273,6 +412,16 @@ func keyPress(name string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: name}
 }
 
+// run on a model returned by an Update-style method: apply nothing, the
+// model is already updated, then drain its command.
+func (h *harness) runModel(m tea.Model, cmd tea.Cmd) {
+	h.t.Helper()
+	h.m = m.(model)
+	for _, produced := range drain(cmd) {
+		h.run(produced)
+	}
+}
+
 func (h *harness) open() {
 	h.t.Helper()
 	for _, msg := range drain(h.m.Init()) {
@@ -313,41 +462,62 @@ var background = regexp.MustCompile(`\x1b\[(\d+;)*48;5;\d+m`)
 
 func highlighted(line string) bool { return background.MatchString(line) }
 
+// dimmedRow reports whether the Spaces row for conn/name is rendered
+// faint: its name cell carries the attribute, selected or not.
+func dimmedRow(m model, conn, name string) bool {
+	row := regexp.MustCompile(`^│ ` + name + `\s+` + conn + `\s`)
+	for _, line := range strings.Split(m.View().Content, "\n") {
+		if row.MatchString(ansi.Strip(line)) {
+			return regexp.MustCompile(`\x1b\[2[;\d]*m` + name).MatchString(line)
+		}
+	}
+	return false
+}
+
 func matches(pattern, text string) bool { return regexp.MustCompile(pattern).MatchString(text) }
+
+// rowKeys are the Spaces table's rows as connection/ID pairs.
+func rowKeys(m model) []string {
+	var keys []string
+	for _, row := range m.rows() {
+		keys = append(keys, row.conn+"/"+row.space.ID)
+	}
+	return keys
+}
 
 func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
-	if diff := cmp.Diff([]string{"spce-home", "spce-play", "spce-work"}, spaceIDs(h.m.spaces)); diff != "" {
+	if diff := cmp.Diff([]string{"Local/spce-home", "Local/spce-play", "Local/spce-work"}, rowKeys(h.m)); diff != "" {
 		t.Errorf("Default first, then newest-first (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(map[string]int{"spce-work": 3, "spce-play": 1}, h.m.terminalCounts); diff != "" {
+	if diff := cmp.Diff(map[string]int{"spce-work": 3, "spce-play": 1}, h.conn("Local").counts); diff != "" {
 		t.Errorf("terminal counts (-want +got):\n%s", diff)
 	}
-	if h.m.selectedSpace != "spce-home" || h.m.screen != screenSpaces || h.m.message != "" {
-		t.Fatalf("initial = selected %q screen %v message %q", h.m.selectedSpace, h.m.screen, h.m.message)
+	if h.m.selectedSpace != (spaceRef{"Local", "spce-home"}) || h.m.screen != screenSpaces || h.m.message != "" {
+		t.Fatalf("initial = selected %v screen %v message %q", h.m.selectedSpace, h.m.screen, h.m.message)
 	}
 	h.key("j")
 	h.key("j")
 	h.key("j") // clamps
-	if h.m.selectedSpace != "spce-work" {
-		t.Errorf("after j j j: %q", h.m.selectedSpace)
+	if h.m.selectedSpace.id != "spce-work" {
+		t.Errorf("after j j j: %v", h.m.selectedSpace)
 	}
 	h.key("k")
-	if h.m.selectedSpace != "spce-play" {
-		t.Errorf("after k: %q", h.m.selectedSpace)
+	if h.m.selectedSpace.id != "spce-play" {
+		t.Errorf("after k: %v", h.m.selectedSpace)
 	}
 	// Selection survives a refresh by ID, and falls to the adjacent row
 	// when its Space disappears.
 	h.client.spaces = []api.Space{spaces[0], spaces[1]}
 	h.key("r")
-	if h.m.selectedSpace != "spce-work" {
-		t.Errorf("after the selected space vanished: %q, want the adjacent row", h.m.selectedSpace)
+	if h.m.selectedSpace.id != "spce-work" {
+		t.Errorf("after the selected space vanished: %v, want the adjacent row", h.m.selectedSpace)
 	}
 	if !highlighted(rawLine(h.m, "work")) || highlighted(rawLine(h.m, "Default")) {
 		t.Errorf("selection not the highlighted row:\n%s", h.m.View().Content)
 	}
-	if view := plain(h.m); !matches(`NAME\s+TERMINALS\s+DIRECTORY`, view) || !matches(`Default\s+0\s+/home/u\s+default`, view) || !matches(`work\s+3\s+/home/u/work`, view) {
+	if view := plain(h.m); !matches(`NAME\s+CONNECTION\s+TERMINALS\s+DIRECTORY`, view) || !matches(`Default\s+Local\s+0\s+/home/u\s+default`, view) || !matches(`work\s+Local\s+3\s+/home/u/work`, view) {
 		t.Errorf("view:\n%s", view)
 	}
 }
@@ -361,8 +531,8 @@ func TestTerminalListNumberOrderAndBack(t *testing.T) {
 	h.key("j")
 	h.key("j") // work
 	h.key("enter")
-	if h.m.screen != screenTerminals || h.m.space.ID != "spce-work" {
-		t.Fatalf("enter = screen %v space %q", h.m.screen, h.m.space.ID)
+	if h.m.screen != screenTerminals || h.m.space.ID != "spce-work" || h.m.conn != "Local" {
+		t.Fatalf("enter = screen %v space %q conn %q", h.m.screen, h.m.space.ID, h.m.conn)
 	}
 	if diff := cmp.Diff([]string{"term-old", "term-dead", "term-new"}, terminalIDs(h.m.terminals)); diff != "" {
 		t.Errorf("number order (-want +got):\n%s", diff)
@@ -388,8 +558,8 @@ func TestTerminalListNumberOrderAndBack(t *testing.T) {
 		t.Errorf("view:\n%s", plain(h.m))
 	}
 	h.key("esc")
-	if h.m.screen != screenSpaces || h.m.selectedSpace != "spce-work" {
-		t.Errorf("esc = screen %v selected %q", h.m.screen, h.m.selectedSpace)
+	if h.m.screen != screenSpaces || h.m.selectedSpace.id != "spce-work" {
+		t.Errorf("esc = screen %v selected %v", h.m.screen, h.m.selectedSpace)
 	}
 	h.key("enter")
 	h.key("h")
@@ -419,14 +589,23 @@ func TestDirectoryRefreshWhileTerminalListVisible(t *testing.T) {
 	if h.m.selectedTerminal != selected || !strings.Contains(plain(h.m), "/home/u/other-worktree") {
 		t.Fatalf("directory refresh lost selection or path:\n%s", plain(h.m))
 	}
-	// A failed poll preserves both the list and any user-facing notice.
+	// A failed poll preserves both the list and any user-facing notice,
+	// and is the moment the connection is known to be unavailable: its
+	// recovery starts here, not at the next key.
 	before := plain(h.m)
 	h.client.err = errors.New("offline")
 	h.run(refreshTickMsg{})
 	if diff := cmp.Diff(before, plain(h.m)); diff != "" {
 		t.Fatalf("failed background poll changed the view:\n%s", diff)
 	}
+	if h.conn("Local").status != connUnavailable || len(h.clock.pending) != 1 {
+		t.Fatalf("failed poll: status %v ticks %v", h.conn("Local").status, h.clock.pending)
+	}
 	h.client.err = nil
+	h.fire()
+	if h.conn("Local").status != connReady {
+		t.Fatalf("health answered but the connection stayed %v", h.conn("Local").status)
+	}
 	// A delayed response cannot overwrite an explicit refresh or a new screen.
 	h.client.terminals[0].Directory = "/obsolete"
 	stale := h.send(refreshTickMsg{})
@@ -464,22 +643,34 @@ func TestRequestFailureShowsErrorAndKeepsNavigation(t *testing.T) {
 	h.open()
 	h.client.err = errors.New("dial tcp: connection refused")
 	h.key("r")
-	if !strings.Contains(h.m.message, "loading spaces: dial tcp") || len(h.m.spaces) != 3 {
-		t.Fatalf("failure = message %q spaces %d", h.m.message, len(h.m.spaces))
+	if !strings.Contains(h.m.message, "loading spaces on ws: dial tcp") || len(h.m.rows()) != 3 {
+		t.Fatalf("failure = message %q rows %d", h.m.message, len(h.m.rows()))
 	}
 	h.key("j")
-	if h.m.selectedSpace != "spce-play" {
+	if h.m.selectedSpace.id != "spce-play" {
 		t.Error("navigation blocked by the error")
 	}
+	h.client.err = nil
+	h.fire() // the health poll answers: ready again
 	h.client.err = &api.Problem{Status: http.StatusUnauthorized, Code: api.CodeUnauthorized}
 	h.key("r")
-	if !strings.Contains(h.m.message, "token was rotated") || !strings.Contains(h.m.message, "atc --remote ws") {
+	if !strings.Contains(h.m.message, "token for ws was rotated") || !strings.Contains(h.m.message, "connect again from connections") {
 		t.Errorf("401 in remote mode: %q", h.m.message)
 	}
+	if c := h.conn("ws"); c.status != connFailed || c.action() != "connect" {
+		t.Errorf("401 left ws %v/%q, want failed with login", c.status, c.action())
+	}
+	h.client.err = nil
+	h.key("c")
+	h.key("r") // retry all: ws reconnects
+	h.key("esc")
 	h.client.err = &api.Problem{Status: http.StatusNotFound, Code: api.CodeNotFound}
 	h.key("r")
-	if !strings.Contains(h.m.message, "remote server v1 lacks an API") || !strings.Contains(h.m.message, "upgrade ATC on ws and relaunch") {
+	if !strings.Contains(h.m.message, "the server on ws (v1) lacks an API") || !strings.Contains(h.m.message, "update it from connections") {
 		t.Errorf("route 404 in remote mode: %q", h.m.message)
+	}
+	if c := h.conn("ws"); c.status != connFailed || c.action() != "update" {
+		t.Errorf("404 left ws %v/%q, want failed with update", c.status, c.action())
 	}
 	local := newHarness(t, "")
 	local.open()
@@ -488,15 +679,18 @@ func TestRequestFailureShowsErrorAndKeepsNavigation(t *testing.T) {
 	if !strings.Contains(local.m.message, "server v1 lacks an API") || !strings.Contains(local.m.message, "`atc server restart`") {
 		t.Errorf("route 404 in local mode: %q", local.m.message)
 	}
-	h.client.err = nil
-	h.key("r")
-	if h.m.message != "" {
-		t.Errorf("retry left the message: %q", h.m.message)
+	if local.conn("Local").status != connReady {
+		t.Error("a problem answer marked Local not ready")
 	}
-	if msgs := h.send(keyPress("q")); len(msgs) != 1 || reflect.TypeOf(msgs[0]) != reflect.TypeOf(tea.QuitMsg{}) {
+	local.client.err = nil
+	local.key("r")
+	if local.m.message != "" {
+		t.Errorf("retry left the message: %q", local.m.message)
+	}
+	if msgs := local.send(keyPress("q")); len(msgs) != 1 || reflect.TypeOf(msgs[0]) != reflect.TypeOf(tea.QuitMsg{}) {
 		t.Errorf("q = %v, want quit", msgs)
 	}
-	if msgs := h.send(keyPress("ctrl+c")); len(msgs) != 1 || reflect.TypeOf(msgs[0]) != reflect.TypeOf(tea.QuitMsg{}) {
+	if msgs := local.send(keyPress("ctrl+c")); len(msgs) != 1 || reflect.TypeOf(msgs[0]) != reflect.TypeOf(tea.QuitMsg{}) {
 		t.Errorf("ctrl+c = %v, want quit", msgs)
 	}
 }
@@ -511,11 +705,11 @@ func TestDeleteConfirmations(t *testing.T) {
 	h.key("j")
 	h.key("j") // work, three terminals
 	h.key("d")
-	want := &confirmation{kind: "space", id: "spce-work", name: "work", count: 3}
+	want := &confirmation{kind: "space", conn: "Local", id: "spce-work", name: "work", count: 3}
 	if diff := cmp.Diff(want, h.m.confirm, cmp.AllowUnexported(confirmation{})); diff != "" {
 		t.Fatalf("confirmation (-want +got):\n%s", diff)
 	}
-	if !strings.Contains(plain(h.m), "delete space work and its 3 terminals?") || !strings.Contains(h.m.View().Content, newStyles(true).bold.Render("work")) {
+	if !strings.Contains(plain(h.m), "delete space work and its 3 terminals on Local?") || !strings.Contains(h.m.View().Content, newStyles(true).bold.Render("work")) {
 		t.Errorf("view:\n%s", h.m.View().Content)
 	}
 	h.key("n")
@@ -533,14 +727,14 @@ func TestDeleteConfirmations(t *testing.T) {
 	if diff := cmp.Diff([]string{"space:spce-work"}, h.client.deleted); diff != "" {
 		t.Errorf("deleted (-want +got):\n%s", diff)
 	}
-	if h.m.screen != screenSpaces || h.m.selectedSpace != "spce-play" {
-		t.Errorf("after delete: screen %v selected %q", h.m.screen, h.m.selectedSpace)
+	if h.m.screen != screenSpaces || h.m.selectedSpace.id != "spce-play" {
+		t.Errorf("after delete: screen %v selected %v", h.m.screen, h.m.selectedSpace)
 	}
 
 	// Terminal delete names the terminal and reloads the list.
 	h.key("enter") // play
 	h.key("d")
-	if h.m.confirm == nil || h.m.confirm.kind != "terminal" || h.m.confirm.name != "1:play" {
+	if h.m.confirm == nil || h.m.confirm.kind != "terminal" || h.m.confirm.name != "1:play" || h.m.confirm.conn != "Local" {
 		t.Fatalf("terminal confirmation = %+v", h.m.confirm)
 	}
 	if !strings.Contains(plain(h.m), "delete terminal 1:play?") {
@@ -560,8 +754,8 @@ func TestDirectoryPickerNavigationFilteringAndCreate(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
 	h.key("n")
-	if h.m.screen != screenDirectories || h.m.dir.Path != "/home/u" || h.m.selectedDir != "Code" {
-		t.Fatalf("n = screen %v dir %q selected %q", h.m.screen, h.m.dir.Path, h.m.selectedDir)
+	if h.m.screen != screenDirectories || h.m.dir.Path != "/home/u" || h.m.selectedDir != "Code" || h.m.conn != "Local" {
+		t.Fatalf("n = screen %v dir %q selected %q conn %q", h.m.screen, h.m.dir.Path, h.m.selectedDir, h.m.conn)
 	}
 	// Typing filters case-insensitively by prefix and moves the
 	// selection into the filtered set.
@@ -624,8 +818,8 @@ func TestDirectoryPickerNavigationFilteringAndCreate(t *testing.T) {
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new02"}}, h.exec.commands); diff != "" {
 		t.Errorf("attached (-want +got):\n%s", diff)
 	}
-	if h.m.screen != screenTerminals || h.m.space.ID != "spce-new01" || h.m.selectedTerminal != "term-new02" || h.m.selectedSpace != "spce-new01" {
-		t.Errorf("after create = screen %v space %q selected %q selectedSpace %q", h.m.screen, h.m.space.ID, h.m.selectedTerminal, h.m.selectedSpace)
+	if h.m.screen != screenTerminals || h.m.space.ID != "spce-new01" || h.m.selectedTerminal != "term-new02" || h.m.selectedSpace != (spaceRef{"Local", "spce-new01"}) {
+		t.Errorf("after create = screen %v space %q selected %q selectedSpace %v", h.m.screen, h.m.space.ID, h.m.selectedTerminal, h.m.selectedSpace)
 	}
 	// esc with an empty field leaves the picker.
 	h.key("esc")
@@ -771,7 +965,7 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	if last := h.m.terminals[len(h.m.terminals)-1].ID; h.m.selectedTerminal != "term-new01" || last != "term-new01" {
 		t.Errorf("after create: selected %q last %q", h.m.selectedTerminal, last)
 	}
-	h.client.createErr = errors.New("boom")
+	h.client.createErr = &api.Problem{Status: http.StatusInternalServerError, Code: "internal", Detail: "boom"}
 	h.key("n")
 	if !strings.Contains(h.m.message, "creating terminal: boom") || len(h.exec.commands) != 1 {
 		t.Errorf("create failure = %q exec %v", h.m.message, h.exec.commands)
@@ -798,6 +992,52 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	}
 }
 
+// A create still in flight when the user leaves the screen must not act
+// on where they went: no attach, no navigation.
+// What connecting changed — the local server registered on a first run —
+// is shown on the message line once the connection is ready, since the
+// connector had no terminal to say it on.
+func TestSessionNoticeIsShownWhenConnected(t *testing.T) {
+	h := newMultiHarness(t, "ws")
+	h.connectors["Local"].notice = "registered atc.server; undo with `atc server uninstall`"
+	h.open()
+	if h.m.message != "registered atc.server; undo with `atc server uninstall`" || h.m.failed {
+		t.Errorf("message after connecting = %q (failed %v)", h.m.message, h.m.failed)
+	}
+	view := lines(h.m)
+	if view[len(view)-3] != "registered atc.server; undo with `atc server uninstall`" {
+		t.Errorf("message line %q", view[len(view)-3])
+	}
+}
+
+func TestCreateAnsweredAfterLeavingScreenIsDropped(t *testing.T) {
+	h := newHarness(t, "")
+	h.open()
+	h.key("j")
+	h.key("j")
+	h.key("enter") // work
+	pending := h.send(keyPress("n"))
+	h.key("esc")
+	if h.m.screen != screenSpaces {
+		t.Fatalf("esc during a create = screen %v", h.m.screen)
+	}
+	for _, msg := range pending {
+		h.run(msg)
+	}
+	if h.m.screen != screenSpaces || len(h.exec.commands) != 0 || h.m.loading {
+		t.Errorf("late create = screen %v exec %v loading %v", h.m.screen, h.exec.commands, h.m.loading)
+	}
+	h.key("n")
+	pending = h.send(keyPress("."))
+	h.key("esc")
+	for _, msg := range pending {
+		h.run(msg)
+	}
+	if h.m.screen != screenSpaces || len(h.exec.commands) != 0 {
+		t.Errorf("late space create = screen %v exec %v", h.m.screen, h.exec.commands)
+	}
+}
+
 func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	h := newHarness(t, "ws")
 	h.open()
@@ -818,51 +1058,37 @@ func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	if view := lines(h.m); view[len(view)-2] != "esc cancel" {
 		t.Errorf("reconnecting footer = %q", view[len(view)-2])
 	}
+	for _, msg := range ended {
+		if !isWindowSizeRequest(msg) {
+			t.Errorf("unexpected message on loss: %v", msg)
+		}
+	}
 	// The retry is modal: list keys are ignored until it ends.
 	h.key("j")
 	if h.m.selectedTerminal != "term-play" || h.m.reconnect == nil {
 		t.Fatalf("keys during reconnect moved the selection")
 	}
-	var tick tea.Msg
-	for _, msg := range ended {
-		if isWindowSizeRequest(msg) {
-			continue
-		}
-		tick = msg
-	}
-	if tick == nil {
-		t.Fatal("no reconnect tick scheduled")
-	}
-	poll := h.send(tick) // poll 1 fails
-	tick2 := h.send(poll[0])
-	poll = h.send(tick2[0]) // poll 2 fails
+	h.fire() // poll 1 fails
+	h.fire() // poll 2 fails
 	h.client.err = nil
-	tick3 := h.send(poll[0])
-	poll = h.send(tick3[0]) // poll 3 answers running
+	h.fire() // poll 3 answers running: re-attached
 	if diff := cmp.Diff([]time.Duration{time.Second, 2 * time.Second, 4 * time.Second}, h.clock.delays); diff != "" {
 		t.Errorf("backoff (-want +got):\n%s", diff)
 	}
-	h.send(poll[0])
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-play"}, {"/bin/attach", "term-play"}}, h.exec.commands); diff != "" {
 		t.Errorf("re-attach (-want +got):\n%s", diff)
 	}
-	if h.m.screen != screenTerminals || h.m.reconnect != nil {
-		t.Errorf("after re-attach = screen %v reconnect %v", h.m.screen, h.m.reconnect)
+	if h.m.screen != screenTerminals || h.m.reconnect != nil || len(h.clock.pending) != 0 {
+		t.Errorf("after re-attach = screen %v reconnect %v pending %v", h.m.screen, h.m.reconnect, h.clock.pending)
 	}
 
 	// Backoff caps at thirty seconds.
 	h.clock.delays = nil
 	h.exec.exits = []error{fakeExit(255)}
 	h.client.err = errors.New("down")
-	next := h.send(h.send(keyPress("enter"))[0])
+	h.run(h.send(keyPress("enter"))[0])
 	for range 8 {
-		var tick tea.Msg
-		for _, msg := range next {
-			if !isWindowSizeRequest(msg) {
-				tick = msg
-			}
-		}
-		next = h.send(h.send(tick)[0])
+		h.fire()
 	}
 	if got := h.clock.delays[len(h.clock.delays)-1]; got != reconnectMax || h.clock.delays[5] != reconnectMax {
 		t.Errorf("backoff did not cap at %s: %v", reconnectMax, h.clock.delays)
@@ -874,11 +1100,7 @@ func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 		t.Fatalf("esc = screen %v reconnect %v", h.m.screen, h.m.reconnect)
 	}
 	polls := h.client.polls
-	for _, msg := range next {
-		if !isWindowSizeRequest(msg) {
-			h.run(msg)
-		}
-	}
+	h.fire()
 	if h.client.polls != polls || len(h.exec.commands) != 3 {
 		t.Errorf("cancelled retry still polled or attached: polls %d exec %v", h.client.polls, h.exec.commands)
 	}
@@ -895,7 +1117,7 @@ func TestReconnectStopsWhenTerminalIsNotRunningOrGone(t *testing.T) {
 		"gone": {func(c *fakeClient) { c.terminals = c.terminals[:3] }, "terminal not found"},
 		"token rotated": {func(c *fakeClient) {
 			c.err = &api.Problem{Status: http.StatusUnauthorized, Code: api.CodeUnauthorized}
-		}, "token was rotated"},
+		}, "token for ws was rotated"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, "ws")
@@ -903,13 +1125,9 @@ func TestReconnectStopsWhenTerminalIsNotRunningOrGone(t *testing.T) {
 			h.key("j")
 			h.key("enter")
 			h.exec.exits = []error{fakeExit(255)}
-			ended := h.send(h.send(keyPress("enter"))[0])
+			h.run(h.send(keyPress("enter"))[0])
 			tc.mutate(h.client)
-			for _, msg := range ended {
-				if !isWindowSizeRequest(msg) {
-					h.run(msg)
-				}
-			}
+			h.fire()
 			if h.m.screen != screenTerminals || h.m.reconnect != nil || !strings.Contains(h.m.message, tc.want) || len(h.exec.commands) != 1 {
 				t.Errorf("stop = screen %v reconnect %v message %q exec %v", h.m.screen, h.m.reconnect, h.m.message, h.exec.commands)
 			}
@@ -925,7 +1143,7 @@ func TestHelpOverlay(t *testing.T) {
 		t.Fatalf("help = %v view:\n%s", h.m.help, plain(h.m))
 	}
 	h.key("1")
-	if h.m.help || h.m.selectedSpace != "spce-home" || len(h.exec.commands) != 0 {
+	if h.m.help || h.m.selectedSpace.id != "spce-home" || len(h.exec.commands) != 0 {
 		t.Error("closing key was also applied to the list")
 	}
 }
@@ -936,8 +1154,8 @@ func TestDigitAttachesByRowNumber(t *testing.T) {
 	h.open()
 	// Inert on the spaces screen.
 	h.key("1")
-	if len(h.exec.commands) != 0 || h.m.screen != screenSpaces || h.m.selectedSpace != "spce-home" || h.m.message != "" {
-		t.Fatalf("digit on spaces = exec %v screen %v selected %q message %q", h.exec.commands, h.m.screen, h.m.selectedSpace, h.m.message)
+	if len(h.exec.commands) != 0 || h.m.screen != screenSpaces || h.m.selectedSpace.id != "spce-home" || h.m.message != "" {
+		t.Fatalf("digit on spaces = exec %v screen %v selected %v message %q", h.exec.commands, h.m.screen, h.m.selectedSpace, h.m.message)
 	}
 	// Filter text in the directory picker.
 	h.key("n")
@@ -997,18 +1215,18 @@ func TestDigitAttachesByRowNumber(t *testing.T) {
 func TestFrameFitsTerminalAndTruncatesRows(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
-	h.run(tea.WindowSizeMsg{Width: 40, Height: 12})
+	h.run(tea.WindowSizeMsg{Width: 52, Height: 12})
 	raw := strings.Split(h.m.View().Content, "\n")
 	if len(raw) != 12 {
 		t.Fatalf("%d lines, want 12:\n%s", len(raw), plain(h.m))
 	}
 	for i, line := range raw {
-		if ansi.StringWidth(line) != 40 {
+		if ansi.StringWidth(line) != 52 {
 			t.Errorf("line %d is %d wide: %q", i, ansi.StringWidth(line), ansi.Strip(line))
 		}
 	}
 	view := lines(h.m)
-	if !strings.HasPrefix(view[0], "╭ local ─") || !strings.HasSuffix(view[0], "╮") || !strings.HasPrefix(view[11], "╰") {
+	if !strings.HasPrefix(view[0], "╭ Local ─") || !strings.HasSuffix(view[0], "╮") || !strings.HasPrefix(view[11], "╰") {
 		t.Errorf("frame:\n%s", plain(h.m))
 	}
 	if !strings.Contains(plain(h.m), "/home/…") {
@@ -1022,7 +1240,7 @@ func TestFrameFitsTerminalAndTruncatesRows(t *testing.T) {
 		t.Errorf("window at height 9:\n%s", view)
 	}
 	h.send(keyPress("r"))
-	if view := lines(h.m); !h.m.loading || !strings.HasSuffix(view[0], " loading… ╮") {
+	if view := lines(h.m); !h.m.anyLoading() || !strings.HasSuffix(view[0], " loading… ╮") {
 		t.Errorf("loading indicator: %q", view[0])
 	}
 	// Narrower than the title and the note together: the note wins,
@@ -1041,7 +1259,8 @@ func TestFrameFitsTerminalAndTruncatesRows(t *testing.T) {
 }
 
 // Each screen's breadcrumb and footer, exactly; movement, enter, r,
-// and the digits never appear in a footer.
+// and the digits never appear in a footer. The terminal and directory
+// screens name the connection they work on.
 func TestBreadcrumbsAndFooters(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
@@ -1052,24 +1271,28 @@ func TestBreadcrumbsAndFooters(t *testing.T) {
 		if view[1] != breadcrumb || view[len(view)-2] != footer {
 			t.Errorf("breadcrumb %q footer %q, want %q and %q", view[1], view[len(view)-2], breadcrumb, footer)
 		}
-		for _, obvious := range []string{"j/k", "enter", "r refresh", "1-9"} {
+		for _, obvious := range []string{"j/k", "enter open", "enter attach", "r refresh", "1-9"} {
 			if strings.Contains(footer, obvious) {
 				t.Errorf("footer %q names %q", footer, obvious)
 			}
 		}
 	}
-	check("spaces", "n new   d delete   ? help   q quit")
+	check("spaces", "n new   d delete   c connections   ? help   q quit")
 	h.key("j")
 	h.key("d")
 	check("spaces", "y confirm   n/esc cancel")
 	h.key("esc")
 	h.key("j")
 	h.key("enter")
-	check("spaces › work  /home/u/work", "n new   d delete   esc back   ? help   q quit")
+	check("spaces › Local › work  /home/u/work", "n new   d delete   esc back   ? help   q quit")
 	h.key("esc")
 	h.key("n")
 	h.key("C")
-	check("spaces › new space  /home/u/C▏", ". choose this directory   esc back   ? help")
+	check("spaces › Local › new space  /home/u/C▏", ". choose this directory   esc back   ? help")
+	h.key("esc")
+	h.key("esc")
+	h.key("c")
+	check("connections", "esc back   ? help   q quit")
 	h.key("?")
 	check("help", "any key to close")
 }
@@ -1105,20 +1328,22 @@ func TestStatusAndMessageColours(t *testing.T) {
 }
 
 // The help overlay lists every key and is the only place the versions
-// show: dim when equal, yellow when different, labelled for the target.
-// On a short terminal it scrolls with the movement keys instead of
-// being cut off.
+// show: the client's, then each connected server's, dim when equal and
+// yellow when different. On a short terminal it scrolls with the
+// movement keys instead of being cut off.
 func TestHelpOverlayVersionsAndScroll(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
-	h.run(tea.WindowSizeMsg{Width: 80, Height: 40})
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 50})
 	h.key("?")
 	view := strings.Join(lines(h.m), "\n")
 	for _, group := range []string{
 		`everywhere\n.*\?\s+help\s+ctrl\+c\s+quit`,
-		`spaces\n.*↑/↓ j/k\s+move\s+enter\s+open\n.*n\s+new space\s+d\s+delete\n.*r\s+refresh\s+q\s+quit`,
+		`spaces\n.*↑/↓ j/k\s+move\s+enter\s+open\n.*n\s+new space\s+d\s+delete\n.*c\s+connections\s+r\s+refresh\n.*q\s+quit`,
 		`terminals\n.*↑/↓ j/k\s+move\s+enter\s+attach\n.*1-9\s+attach by #\s+ctrl-\\\s+detach\n.*n\s+new shell\s+d\s+delete\n.*esc h\s+back\s+r\s+refresh\n.*q\s+quit`,
-		`new space\n.*type\s+filter, or an absolute path\n.*↑/↓\s+move\s+ctrl\+p/n\s+move\n.*enter\s+descend\s+backspace up\n.*\.\s+choose\s+ctrl\+r\s+refresh\n.*esc\s+clear the field, then back`,
+		`new space\n.*↑/↓ j/k\s+move\s+enter\s+choose connection\n.*type\s+filter, or an absolute path\n.*↑/↓\s+move\s+ctrl\+p/n\s+move\n.*enter\s+descend\s+backspace up\n.*\.\s+choose\s+ctrl\+r\s+refresh\n.*esc\s+clear the field, then back`,
+		`connections\n.*↑/↓ j/k\s+move\s+enter\s+connect, retry, or update\n.*a\s+add\s+d\s+remove\n.*r\s+retry all\s+esc h\s+back\n.*q\s+quit`,
+		`add\n.*↑/↓ j/k\s+move\s+enter\s+add and set up\n.*esc h\s+back`,
 		`confirm\n.*y\s+confirm\s+n esc\s+cancel`,
 		`reconnecting\n.*esc\s+cancel, back to terminals`,
 	} {
@@ -1127,52 +1352,53 @@ func TestHelpOverlayVersionsAndScroll(t *testing.T) {
 		}
 	}
 	st := newStyles(true)
-	if !strings.Contains(h.m.View().Content, st.dim.Render("client v1 · server v1")) {
+	if !strings.Contains(h.m.View().Content, st.dim.Render("client v1")) || !strings.Contains(h.m.View().Content, st.dim.Render("Local server v1")) {
 		t.Errorf("equal versions not dim:\n%s", h.m.View().Content)
 	}
 	h.key("esc")
-	h.m.serverVersion = "v2"
+	h.conn("Local").session.ServerVersion = "v2"
 	if strings.Contains(plain(h.m), "v2") || strings.Contains(plain(h.m), "v1") {
 		t.Errorf("version outside help:\n%s", plain(h.m))
 	}
 	h.key("?")
-	if !strings.Contains(h.m.View().Content, st.warn.Render("client v1 · server v2")) {
+	if !strings.Contains(h.m.View().Content, st.warn.Render("Local server v2")) {
 		t.Errorf("mismatch not yellow:\n%s", h.m.View().Content)
 	}
 	h.key("x")
 	remote := newHarness(t, "devbox")
 	remote.open()
-	remote.run(tea.WindowSizeMsg{Width: 80, Height: 40})
+	remote.run(tea.WindowSizeMsg{Width: 80, Height: 50})
 	remote.key("?")
-	if view := lines(remote.m); !strings.HasPrefix(view[0], "╭ devbox ") || !strings.Contains(plain(remote.m), "local v1 · remote v1") {
+	if view := lines(remote.m); !strings.HasPrefix(view[0], "╭ devbox ") || !strings.Contains(plain(remote.m), "devbox server v1") {
 		t.Errorf("remote help:\n%s", plain(remote.m))
 	}
 
 	// Five body lines: the help scrolls, the message line says so, and
 	// any key but movement still closes it.
+	total := len(h.m.helpLines(styles{}))
 	h.run(tea.WindowSizeMsg{Width: 80, Height: 12})
 	h.key("?")
 	body := func() []string { return lines(h.m)[3:8] }
-	if got := body(); got[0] != "everywhere" || lines(h.m)[9] != "↑/↓ j/k scroll · line 1 of 29" || lines(h.m)[10] != "any key to close" {
+	if got := body(); got[0] != "everywhere" || lines(h.m)[9] != fmt.Sprintf("↑/↓ j/k scroll · line 1 of %d", total) || lines(h.m)[10] != "any key to close" {
 		t.Fatalf("short help = body %q message %q footer %q", got, lines(h.m)[9], lines(h.m)[10])
 	}
 	h.key("j")
 	if got := body(); !h.m.help || !strings.HasPrefix(got[0], "?          help") {
 		t.Errorf("after j: help %v body %q", h.m.help, got)
 	}
-	for range 40 {
+	for range 60 {
 		h.key("down")
 	}
-	if got := body(); got[4] != "client v1 · server v2" {
+	if got := body(); got[4] != "Local server v2" {
 		t.Errorf("scrolled to the end: %q", got)
 	}
 	h.key("k")
-	if got := body(); got[4] != "" || !h.m.help {
+	if got := body(); got[4] != "client v1" || !h.m.help {
 		t.Errorf("after k: %q", got)
 	}
 	// Growing the terminal clamps the offset so k answers at once.
 	h.run(tea.WindowSizeMsg{Width: 80, Height: 30})
-	if h.m.helpScroll != h.m.helpScrollLimit() || lines(h.m)[25] != "client v1 · server v2" {
+	if h.m.helpScroll != h.m.helpScrollLimit() || lines(h.m)[25] != "Local server v2" {
 		t.Errorf("after growing: scroll %d limit %d line 25 %q", h.m.helpScroll, h.m.helpScrollLimit(), lines(h.m)[25])
 	}
 	h.run(tea.WindowSizeMsg{Width: 80, Height: 12})
@@ -1184,5 +1410,379 @@ func TestHelpOverlayVersionsAndScroll(t *testing.T) {
 	h.key("?")
 	if got := body(); got[0] != "everywhere" {
 		t.Errorf("reopened help: %q", got)
+	}
+}
+
+// Every connection is attempted on launch and loads on its own: one
+// that needs a person leaves the others' Spaces in the table, the same
+// IDs on two servers stay two rows, and actions reach only the row's
+// own server (ATC-327).
+func TestConnectionsLoadIndependentlyAndRouteByConnection(t *testing.T) {
+	h := newMultiHarness(t, "ws", "devbox")
+	h.connectors["devbox"].connectErr = fmt.Errorf("%w: ssh to devbox: Permission denied (publickey)", ErrLoginRequired)
+	h.open()
+	for _, name := range []string{"Local", "ws", "devbox"} {
+		if h.connectors[name].connects != 1 {
+			t.Errorf("%s attempted %d times on launch", name, h.connectors[name].connects)
+		}
+	}
+	want := []string{"Local/spce-home", "Local/spce-play", "Local/spce-work", "ws/spce-home", "ws/spce-play", "ws/spce-work"}
+	if diff := cmp.Diff(want, rowKeys(h.m)); diff != "" {
+		t.Errorf("rows (-want +got):\n%s", diff)
+	}
+	if h.m.screen != screenSpaces || h.m.selectedSpace != (spaceRef{"Local", "spce-home"}) {
+		t.Errorf("landed on screen %v selected %v", h.m.screen, h.m.selectedSpace)
+	}
+	if view := lines(h.m); !strings.HasPrefix(view[0], "╭ atc ─") || view[1] != "spaces  devbox: needs login" {
+		t.Errorf("title %q breadcrumb %q", view[0], view[1])
+	}
+	if !matches(`work\s+ws\s+3\s+/home/u/work`, plain(h.m)) {
+		t.Errorf("view:\n%s", plain(h.m))
+	}
+	// Down through Local's rows into ws's: the same Space ID, the other
+	// server. Its Terminals come from ws, its header names ws.
+	for range 5 {
+		h.key("j")
+	}
+	if h.m.selectedSpace != (spaceRef{"ws", "spce-work"}) {
+		t.Fatalf("selected %v", h.m.selectedSpace)
+	}
+	h.connectors["ws"].client.terminals[0].Directory = "/on/ws"
+	h.key("enter")
+	if h.m.screen != screenTerminals || h.m.conn != "ws" || !strings.Contains(plain(h.m), "/on/ws") || lines(h.m)[1] != "spaces › ws › work  /home/u/work" {
+		t.Errorf("ws terminals = screen %v conn %q breadcrumb %q:\n%s", h.m.screen, h.m.conn, lines(h.m)[1], plain(h.m))
+	}
+	// New shell, attach, and delete all reach ws, never Local.
+	h.exec.exits = []error{nil}
+	h.key("n")
+	h.key("d")
+	h.key("y")
+	ws, local := h.connectors["ws"], h.connectors["Local"]
+	if len(ws.client.createdTerm) != 1 || len(ws.attached) != 1 || len(ws.client.deleted) != 1 {
+		t.Errorf("ws saw create %d attach %d delete %d", len(ws.client.createdTerm), len(ws.attached), len(ws.client.deleted))
+	}
+	if len(local.client.createdTerm) != 0 || len(local.attached) != 0 || len(local.client.deleted) != 0 {
+		t.Errorf("Local saw create %d attach %d delete %d", len(local.client.createdTerm), len(local.attached), len(local.client.deleted))
+	}
+	h.key("esc")
+	h.key("d") // delete ws's work
+	if h.m.confirm == nil || h.m.confirm.conn != "ws" || !strings.Contains(plain(h.m), "on ws?") {
+		t.Fatalf("confirmation = %+v", h.m.confirm)
+	}
+	h.key("y")
+	if diff := cmp.Diff([]string{"terminal:term-new01", "space:spce-work"}, ws.client.deleted); diff != "" {
+		t.Errorf("ws deletions (-want +got):\n%s", diff)
+	}
+	if len(local.client.deleted) != 0 {
+		t.Errorf("Local deletions: %v", local.client.deleted)
+	}
+}
+
+// A connection that stops answering keeps its Spaces listed but dimmed
+// and unusable while its health is polled with backoff; when it answers
+// again its rows are usable and reloaded. Nothing falls back to another
+// connection meanwhile.
+func TestUnavailableConnectionDimsSpacesAndRecovers(t *testing.T) {
+	h := newMultiHarness(t, "ws")
+	h.open()
+	ws := h.connectors["ws"]
+	ws.client.err = errors.New("dial tcp: no route to host")
+	h.key("r")
+	c := h.conn("ws")
+	if c.status != connUnavailable || !strings.Contains(h.m.message, "loading spaces on ws: dial tcp") {
+		t.Fatalf("after the failed load: %v %q", c.status, h.m.message)
+	}
+	if !dimmedRow(h.m, "ws", "work") || !dimmedRow(h.m, "ws", "Default") || dimmedRow(h.m, "Local", "work") {
+		t.Errorf("ws rows not dimmed:\n%s", h.m.View().Content)
+	}
+	for range 4 {
+		h.key("j") // ws/play
+	}
+	h.key("enter")
+	if h.m.screen != screenSpaces || !strings.Contains(h.m.message, "ws is unavailable: dial tcp: no route to host (see connections)") {
+		t.Errorf("enter on a dimmed row = screen %v message %q", h.m.screen, h.m.message)
+	}
+	h.key("d")
+	if h.m.confirm != nil || !strings.Contains(h.m.message, "ws is unavailable") {
+		t.Errorf("d on a dimmed row = confirm %v message %q", h.m.confirm, h.m.message)
+	}
+	if len(h.connectors["Local"].client.deleted) != 0 {
+		t.Error("a refused action fell back to Local")
+	}
+	// Health polls back off like a lost attachment, then the recovered
+	// connection reloads its Spaces.
+	h.fire()
+	h.fire()
+	if diff := cmp.Diff([]time.Duration{time.Second, 2 * time.Second, 4 * time.Second}, h.clock.delays); diff != "" {
+		t.Errorf("backoff (-want +got):\n%s", diff)
+	}
+	ws.client.err = nil
+	ws.client.spaces = ws.client.spaces[:2]
+	h.fire()
+	if h.conn("ws").status != connReady || len(h.m.rows()) != 5 || dimmedRow(h.m, "ws", "work") {
+		t.Errorf("after recovery: status %v rows %d:\n%s", h.conn("ws").status, len(h.m.rows()), h.m.View().Content)
+	}
+	if ws.client.healths != 3 {
+		t.Errorf("health polled %d times", ws.client.healths)
+	}
+	h.key("enter")
+	if h.m.screen != screenTerminals || h.m.conn != "ws" {
+		t.Errorf("recovered row not usable: screen %v conn %q", h.m.screen, h.m.conn)
+	}
+	// A server that answers but refuses this picker is not waited for.
+	h.key("esc")
+	ws.client.err = errors.New("timeout")
+	h.key("r")
+	ws.client.err = &api.Problem{Status: http.StatusUnauthorized, Code: api.CodeUnauthorized}
+	h.fire()
+	if c := h.conn("ws"); c.status != connFailed || c.action() != "connect" || len(h.clock.pending) != 0 {
+		t.Errorf("refused health = %v/%q pending %v", c.status, c.action(), h.clock.pending)
+	}
+}
+
+// The Connections screen shows each connection's state and the action
+// that clears it. Add offers only the ssh configuration's aliases not
+// yet saved, saves the choice before running setup, and a failed setup
+// leaves the connection listed with its reason and a Retry; setup holds
+// the terminal and prints there. Remove forgets the connection and
+// closes its transport, and nothing that answers afterwards revives it.
+func TestConnectionsScreenAddRetryAndRemove(t *testing.T) {
+	h := newMultiHarness(t, "ws")
+	h.open()
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 24})
+	h.key("c")
+	if h.m.screen != screenConnections || h.m.selectedConnection != "Local" {
+		t.Fatalf("c = screen %v selected %q", h.m.screen, h.m.selectedConnection)
+	}
+	if view := plain(h.m); !matches(`NAME\s+STATUS\s+SERVER\s+DETAIL`, view) || !matches(`Local\s+ready\s+v1`, view) || !matches(`ws\s+ready\s+v1`, view) {
+		t.Errorf("view:\n%s", view)
+	}
+	if h.m.message != "" || h.send(keyPress("enter")) != nil {
+		t.Errorf("enter on a ready connection did something: %q", h.m.message)
+	}
+	h.key("a")
+	if h.m.screen != screenAliases || !cmp.Equal(h.m.availableAliases(), []string{"build", "tablet"}) || h.m.selectedAlias != "build" {
+		t.Fatalf("a = screen %v aliases %v selected %q", h.m.screen, h.m.availableAliases(), h.m.selectedAlias)
+	}
+	if lines(h.m)[1] != "connections › add  ssh config aliases" {
+		t.Errorf("breadcrumb %q", lines(h.m)[1])
+	}
+	// Setup for the new alias fails; it stays saved with its reason.
+	pending := &fakeConnector{name: "build", remote: true, client: newFakeClient(), version: "v1"}
+	h.m.open = func(alias string) Connector { h.connectors[alias] = pending; return pending }
+	pending.setupErr = errors.New("ssh to build failed (exit 255): Connection refused")
+	pending.setupSays = "build (linux/amd64) needs setup before it can be used:\n"
+	h.key("enter")
+	if diff := cmp.Diff([][]string{{"ws", "build"}}, h.saves); diff != "" {
+		t.Errorf("saved (-want +got):\n%s", diff)
+	}
+	if h.exec.setups != 1 || pending.setups != 1 || !strings.Contains(h.exec.terminal.String(), "needs setup") {
+		t.Errorf("setup handoff: exec %d connector %d terminal %q", h.exec.setups, pending.setups, h.exec.terminal.String())
+	}
+	c := h.conn("build")
+	if h.m.screen != screenConnections || h.m.selectedConnection != "build" || c.status != connFailed || c.action() != "retry" {
+		t.Fatalf("after a failed setup: screen %v selected %q status %v action %q", h.m.screen, h.m.selectedConnection, c.status, c.action())
+	}
+	view := lines(h.m)
+	if !matches(`build\s+failed\s+ssh to build failed`, strings.Join(view, "\n")) || view[len(view)-2] != "enter retry   a add   d remove   esc back   ? help   q quit" {
+		t.Errorf("failed connection view:\n%s", strings.Join(view, "\n"))
+	}
+	// Adding the same alias again selects it, never duplicates it; a
+	// choice that cannot be saved is not made.
+	h.key("a")
+	if !cmp.Equal(h.m.availableAliases(), []string{"tablet"}) {
+		t.Errorf("aliases offered again: %v", h.m.availableAliases())
+	}
+	h.key("esc")
+	if got, _ := h.m.addConnection("build"); len(got.(model).connections) != 3 {
+		t.Errorf("re-adding build made %d connections", len(got.(model).connections))
+	}
+	save := h.m.save
+	h.m.save = func([]string) error { return errors.New("disk full") }
+	h.key("a")
+	h.key("enter")
+	if len(h.m.connections) != 3 || pending.setups != 1 || !strings.Contains(h.m.message, "saving connections: disk full") {
+		t.Errorf("unsaved add = connections %d setups %d message %q", len(h.m.connections), pending.setups, h.m.message)
+	}
+	h.m.save = save
+	// Retry runs setup again; success lists its Spaces.
+	pending.setupErr = nil
+	h.key("enter")
+	if c := h.conn("build"); c.status != connReady || pending.setups != 2 || len(h.m.rows()) != 9 {
+		t.Errorf("after retry: status %v setups %d rows %d", c.status, pending.setups, len(h.m.rows()))
+	}
+	if diff := cmp.Diff([]string{"Local", "ws", "build"}, h.m.connectionNames()); diff != "" {
+		t.Errorf("connections (-want +got):\n%s", diff)
+	}
+	// Local cannot be removed; a remote can, without touching it.
+	h.key("k")
+	h.key("k")
+	h.key("d")
+	if h.m.confirm != nil || h.m.message != "Local cannot be removed" {
+		t.Errorf("d on Local = confirm %v message %q", h.m.confirm, h.m.message)
+	}
+	h.key("j")
+	h.key("d")
+	if h.m.confirm == nil || h.m.confirm.kind != "connection" || !strings.Contains(plain(h.m), "remove connection ws from this picker? (nothing on it is changed)") {
+		t.Fatalf("confirm = %+v:\n%s", h.m.confirm, plain(h.m))
+	}
+	ws := h.connectors["ws"]
+	late := h.send(keyPress("y"))
+	if diff := cmp.Diff([]string{"Local", "build"}, h.m.connectionNames()); diff != "" {
+		t.Errorf("after remove (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"build"}, h.saves[len(h.saves)-1]); diff != "" {
+		t.Errorf("saved after remove (-want +got):\n%s", diff)
+	}
+	for _, msg := range late {
+		h.run(msg)
+	}
+	if ws.closes != 1 || len(ws.client.deleted) != 0 || h.m.message != "removed ws; nothing on it was changed" {
+		t.Errorf("remove: closes %d deleted %v message %q", ws.closes, ws.client.deleted, h.m.message)
+	}
+	if len(h.m.retired) != 1 {
+		t.Errorf("removed connector not kept for closing at exit: %d", len(h.m.retired))
+	}
+	// Answers from the removed connection change nothing, and cannot
+	// reach a connection of the same name added afterwards.
+	stale := spacesLoadedMsg{conn: "ws", seq: h.conn("Local").seq, err: errors.New("stale")}
+	h.run(stale)
+	h.run(connectedMsg{conn: "ws", gen: 2, session: ws.session()})
+	h.run(healthMsg{conn: "ws", gen: 2})
+	if len(h.m.rows()) != 6 || len(h.m.connections) != 2 {
+		t.Errorf("late answers revived ws: rows %d connections %d", len(h.m.rows()), len(h.m.connections))
+	}
+	h.m.open = func(alias string) Connector {
+		c := &fakeConnector{name: alias, remote: true, client: newFakeClient(), version: "v1"}
+		h.connectors[alias] = c
+		return c
+	}
+	h.runModel(h.m.addConnection("ws"))
+	if c := h.conn("ws"); c.status != connReady || c.seq <= stale.seq {
+		t.Fatalf("re-added ws: status %v seq %d", c.status, c.seq)
+	}
+	h.run(stale)
+	if c := h.conn("ws"); c.status != connReady || c.err != nil {
+		t.Errorf("the removed connection's answer reached the re-added one: %v %v", c.status, c.err)
+	}
+	h.key("esc")
+	if h.m.screen != screenSpaces || h.m.selectedSpace.conn == "ws" {
+		t.Errorf("back = screen %v selected %v", h.m.screen, h.m.selectedSpace)
+	}
+}
+
+// A needs-update connection shows its plan whole, and enter runs the
+// setup that applies it after its own confirmation; retry all is the
+// unattended attempt again.
+func TestConnectionsNeedingSetupOrLogin(t *testing.T) {
+	h := newMultiHarness(t, "ws", "devbox")
+	plan := fmt.Errorf("%w:\nws (linux/amd64) needs setup before it can be used:\n  atc: v0.1.0 at /home/u/.local/bin/atc; update it", ErrSetupRequired)
+	h.connectors["ws"].connectErr = plan
+	h.connectors["devbox"].connectErr = fmt.Errorf("%w: ssh to devbox: Permission denied", ErrLoginRequired)
+	h.open()
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if lines(h.m)[1] != "spaces  ws: needs update · devbox: needs login" {
+		t.Errorf("breadcrumb %q", lines(h.m)[1])
+	}
+	h.key("c")
+	h.key("j")
+	view := lines(h.m)
+	if !matches(`ws\s+needs update\s+setup required:`, strings.Join(view, "\n")) || !strings.Contains(strings.Join(view, "\n"), "atc: v0.1.0 at /home/u/.local/bin/atc; update it") || view[len(view)-2] != "enter update   a add   d remove   esc back   ? help   q quit" {
+		t.Errorf("needs-update view:\n%s", strings.Join(view, "\n"))
+	}
+	h.key("j")
+	if view := lines(h.m); view[len(view)-2] != "enter connect   a add   d remove   esc back   ? help   q quit" {
+		t.Errorf("needs-login footer %q", view[len(view)-2])
+	}
+	// Retry all attempts both without a person; ws now connects.
+	h.connectors["ws"].connectErr = nil
+	h.key("r")
+	if h.connectors["ws"].connects != 2 || h.connectors["devbox"].connects != 2 || h.conn("ws").status != connReady || h.conn("devbox").status != connFailed {
+		t.Errorf("retry all: ws %d/%v devbox %d/%v", h.connectors["ws"].connects, h.conn("ws").status, h.connectors["devbox"].connects, h.conn("devbox").status)
+	}
+	if h.exec.setups != 0 {
+		t.Error("retry all handed the terminal over")
+	}
+	// Connect hands the terminal to devbox's setup; while it holds it no
+	// second handoff starts.
+	h.connectors["devbox"].setupSays = "devbox password: "
+	h.key("enter")
+	if h.exec.setups != 1 || h.connectors["devbox"].setups != 1 || h.conn("devbox").status != connReady || !strings.Contains(h.exec.terminal.String(), "password") {
+		t.Errorf("connect: handoffs %d setups %d status %v terminal %q", h.exec.setups, h.connectors["devbox"].setups, h.conn("devbox").status, h.exec.terminal.String())
+	}
+	if len(h.m.rows()) != 9 {
+		t.Errorf("rows after every connection came up: %d", len(h.m.rows()))
+	}
+}
+
+// With more than one connection, a new Space first chooses its
+// connection, starting from the selected Space's; an unavailable one is
+// refused; the browser and the creation then use only the chosen one.
+func TestNewSpaceChoosesConnection(t *testing.T) {
+	h := newMultiHarness(t, "ws", "devbox")
+	h.connectors["devbox"].connectErr = errors.New("ssh to devbox failed (exit 255): Connection refused")
+	h.open()
+	for range 4 {
+		h.key("j") // ws/play
+	}
+	h.key("n")
+	if h.m.screen != screenDestination || h.m.selectedConnection != "ws" || lines(h.m)[1] != "spaces › new space  choose a connection" {
+		t.Fatalf("n = screen %v selected %q breadcrumb %q", h.m.screen, h.m.selectedConnection, lines(h.m)[1])
+	}
+	if view := plain(h.m); !matches(`Local\s+ready`, view) || !matches(`devbox\s+failed`, view) {
+		t.Errorf("destination view:\n%s", view)
+	}
+	h.key("j") // devbox
+	h.key("enter")
+	if h.m.screen != screenDestination || !strings.Contains(h.m.message, "devbox is failed: ssh to devbox failed") {
+		t.Errorf("enter on a failed destination = screen %v message %q", h.m.screen, h.m.message)
+	}
+	h.key("k")
+	h.key("enter")
+	if h.m.screen != screenDirectories || h.m.conn != "ws" || lines(h.m)[1] != "spaces › ws › new space  /home/u/▏" {
+		t.Fatalf("enter on ws = screen %v conn %q breadcrumb %q", h.m.screen, h.m.conn, lines(h.m)[1])
+	}
+	h.exec.exits = []error{nil}
+	h.key(".")
+	ws, local := h.connectors["ws"], h.connectors["Local"]
+	if diff := cmp.Diff([]api.SpaceCreateParams{{Directory: "/home/u"}}, ws.client.created); diff != "" {
+		t.Errorf("ws created (-want +got):\n%s", diff)
+	}
+	if len(local.client.created) != 0 || len(ws.attached) != 1 || h.m.selectedSpace != (spaceRef{"ws", "spce-new01"}) || lines(h.m)[1] != "spaces › ws › new  /home/u" {
+		t.Errorf("create = Local created %d ws attached %d selected %v breadcrumb %q", len(local.client.created), len(ws.attached), h.m.selectedSpace, lines(h.m)[1])
+	}
+	// The chooser's esc returns to Spaces.
+	h.key("esc")
+	h.key("n")
+	h.key("esc")
+	if h.m.screen != screenSpaces {
+		t.Errorf("esc from the chooser = %v", h.m.screen)
+	}
+}
+
+// The single-machine picker (`atc --remote`) shows its one connection
+// and manages none: no Add, no Remove.
+func TestSingleMachinePickerManagesNoConnections(t *testing.T) {
+	h := newHarness(t, "ws")
+	h.open()
+	if view := lines(h.m); !strings.HasPrefix(view[0], "╭ ws ─") || view[1] != "spaces" {
+		t.Errorf("title %q breadcrumb %q", view[0], view[1])
+	}
+	h.key("n")
+	if h.m.screen != screenDirectories || h.m.conn != "ws" {
+		t.Errorf("n with one connection = screen %v conn %q", h.m.screen, h.m.conn)
+	}
+	h.key("esc")
+	h.key("c")
+	if view := lines(h.m); view[len(view)-2] != "esc back   ? help   q quit" {
+		t.Errorf("footer %q", view[len(view)-2])
+	}
+	h.key("a")
+	if h.m.screen != screenConnections || !strings.Contains(h.m.message, "run plain `atc` to manage connections") {
+		t.Errorf("a = screen %v message %q", h.m.screen, h.m.message)
+	}
+	h.key("d")
+	if h.m.confirm != nil || !strings.Contains(h.m.message, "run plain `atc`") {
+		t.Errorf("d = confirm %v message %q", h.m.confirm, h.m.message)
 	}
 }
