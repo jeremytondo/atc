@@ -403,10 +403,9 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
-	case "ctrl+c":
-		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
-	case "ctrl+r":
-		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}
+	}
+	if letter, ok := strings.CutPrefix(name, "ctrl+"); ok {
+		return tea.KeyPressMsg{Code: []rune(letter)[0], Mod: tea.ModCtrl}
 	}
 	r := []rune(name)[0]
 	return tea.KeyPressMsg{Code: r, Text: name}
@@ -476,6 +475,15 @@ func dimmedRow(m model, conn, name string) bool {
 
 func matches(pattern, text string) bool { return regexp.MustCompile(pattern).MatchString(text) }
 
+// resultIDs are the terminal screen's rows, by Terminal ID.
+func resultIDs(m model) []string {
+	var ids []string
+	for _, row := range m.results() {
+		ids = append(ids, row.terminal.ID)
+	}
+	return ids
+}
+
 // rowKeys are the Spaces table's rows as connection/ID pairs.
 func rowKeys(m model) []string {
 	var keys []string
@@ -491,12 +499,30 @@ func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 	if diff := cmp.Diff([]string{"Local/spce-home", "Local/spce-play", "Local/spce-work"}, rowKeys(h.m)); diff != "" {
 		t.Errorf("Default first, then newest-first (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(map[string]int{"spce-work": 3, "spce-play": 1}, h.conn("Local").counts); diff != "" {
+	counts := map[string]int{}
+	for _, row := range h.m.rows() {
+		counts[row.space.ID] = row.terminals
+	}
+	if diff := cmp.Diff(map[string]int{"spce-home": 0, "spce-work": 3, "spce-play": 1}, counts); diff != "" {
 		t.Errorf("terminal counts (-want +got):\n%s", diff)
 	}
-	if h.m.selectedSpace != (spaceRef{"Local", "spce-home"}) || h.m.screen != screenSpaces || h.m.message != "" {
+	// All Spaces is the first row and the selection the picker opens on:
+	// bold, counting every Terminal, with a divider beneath it.
+	if h.m.selectedSpace != allSpaces || h.m.screen != screenSpaces || h.m.message != "" {
 		t.Fatalf("initial = selected %v screen %v message %q", h.m.selectedSpace, h.m.screen, h.m.message)
 	}
+	view := lines(h.m)
+	if !matches(`^All Spaces\s+4$`, view[4]) || !matches(`^─+$`, view[5]) || !strings.HasPrefix(view[6], "Default") {
+		t.Errorf("All Spaces entry:\n%s", plain(h.m))
+	}
+	if line := rawLine(h.m, "All Spaces"); !highlighted(line) || !strings.Contains(line, "\x1b[1") {
+		t.Errorf("All Spaces not the bold, selected row: %q", line)
+	}
+	h.key("k") // clamps
+	if h.m.selectedSpace != allSpaces {
+		t.Errorf("after k: %v", h.m.selectedSpace)
+	}
+	h.key("j")
 	h.key("j")
 	h.key("j")
 	h.key("j") // clamps
@@ -528,16 +554,17 @@ func TestSpaceListOrderSelectionAndCounts(t *testing.T) {
 func TestTerminalListNumberOrderAndBack(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j")
 	h.key("j") // work
 	h.key("enter")
 	if h.m.screen != screenTerminals || h.m.space.ID != "spce-work" || h.m.conn != "Local" {
 		t.Fatalf("enter = screen %v space %q conn %q", h.m.screen, h.m.space.ID, h.m.conn)
 	}
-	if diff := cmp.Diff([]string{"term-old", "term-dead", "term-new"}, terminalIDs(h.m.terminals)); diff != "" {
+	if diff := cmp.Diff([]string{"term-old", "term-dead", "term-new"}, resultIDs(h.m)); diff != "" {
 		t.Errorf("number order (-want +got):\n%s", diff)
 	}
-	if h.m.selectedTerminal != "term-old" {
+	if h.m.selectedTerminal.id != "term-old" {
 		t.Errorf("row one preselected: %q", h.m.selectedTerminal)
 	}
 	view := plain(h.m)
@@ -571,6 +598,7 @@ func TestTerminalListNumberOrderAndBack(t *testing.T) {
 func TestDirectoryRefreshWhileTerminalListVisible(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j")
 	h.key("j")
 	h.key("enter")
@@ -647,6 +675,7 @@ func TestRequestFailureShowsErrorAndKeepsNavigation(t *testing.T) {
 		t.Fatalf("failure = message %q rows %d", h.m.message, len(h.m.rows()))
 	}
 	h.key("j")
+	h.key("j")
 	if h.m.selectedSpace.id != "spce-play" {
 		t.Error("navigation blocked by the error")
 	}
@@ -698,6 +727,12 @@ func TestRequestFailureShowsErrorAndKeepsNavigation(t *testing.T) {
 func TestDeleteConfirmations(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
+	// All Spaces is navigation, not a Space: nothing to confirm or delete.
+	h.key("d")
+	if h.m.confirm != nil || !strings.Contains(h.m.message, "All Spaces is not a Space") {
+		t.Fatalf("All Spaces delete: confirm %v message %q", h.m.confirm, h.m.message)
+	}
+	h.key("j")
 	h.key("d")
 	if h.m.confirm != nil || !strings.Contains(h.m.message, "Default Space cannot be deleted") || len(h.client.deleted) != 0 {
 		t.Fatalf("Default delete: confirm %v message %q deleted %v", h.m.confirm, h.m.message, h.client.deleted)
@@ -745,7 +780,7 @@ func TestDeleteConfirmations(t *testing.T) {
 	if diff := cmp.Diff([]string{"space:spce-work", "terminal:term-play"}, h.client.deleted); diff != "" {
 		t.Errorf("deleted (-want +got):\n%s", diff)
 	}
-	if h.m.screen != screenTerminals || len(h.m.terminals) != 0 || h.m.selectedTerminal != "" {
+	if h.m.screen != screenTerminals || len(h.m.terminals) != 0 || h.m.selectedTerminal.id != "" {
 		t.Errorf("after terminal delete: screen %v terminals %d selected %q", h.m.screen, len(h.m.terminals), h.m.selectedTerminal)
 	}
 }
@@ -818,7 +853,7 @@ func TestDirectoryPickerNavigationFilteringAndCreate(t *testing.T) {
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new02"}}, h.exec.commands); diff != "" {
 		t.Errorf("attached (-want +got):\n%s", diff)
 	}
-	if h.m.screen != screenTerminals || h.m.space.ID != "spce-new01" || h.m.selectedTerminal != "term-new02" || h.m.selectedSpace != (spaceRef{"Local", "spce-new01"}) {
+	if h.m.screen != screenTerminals || h.m.space.ID != "spce-new01" || h.m.selectedTerminal.id != "term-new02" || h.m.selectedSpace != (spaceRef{"Local", "spce-new01"}) {
 		t.Errorf("after create = screen %v space %q selected %q selectedSpace %v", h.m.screen, h.m.space.ID, h.m.selectedTerminal, h.m.selectedSpace)
 	}
 	// esc with an empty field leaves the picker.
@@ -850,6 +885,7 @@ func TestDirectoryPickerKeepsUserOnValidationError(t *testing.T) {
 func TestAttachDetachAndReturnSelection(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j")
 	h.key("j")
 	h.key("enter") // work; row one, term-old, selected
@@ -864,7 +900,7 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 	// The child's exit arrives; the return remeasures before redrawing
 	// and reloads the same Space with the same Terminal selected.
 	ended := h.send(msgs[0])
-	if h.m.screen != screenTerminals || h.m.selectedTerminal != "term-old" || h.m.message != "" {
+	if h.m.screen != screenTerminals || h.m.selectedTerminal.id != "term-old" || h.m.message != "" {
 		t.Fatalf("detach = screen %v selected %q message %q", h.m.screen, h.m.selectedTerminal, h.m.message)
 	}
 	var sawResize bool
@@ -879,14 +915,14 @@ func TestAttachDetachAndReturnSelection(t *testing.T) {
 		t.Error("return did not request a remeasure")
 	}
 	h.run(tea.WindowSizeMsg{Width: 100, Height: 40})
-	if h.m.width != 100 || h.m.height != 40 || h.m.selectedTerminal != "term-old" {
+	if h.m.width != 100 || h.m.height != 40 || h.m.selectedTerminal.id != "term-old" {
 		t.Errorf("after resize = %dx%d selected %q", h.m.width, h.m.height, h.m.selectedTerminal)
 	}
 	// The selected Terminal is gone on return: the adjacent row.
 	h.client.terminals = terminals[1:]
 	h.exec.exits = []error{nil}
 	h.key("enter")
-	if h.m.selectedTerminal != "term-dead" {
+	if h.m.selectedTerminal.id != "term-dead" {
 		t.Errorf("vanished selection fell to %q", h.m.selectedTerminal)
 	}
 
@@ -912,6 +948,7 @@ func TestDetachRefreshKeepsViewAndAllowsImmediateAttach(t *testing.T) {
 		t.Run("target="+target, func(t *testing.T) {
 			h := newHarness(t, target)
 			h.open()
+			h.key("j") // past All Spaces
 			h.key("j")
 			h.key("j")
 			h.key("enter") // work
@@ -934,7 +971,7 @@ func TestDetachRefreshKeepsViewAndAllowsImmediateAttach(t *testing.T) {
 					h.run(loaded)
 				}
 			}
-			if h.m.selectedTerminal != "term-new" || h.m.message != "" {
+			if h.m.selectedTerminal.id != "term-new" || h.m.message != "" {
 				t.Fatalf("obsolete refresh changed selection %q or message %q", h.m.selectedTerminal, h.m.message)
 			}
 
@@ -951,6 +988,7 @@ func TestDetachRefreshKeepsViewAndAllowsImmediateAttach(t *testing.T) {
 func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j")
 	h.key("j")
 	h.key("enter")
@@ -962,7 +1000,7 @@ func TestCreateTerminalAttachesImmediately(t *testing.T) {
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new01"}}, h.exec.commands); diff != "" {
 		t.Errorf("exec (-want +got):\n%s", diff)
 	}
-	if last := h.m.terminals[len(h.m.terminals)-1].ID; h.m.selectedTerminal != "term-new01" || last != "term-new01" {
+	if last := h.m.terminals[len(h.m.terminals)-1].ID; h.m.selectedTerminal.id != "term-new01" || last != "term-new01" {
 		t.Errorf("after create: selected %q last %q", h.m.selectedTerminal, last)
 	}
 	h.client.createErr = &api.Problem{Status: http.StatusInternalServerError, Code: "internal", Detail: "boom"}
@@ -1013,6 +1051,7 @@ func TestSessionNoticeIsShownWhenConnected(t *testing.T) {
 func TestCreateAnsweredAfterLeavingScreenIsDropped(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j")
 	h.key("j")
 	h.key("enter") // work
@@ -1041,9 +1080,10 @@ func TestCreateAnsweredAfterLeavingScreenIsDropped(t *testing.T) {
 func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	h := newHarness(t, "ws")
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j") // play
 	h.key("enter")
-	if h.m.selectedTerminal != "term-play" {
+	if h.m.selectedTerminal.id != "term-play" {
 		t.Fatalf("selected %q", h.m.selectedTerminal)
 	}
 	// The transport drops; the API is unreachable for two polls, then
@@ -1065,7 +1105,7 @@ func TestTransportLossReconnectsSameTerminal(t *testing.T) {
 	}
 	// The retry is modal: list keys are ignored until it ends.
 	h.key("j")
-	if h.m.selectedTerminal != "term-play" || h.m.reconnect == nil {
+	if h.m.selectedTerminal.id != "term-play" || h.m.reconnect == nil {
 		t.Fatalf("keys during reconnect moved the selection")
 	}
 	h.fire() // poll 1 fails
@@ -1122,6 +1162,7 @@ func TestReconnectStopsWhenTerminalIsNotRunningOrGone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, "ws")
 			h.open()
+			h.key("j") // past All Spaces
 			h.key("j")
 			h.key("enter")
 			h.exec.exits = []error{fakeExit(255)}
@@ -1139,11 +1180,11 @@ func TestHelpOverlay(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
 	h.key("?")
-	if !h.m.help || !matches(`enter\s+attach`, plain(h.m)) || !matches(`1-9\s+attach by #`, plain(h.m)) {
+	if !h.m.help || !matches(`enter\s+attach`, plain(h.m)) || !matches(`1-9 0\s+attach by #`, plain(h.m)) {
 		t.Fatalf("help = %v view:\n%s", h.m.help, plain(h.m))
 	}
 	h.key("1")
-	if h.m.help || h.m.selectedSpace.id != "spce-home" || len(h.exec.commands) != 0 {
+	if h.m.help || h.m.selectedSpace != allSpaces || len(h.exec.commands) != 0 {
 		t.Error("closing key was also applied to the list")
 	}
 }
@@ -1154,7 +1195,7 @@ func TestDigitAttachesByRowNumber(t *testing.T) {
 	h.open()
 	// Inert on the spaces screen.
 	h.key("1")
-	if len(h.exec.commands) != 0 || h.m.screen != screenSpaces || h.m.selectedSpace.id != "spce-home" || h.m.message != "" {
+	if len(h.exec.commands) != 0 || h.m.screen != screenSpaces || h.m.selectedSpace != allSpaces || h.m.message != "" {
 		t.Fatalf("digit on spaces = exec %v screen %v selected %v message %q", h.exec.commands, h.m.screen, h.m.selectedSpace, h.m.message)
 	}
 	// Filter text in the directory picker.
@@ -1167,6 +1208,7 @@ func TestDigitAttachesByRowNumber(t *testing.T) {
 	h.key("esc")
 	h.key("j")
 	h.key("j")
+	h.key("j")
 	h.key("enter") // work: 1:zsh 2:nvim 3:api
 
 	h.exec.exits = []error{nil}
@@ -1174,7 +1216,7 @@ func TestDigitAttachesByRowNumber(t *testing.T) {
 	if diff := cmp.Diff([][]string{{"/bin/attach", "term-new"}}, h.exec.commands); diff != "" {
 		t.Errorf("3 (-want +got):\n%s", diff)
 	}
-	if h.m.selectedTerminal != "term-new" {
+	if h.m.selectedTerminal.id != "term-new" {
 		t.Errorf("after 3: selected %q", h.m.selectedTerminal)
 	}
 	h.key("7")
@@ -1229,11 +1271,23 @@ func TestFrameFitsTerminalAndTruncatesRows(t *testing.T) {
 	if !strings.HasPrefix(view[0], "╭ Local ─") || !strings.HasSuffix(view[0], "╮") || !strings.HasPrefix(view[11], "╰") {
 		t.Errorf("frame:\n%s", plain(h.m))
 	}
-	if !strings.Contains(plain(h.m), "/home/…") {
+	if !strings.Contains(plain(h.m), "/ho…") {
 		t.Errorf("long directory not truncated:\n%s", plain(h.m))
 	}
+	// Three body lines: the divider stays beneath All Spaces while that
+	// row is on screen, and leaves with it when the window moves down.
+	h.run(tea.WindowSizeMsg{Width: 40, Height: 10})
+	if view := lines(h.m); !strings.HasPrefix(view[4], "All Spaces") || !matches(`^─+$`, view[5]) {
+		t.Errorf("All Spaces at height 10:\n%s", plain(h.m))
+	}
+	h.key("j")
+	if view := plain(h.m); strings.Contains(view, "All Spaces") || matches(`│ ─+ │`, view) || !strings.Contains(view, "Default") || !strings.Contains(view, "play") {
+		t.Errorf("first Space at height 10:\n%s", view)
+	}
+	h.key("k")
 	// Two body lines: the header and one row, moved to the selection.
 	h.run(tea.WindowSizeMsg{Width: 40, Height: 9})
+	h.key("j")
 	h.key("j")
 	h.key("j") // work
 	if view := plain(h.m); !strings.Contains(view, "work") || strings.Contains(view, "play") || !strings.Contains(view, "NAME") {
@@ -1278,13 +1332,28 @@ func TestBreadcrumbsAndFooters(t *testing.T) {
 		}
 	}
 	check("spaces", "n new   d delete   c connections   ? help   q quit")
+	h.key("enter")
+	check("spaces › all spaces", "n new   d delete   / search   esc back   ? help   q quit")
+	h.key("/")
+	h.key("a")
+	check("spaces › all spaces  /a▏", "ctrl+n/p move   esc clear   ? help")
+	h.key("esc")
+	h.key("n")
+	check("spaces › all spaces › new shell  choose a space", "esc back   ? help")
+	h.key("esc")
+	h.key("esc")
+	h.key("j")
 	h.key("j")
 	h.key("d")
 	check("spaces", "y confirm   n/esc cancel")
 	h.key("esc")
 	h.key("j")
 	h.key("enter")
-	check("spaces › Local › work  /home/u/work", "n new   d delete   esc back   ? help   q quit")
+	check("spaces › Local › work  /home/u/work", "n new   d delete   / search   esc back   ? help   q quit")
+	h.key("/")
+	h.key("z")
+	check("spaces › Local › work  /z▏", "ctrl+n/p move   esc clear   ? help")
+	h.key("esc")
 	h.key("esc")
 	h.key("n")
 	h.key("C")
@@ -1303,6 +1372,7 @@ func TestStatusAndMessageColours(t *testing.T) {
 	h := newHarness(t, "")
 	h.client.terminals = append(h.client.terminals, api.Terminal{ID: "term-lost", Process: "ssh", SpaceID: "spce-work", Status: api.TerminalUnreachable, CreatedAt: t0.Add(2 * time.Hour)})
 	h.open()
+	h.key("j") // past All Spaces
 	h.key("j")
 	h.key("j")
 	h.key("enter")
@@ -1312,18 +1382,24 @@ func TestStatusAndMessageColours(t *testing.T) {
 			t.Errorf("view lacks %q:\n%s", want, h.m.View().Content)
 		}
 	}
+	h.run(tea.BackgroundColorMsg{Color: color.White})
+	if h.m.dark || !strings.Contains(h.m.View().Content, newStyles(false).warn.Render("unreachable")) {
+		t.Errorf("light palette not applied (dark %v):\n%s", h.m.dark, h.m.View().Content)
+	}
+	h.run(tea.BackgroundColorMsg{Color: color.Black})
 	h.client.err = errors.New("boom")
 	h.key("r")
 	if !strings.Contains(h.m.View().Content, st.bad.Render("loading terminals: boom")) {
 		t.Errorf("failure not red:\n%s", h.m.View().Content)
 	}
+	// The connection stopped answering: its rows are dimmed whole, their
+	// status colours included.
+	if strings.Contains(h.m.View().Content, st.good.Render("running")) || !strings.Contains(h.m.View().Content, st.dim.Render("running")) {
+		t.Errorf("rows of an unavailable connection not dimmed:\n%s", h.m.View().Content)
+	}
 	h.m.notify("plain notice")
 	if line := rawLine(h.m, "plain notice"); strings.Contains(line, st.bad.Render("plain notice")) || !strings.Contains(line, " plain notice ") {
 		t.Errorf("notice styled: %q", line)
-	}
-	h.run(tea.BackgroundColorMsg{Color: color.White})
-	if h.m.dark || !strings.Contains(h.m.View().Content, newStyles(false).warn.Render("unreachable")) {
-		t.Errorf("light palette not applied (dark %v):\n%s", h.m.dark, h.m.View().Content)
 	}
 }
 
@@ -1334,13 +1410,15 @@ func TestStatusAndMessageColours(t *testing.T) {
 func TestHelpOverlayVersionsAndScroll(t *testing.T) {
 	h := newHarness(t, "")
 	h.open()
-	h.run(tea.WindowSizeMsg{Width: 80, Height: 50})
+	h.run(tea.WindowSizeMsg{Width: 80, Height: 70})
 	h.key("?")
 	view := strings.Join(lines(h.m), "\n")
 	for _, group := range []string{
 		`everywhere\n.*\?\s+help\s+ctrl\+c\s+quit`,
 		`spaces\n.*↑/↓ j/k\s+move\s+enter\s+open\n.*n\s+new space\s+d\s+delete\n.*c\s+connections\s+r\s+refresh\n.*q\s+quit`,
-		`terminals\n.*↑/↓ j/k\s+move\s+enter\s+attach\n.*1-9\s+attach by #\s+ctrl-\\\s+detach\n.*n\s+new shell\s+d\s+delete\n.*esc h\s+back\s+r\s+refresh\n.*q\s+quit`,
+		`terminals\n.*↑/↓ j/k\s+move\s+enter\s+attach\n.*1-9 0\s+attach by #\s+ctrl-\\\s+detach\n.*n\s+new shell\s+d\s+delete\n.*/\s+search\s+r\s+refresh\n.*esc h\s+back\s+q\s+quit`,
+		`search\n.*type\s+filter by terminal, space, and connection\n.*↑/↓\s+move\s+ctrl\+p/n\s+move\n.*enter\s+attach\s+esc\s+clear, back to the list`,
+		`new shell\n.*↑/↓ j/k\s+move\s+enter\s+create in the space\n.*esc h\s+back\s+q\s+quit`,
 		`new space\n.*↑/↓ j/k\s+move\s+enter\s+choose connection\n.*type\s+filter, or an absolute path\n.*↑/↓\s+move\s+ctrl\+p/n\s+move\n.*enter\s+descend\s+backspace up\n.*\.\s+choose\s+ctrl\+r\s+refresh\n.*esc\s+clear the field, then back`,
 		`connections\n.*↑/↓ j/k\s+move\s+enter\s+connect, retry, or update\n.*a\s+add\s+d\s+remove\n.*r\s+retry all\s+esc h\s+back\n.*q\s+quit`,
 		`add\n.*↑/↓ j/k\s+move\s+enter\s+add and set up\n.*esc h\s+back`,
@@ -1367,7 +1445,7 @@ func TestHelpOverlayVersionsAndScroll(t *testing.T) {
 	h.key("x")
 	remote := newHarness(t, "devbox")
 	remote.open()
-	remote.run(tea.WindowSizeMsg{Width: 80, Height: 50})
+	remote.run(tea.WindowSizeMsg{Width: 80, Height: 70})
 	remote.key("?")
 	if view := lines(remote.m); !strings.HasPrefix(view[0], "╭ devbox ") || !strings.Contains(plain(remote.m), "devbox server v1") {
 		t.Errorf("remote help:\n%s", plain(remote.m))
@@ -1430,7 +1508,7 @@ func TestConnectionsLoadIndependentlyAndRouteByConnection(t *testing.T) {
 	if diff := cmp.Diff(want, rowKeys(h.m)); diff != "" {
 		t.Errorf("rows (-want +got):\n%s", diff)
 	}
-	if h.m.screen != screenSpaces || h.m.selectedSpace != (spaceRef{"Local", "spce-home"}) {
+	if h.m.screen != screenSpaces || h.m.selectedSpace != allSpaces {
 		t.Errorf("landed on screen %v selected %v", h.m.screen, h.m.selectedSpace)
 	}
 	if view := lines(h.m); !strings.HasPrefix(view[0], "╭ atc ─") || view[1] != "spaces  devbox: needs login" {
@@ -1441,7 +1519,7 @@ func TestConnectionsLoadIndependentlyAndRouteByConnection(t *testing.T) {
 	}
 	// Down through Local's rows into ws's: the same Space ID, the other
 	// server. Its Terminals come from ws, its header names ws.
-	for range 5 {
+	for range 6 {
 		h.key("j")
 	}
 	if h.m.selectedSpace != (spaceRef{"ws", "spce-work"}) {
@@ -1495,7 +1573,7 @@ func TestUnavailableConnectionDimsSpacesAndRecovers(t *testing.T) {
 	if !dimmedRow(h.m, "ws", "work") || !dimmedRow(h.m, "ws", "Default") || dimmedRow(h.m, "Local", "work") {
 		t.Errorf("ws rows not dimmed:\n%s", h.m.View().Content)
 	}
-	for range 4 {
+	for range 5 {
 		h.key("j") // ws/play
 	}
 	h.key("enter")
@@ -1722,7 +1800,7 @@ func TestNewSpaceChoosesConnection(t *testing.T) {
 	h := newMultiHarness(t, "ws", "devbox")
 	h.connectors["devbox"].connectErr = errors.New("ssh to devbox failed (exit 255): Connection refused")
 	h.open()
-	for range 4 {
+	for range 5 {
 		h.key("j") // ws/play
 	}
 	h.key("n")

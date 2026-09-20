@@ -51,8 +51,14 @@ type connection struct {
 	// the health polls and the reload that follows recovery.
 	session Session
 	spaces  []api.Space
-	counts  map[string]int
-	loading bool
+	// terminals are every Space's, in number order: the Spaces table's
+	// counts and the All Spaces view's rows, kept while the connection is
+	// unavailable.
+	terminals []api.Terminal
+	loading   bool
+	// polling is a background read in flight, so a slow connection is
+	// not asked again before it answers.
+	polling bool
 	// seq stamps this connection's space loads and gen its attempts and
 	// recovery ticks; both are drawn from the model's one counter, so a
 	// connection removed and added again never matches an old answer.
@@ -352,8 +358,32 @@ func (m *model) loadConnectionSpaces(c *connection) tea.Cmd {
 	m.generation++
 	c.seq = m.generation
 	c.loading = true
+	fetch := m.fetchSpaces(c)
+	return func() tea.Msg { return fetch() }
+}
+
+// pollSpaces is the All Spaces view's background read: every ready
+// connection on its own, under its current stamp so a newer explicit load
+// supersedes it, and without the loading label.
+func (m *model) pollSpaces() tea.Cmd {
+	var cmds []tea.Cmd
+	for i := range m.connections {
+		c := &m.connections[i]
+		if c.status != connReady || c.loading || c.polling {
+			continue
+		}
+		c.polling = true
+		fetch := m.fetchSpaces(c)
+		cmds = append(cmds, func() tea.Msg { return spacesPolledMsg{fetch()} })
+	}
+	return tea.Batch(cmds...)
+}
+
+// fetchSpaces reads c's Spaces and every Terminal on it, stamped with
+// c's current sequence.
+func (m *model) fetchSpaces(c *connection) func() spacesLoadedMsg {
 	name, seq, client, ctx := c.name, c.seq, c.session.Client, m.ctx
-	return func() tea.Msg {
+	return func() spacesLoadedMsg {
 		ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 		spaces, err := client.Spaces(ctx)
@@ -498,7 +528,7 @@ func (m *model) removeConnection(name string) tea.Cmd {
 	m.retired = append(m.retired, connector)
 	m.selectedConnection = keepSelection(nil, m.connectionNames(), m.selectedConnection)
 	if m.selectedSpace.conn == name {
-		m.selectedSpace = keepSelection(nil, spaceRefs(m.rows()), spaceRef{})
+		m.selectedSpace = allSpaces
 	}
 	m.notify("removed " + name + "; nothing on it was changed")
 	return func() tea.Msg {
