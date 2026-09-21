@@ -103,8 +103,9 @@ title and Project, `source`, `delete`).
 ## Using the picker
 
 Bare `atc` opens the picker against the local server, starting it if it is
-stopped: choose a Space, then a Terminal, and attach (ctrl-\ detaches back
-to the picker). `atc --remote <target>` opens the same picker against the
+stopped: choose a Space — or All Spaces, every Terminal in one list — then
+a Terminal, and attach (ctrl-\ detaches back to the picker; `/` searches a
+Terminal list). `atc --remote <target>` opens the same picker against the
 machine an ordinary ssh target names. Control traffic uses the remote
 server's HTTPS tailnet endpoint; ssh carries only the launch-time setup and
 the interactive attach. Each picker reuses its SSH connection through a

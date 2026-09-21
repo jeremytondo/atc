@@ -177,8 +177,14 @@ func (m model) breadcrumb(st styles) string {
 	switch {
 	case m.help:
 		return "help"
+	case m.screen == screenTerminals && m.searching:
+		return parent + m.terminalsCrumb(st) + gap + "/" + safeText(m.query) + "▏"
+	case m.screen == screenTerminals && m.allSpaces:
+		return parent + m.terminalsCrumb(st) + m.connectionSummary(st)
 	case m.screen == screenTerminals:
-		return parent + st.dim.Render(safeText(m.conn)+" › ") + safeText(m.space.Name) + gap + st.dim.Render(safeText(m.space.Directory))
+		return parent + m.terminalsCrumb(st) + gap + st.dim.Render(safeText(m.space.Directory))
+	case m.screen == screenSpaceChooser:
+		return parent + st.dim.Render("all spaces › ") + "new shell" + gap + st.dim.Render("choose a space")
 	case m.screen == screenDirectories:
 		return parent + st.dim.Render(safeText(m.conn)+" › ") + "new space" + gap + safeText(m.pathField()) + "▏"
 	case m.screen == screenDestination:
@@ -191,9 +197,17 @@ func (m model) breadcrumb(st styles) string {
 	return "spaces" + m.connectionSummary(st)
 }
 
-// connectionSummary is the Spaces breadcrumb's account of every
-// connection that is not ready, so a machine with nothing listed is not
-// simply absent.
+// terminalsCrumb names what the terminal screen lists.
+func (m model) terminalsCrumb(st styles) string {
+	if m.allSpaces {
+		return "all spaces"
+	}
+	return st.dim.Render(safeText(m.conn)+" › ") + safeText(m.space.Name)
+}
+
+// connectionSummary is the Spaces and All Spaces breadcrumbs' account of
+// every connection that is not ready, so a machine with nothing listed is
+// not simply absent.
 func (m model) connectionSummary(st styles) string {
 	var parts []string
 	for _, c := range m.connections {
@@ -226,7 +240,7 @@ func (m model) body(st styles, l layout) []string {
 	case m.confirm != nil:
 		return m.confirmBody(st, l)
 	case m.reconnect != nil:
-		return []string{fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)", safeText(m.label(m.reconnect.terminal)), m.reconnect.delay)}
+		return []string{fmt.Sprintf("connection lost; waiting for %s to answer again (next check in %s)", safeText(m.label(m.reconnect.conn, m.reconnect.terminal)), m.reconnect.delay)}
 	}
 	switch m.screen {
 	case screenSpaces:
@@ -237,6 +251,8 @@ func (m model) body(st styles, l layout) []string {
 		return m.directoriesBody(st, l)
 	case screenDestination:
 		return m.destinationBody(st, l)
+	case screenSpaceChooser:
+		return m.spaceChooserBody(st, l)
 	case screenConnections:
 		return m.connectionsBody(st, l)
 	case screenAliases:
@@ -337,11 +353,12 @@ func window(rows []string, selected, visible int) []string {
 	return rows[start:min(len(rows), start+visible)]
 }
 
-// spacesBody is the one table of every connection's Spaces. A row whose
+// spacesBody is the one table of every connection's Spaces, under the
+// All Spaces entry and the divider that sets it apart. A row whose
 // connection is not ready is dimmed whole: still there, not usable.
 func (m model) spacesBody(st styles, l layout) []string {
 	rows := m.rows()
-	connWidth, nameWidth, tagWidth := len("CONNECTION"), len("NAME"), 0
+	connWidth, nameWidth, tagWidth := len("CONNECTION"), len("All Spaces"), 0
 	for _, row := range rows {
 		connWidth = max(connWidth, ansi.StringWidth(safeText(row.conn)))
 		nameWidth = max(nameWidth, ansi.StringWidth(safeText(row.space.Name)))
@@ -350,8 +367,12 @@ func (m model) spacesBody(st styles, l layout) []string {
 		}
 	}
 	t := newTable(st, l.inner, min(nameWidth, maxNameWidth), min(connWidth, maxNameWidth), len("TERMINALS"), flex, tagWidth)
-	lines := make([]string, len(rows))
-	selected := max(0, slices.Index(spaceRefs(rows), m.selectedSpace))
+	total := 0
+	for _, row := range rows {
+		total += row.terminals
+	}
+	lines := []string{t.row([]cell{{text: "All Spaces", style: st.bold}, {}, {text: strconv.Itoa(total)}, {}, {}}, m.selectedSpace == allSpaces)}
+	selected := max(0, slices.Index(m.spaceKeys(), m.selectedSpace))
 	for i, row := range rows {
 		tag := ""
 		if row.space.IsDefault {
@@ -361,19 +382,35 @@ func (m model) spacesBody(st styles, l layout) []string {
 		if !row.ready {
 			style = st.dim
 		}
-		lines[i] = t.row([]cell{
+		lines = append(lines, t.row([]cell{
 			{text: safeText(row.space.Name), style: style},
 			{text: safeText(row.conn), style: style},
-			{text: strconv.Itoa(m.connection(row.conn).counts[row.space.ID]), style: style},
+			{text: strconv.Itoa(row.terminals), style: style},
 			{text: safeText(row.space.Directory), style: style},
 			{text: tag, style: st.dim},
-		}, i == selected)
+		}, i+1 == selected))
 	}
-	empty := "no spaces"
-	if m.anyLoading() {
-		empty = "loading spaces…"
+	if len(rows) == 0 {
+		empty := "no spaces"
+		if m.anyLoading() {
+			empty = "loading spaces…"
+		}
+		lines = append(lines, st.dim.Render(empty))
 	}
-	return listBody(st, l.body, t.header("NAME", "CONNECTION", "TERMINALS", "DIRECTORY", ""), lines, selected, empty)
+	// The divider belongs to the All Spaces row: beneath it while the row
+	// is on screen with room for both, gone with it once the window moves
+	// down to the selection.
+	header, visible := t.header("NAME", "CONNECTION", "TERMINALS", "DIRECTORY", ""), l.body-1
+	switch {
+	case visible < 1:
+		return window(lines, selected, 1)
+	case visible >= 2 && selected < visible-1:
+		divider := st.dim.Render(strings.Repeat("─", l.inner))
+		return append([]string{header, lines[0], divider}, lines[1:min(len(lines), visible-1)]...)
+	case selected == 0:
+		return []string{header, lines[0]}
+	}
+	return append([]string{header}, window(lines[1:], selected-1, visible)...)
 }
 
 // connectionsBody is the table of connections with their state, then the
@@ -449,6 +486,27 @@ func (m model) destinationBody(st styles, l layout) []string {
 	return listBody(st, l.body, t.header("NAME", "STATUS"), rows, selected, "no connections")
 }
 
+// spaceChooserBody chooses the Space a new Terminal is created in: the
+// Spaces table's rows in its order, without the All Spaces entry.
+func (m model) spaceChooserBody(st styles, l layout) []string {
+	spaces := m.rows()
+	nameWidth := len("NAME")
+	for _, row := range spaces {
+		nameWidth = max(nameWidth, ansi.StringWidth(safeText(row.space.Name)))
+	}
+	t := newTable(st, l.inner, min(nameWidth, maxNameWidth), flex)
+	rows := make([]string, len(spaces))
+	selected := max(0, slices.Index(spaceRefs(spaces), m.chosenSpace))
+	for i, row := range spaces {
+		style := lipgloss.NewStyle()
+		if !row.ready {
+			style = st.dim
+		}
+		rows[i] = t.row([]cell{{text: safeText(row.space.Name), style: style}, {text: safeText(row.conn), style: style}}, i == selected)
+	}
+	return listBody(st, l.body, t.header("NAME", "CONNECTION"), rows, selected, "no spaces")
+}
+
 func (m model) aliasesBody(st styles, l layout) []string {
 	aliases := m.availableAliases()
 	t := newTable(st, l.inner, flex)
@@ -460,29 +518,49 @@ func (m model) aliasesBody(st styles, l layout) []string {
 	return listBody(st, l.body, t.header("HOST ALIAS"), rows, selected, "no further Host aliases in your ssh configuration")
 }
 
+// terminalsBody is both terminal views' table, numbered as listed: a
+// filter renumbers its results. All Spaces adds the Space and connection
+// that own each row, and either view dims a row whose connection is not
+// ready. The directory is the flex column, so it gives way first.
 func (m model) terminalsBody(st styles, l layout) []string {
-	numberWidth, nameWidth, statusWidth := 1, len("NAME"), len("STATUS")
-	for i, terminal := range m.terminals {
+	results := m.results()
+	numberWidth, nameWidth, spaceWidth, connWidth, statusWidth := 1, len("NAME"), len("SPACE"), len("CONNECTION"), len("STATUS")
+	for i, row := range results {
 		numberWidth = max(numberWidth, len(strconv.Itoa(i+1)))
-		nameWidth = max(nameWidth, ansi.StringWidth(safeText(cli.DisplayName(terminal))))
-		statusWidth = max(statusWidth, len(statusLabel(terminal)))
+		nameWidth = max(nameWidth, ansi.StringWidth(safeText(cli.DisplayName(row.terminal))))
+		spaceWidth = max(spaceWidth, ansi.StringWidth(safeText(row.space.Name)))
+		connWidth = max(connWidth, ansi.StringWidth(safeText(row.conn)))
+		statusWidth = max(statusWidth, len(statusLabel(row.terminal)))
 	}
-	t := newTable(st, l.inner, numberWidth, min(nameWidth, maxNameWidth), statusWidth, flex)
-	rows := make([]string, len(m.terminals))
-	selected := max(0, slices.Index(terminalIDs(m.terminals), m.selectedTerminal))
-	for i, terminal := range m.terminals {
-		rows[i] = t.row([]cell{
-			{text: strconv.Itoa(i + 1)},
-			{text: safeText(cli.DisplayName(terminal))},
-			{text: statusLabel(terminal), style: statusStyle(st, terminal)},
-			{text: safeText(terminal.Directory)},
-		}, i == selected)
+	widths, titles := []int{numberWidth, min(nameWidth, maxNameWidth)}, []string{"#", "NAME"}
+	if m.allSpaces {
+		widths, titles = append(widths, min(spaceWidth, maxNameWidth), min(connWidth, maxNameWidth)), append(titles, "SPACE", "CONNECTION")
+	}
+	t := newTable(st, l.inner, append(widths, statusWidth, flex)...)
+	rows := make([]string, len(results))
+	selected := max(0, slices.Index(terminalRefs(results), m.selectedTerminal))
+	for i, row := range results {
+		style, status := lipgloss.NewStyle(), statusStyle(st, row.terminal)
+		if !row.ready {
+			style, status = st.dim, st.dim
+		}
+		cells := []cell{{text: strconv.Itoa(i + 1), style: style}, {text: safeText(cli.DisplayName(row.terminal)), style: style}}
+		if m.allSpaces {
+			cells = append(cells, cell{text: safeText(row.space.Name), style: style}, cell{text: safeText(row.conn), style: style})
+		}
+		rows[i] = t.row(append(cells,
+			cell{text: statusLabel(row.terminal), style: status},
+			cell{text: safeText(row.terminal.Directory), style: style},
+		), i == selected)
 	}
 	empty := "no terminals — press n to create a shell"
-	if m.loading {
+	switch {
+	case m.query != "":
+		empty = "no terminals match"
+	case m.loading, m.allSpaces && m.anyLoading():
 		empty = "loading terminals…"
 	}
-	return listBody(st, l.body, t.header("#", "NAME", "STATUS", "DIRECTORY"), rows, selected, empty)
+	return listBody(st, l.body, t.header(append(titles, "STATUS", "DIRECTORY")...), rows, selected, empty)
 }
 
 func (m model) directoriesBody(st styles, l layout) []string {
@@ -539,10 +617,19 @@ var helpKeys = []string{
 	"",
 	"terminals",
 	"  ↑/↓ j/k    move          enter     attach",
-	"  1-9        attach by #   ctrl-\\    detach",
+	"  1-9 0      attach by #   ctrl-\\    detach",
 	"  n          new shell     d         delete",
-	"  esc h      back          r         refresh",
-	"  q          quit",
+	"  /          search        r         refresh",
+	"  esc h      back          q         quit",
+	"",
+	"search",
+	"  type       filter by terminal, space, and connection",
+	"  ↑/↓        move          ctrl+p/n  move",
+	"  enter      attach        esc       clear, back to the list",
+	"",
+	"new shell",
+	"  ↑/↓ j/k    move          enter     create in the space",
+	"  esc h      back          q         quit",
 	"",
 	"new space",
 	"  ↑/↓ j/k    move          enter     choose connection",
@@ -621,7 +708,8 @@ type binding struct{ key, verb string }
 
 var (
 	spacesFooter       = []binding{{"n", "new"}, {"d", "delete"}, {"c", "connections"}, {"?", "help"}, {"q", "quit"}}
-	terminalsFooter    = []binding{{"n", "new"}, {"d", "delete"}, {"esc", "back"}, {"?", "help"}, {"q", "quit"}}
+	terminalsFooter    = []binding{{"n", "new"}, {"d", "delete"}, {"/", "search"}, {"esc", "back"}, {"?", "help"}, {"q", "quit"}}
+	searchFooter       = []binding{{"ctrl+n/p", "move"}, {"esc", "clear"}, {"?", "help"}}
 	directoriesFooter  = []binding{{".", "choose this directory"}, {"esc", "back"}, {"?", "help"}}
 	destinationFooter  = []binding{{"esc", "back"}, {"?", "help"}}
 	aliasesFooter      = []binding{{"esc", "back"}, {"?", "help"}}
@@ -654,11 +742,13 @@ func (m model) footer(st styles) string {
 		keys = reconnectingFooter
 	case m.screen == screenSpaces:
 		keys = spacesFooter
+	case m.screen == screenTerminals && m.searching:
+		keys = searchFooter
 	case m.screen == screenTerminals:
 		keys = terminalsFooter
 	case m.screen == screenDirectories:
 		keys = directoriesFooter
-	case m.screen == screenDestination:
+	case m.screen == screenDestination, m.screen == screenSpaceChooser:
 		keys = destinationFooter
 	case m.screen == screenConnections:
 		keys = m.connectionsFooter()

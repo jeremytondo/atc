@@ -1,11 +1,12 @@
 // Package tui is the picker (ATC-316, ATC-327): the Bubble Tea program
 // behind bare `atc` and `atc --remote <target>`. It lists the Spaces of
 // every connection — Local and the saved remote machines — in one table,
-// then a Space's Terminals, and attaches by handing the caller's real TTY
-// to a child process — `zmx attach` locally, an interactive ssh remotely —
-// through Bubble Tea's exec facility, which releases the renderer before
-// the child starts and restores it after. Terminal bytes never pass
-// through the picker or the API.
+// then the Terminals of one Space or, through the All Spaces entry
+// (ATC-329), of every Space at once, and attaches by handing the caller's
+// real TTY to a child process — `zmx attach` locally, an interactive ssh
+// remotely — through Bubble Tea's exec facility, which releases the
+// renderer before the child starts and restores it after. Terminal bytes
+// never pass through the picker or the API.
 //
 // The picker is an API client and nothing more: it speaks only the public
 // /v1 contract through the Client seam, imports no server, store, or
@@ -193,6 +194,9 @@ const (
 	screenDirectories
 	// screenDestination chooses the connection a new Space is created on.
 	screenDestination
+	// screenSpaceChooser chooses the Space a new Terminal is created in,
+	// from the All Spaces view.
+	screenSpaceChooser
 	screenConnections
 	screenAliases
 )
@@ -212,6 +216,7 @@ type confirmation struct {
 // set the terminal list is modal and only Esc is heard. generation
 // invalidates ticks and polls scheduled by an earlier attempt.
 type reconnect struct {
+	conn       string
 	terminal   api.Terminal
 	delay      time.Duration
 	generation uint64
@@ -219,6 +224,16 @@ type reconnect struct {
 
 // spaceRef addresses one Space: IDs are unique only within a server.
 type spaceRef struct {
+	conn, id string
+}
+
+// allSpaces is the Spaces table's first row as a selection: the entry
+// that opens every Space's Terminals. It is navigation, not a Space — no
+// connection owns it, and it never reaches a mutation.
+var allSpaces = spaceRef{}
+
+// terminalRef addresses one Terminal the same way.
+type terminalRef struct {
 	conn, id string
 }
 
@@ -267,11 +282,20 @@ type model struct {
 	selectedConnection string
 	selectedAlias      string
 
-	// conn owns the Space the terminal and directory screens show.
+	// conn owns the Space the terminal and directory screens show. The
+	// All Spaces view has neither: allSpaces is set instead, and its rows
+	// come from every connection's loaded Spaces and Terminals.
 	conn             string
 	space            api.Space
 	terminals        []api.Terminal
-	selectedTerminal string
+	allSpaces        bool
+	selectedTerminal terminalRef
+	// chosenSpace is the row on the Space chooser.
+	chosenSpace spaceRef
+	// searching is the terminal screen's search mode and query its text;
+	// outside search mode the query is always empty.
+	searching bool
+	query     string
 
 	dir         api.DirectoryList
 	dirInput    string
@@ -317,6 +341,7 @@ func (m model) Init() tea.Cmd {
 type startMsg struct{}
 type refreshTickMsg struct{}
 type terminalsPolledMsg struct{ terminalsLoadedMsg }
+type spacesPolledMsg struct{ spacesLoadedMsg }
 
 // Messages: every load and mutation answers with one of these, stamped
 // so a superseded request cannot overwrite a newer screen, and named
@@ -398,14 +423,16 @@ func (m *model) nextSeq() uint64 {
 	return m.seq
 }
 
-// current is the connection the terminal and directory screens work on.
+// current is the connection the Space and directory screens work on.
 func (m *model) current() *connection { return m.connection(m.conn) }
 
-// client is the current connection's client, or nil with the refusal set
+func (m *model) client() Client { return m.clientOf(m.conn) }
+
+// clientOf is the named connection's client, or nil with the refusal set
 // when the connection is not ready: nothing is ever sent to another
 // machine instead.
-func (m *model) client() Client {
-	c := m.current()
+func (m *model) clientOf(conn string) Client {
+	c := m.connection(conn)
 	if c == nil || c.status != connReady {
 		m.fail(m.unavailable(c))
 		return nil
@@ -424,7 +451,12 @@ func (m *model) unavailable(c *connection) string {
 	return text + " (see connections)"
 }
 
+// loadTerminals reloads the terminal screen: the Space's Terminals, or
+// for All Spaces every ready connection's Spaces and Terminals.
 func (m *model) loadTerminals() tea.Cmd {
+	if m.allSpaces {
+		return m.loadSpaces()
+	}
 	client := m.client()
 	if client == nil {
 		return nil
@@ -479,17 +511,17 @@ func (m *model) createSpace(dir string) tea.Cmd {
 	}
 }
 
-func (m *model) createTerminal() tea.Cmd {
-	client := m.client()
+func (m *model) createTerminal(space spaceRef) tea.Cmd {
+	client := m.clientOf(space.conn)
 	if client == nil {
 		return nil
 	}
-	seq, ctx, conn, spaceID := m.nextSeq(), m.ctx, m.conn, m.space.ID
+	seq, ctx := m.nextSeq(), m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
-		terminal, err := client.CreateTerminal(ctx, api.TerminalCreateParams{SpaceID: spaceID})
-		return terminalCreatedMsg{conn: conn, seq: seq, terminal: terminal, err: err}
+		terminal, err := client.CreateTerminal(ctx, api.TerminalCreateParams{SpaceID: space.id})
+		return terminalCreatedMsg{conn: space.conn, seq: seq, terminal: terminal, err: err}
 	}
 }
 
@@ -515,7 +547,7 @@ func (m *model) deleteConfirmed(c confirmation) tea.Cmd {
 }
 
 func (m *model) pollTerminal(r reconnect) tea.Cmd {
-	client := m.client()
+	client := m.clientOf(r.conn)
 	if client == nil {
 		return nil
 	}
@@ -541,6 +573,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	case refreshTickMsg:
 		next := m.refreshTick()
+		if m.canPollTerminals() && m.allSpaces {
+			return m, tea.Batch(next, m.pollSpaces())
+		}
 		c := m.current()
 		if !m.canPollTerminals() || m.polling || c == nil || c.status != connReady {
 			return m, next
@@ -566,6 +601,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.canPollTerminals() {
 			m.setTerminals(msg.terminals)
+		}
+		return m, nil
+	case spacesPolledMsg:
+		c := m.connection(msg.conn)
+		if c == nil {
+			return m, nil
+		}
+		c.polling = false
+		if msg.seq != c.seq {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m, m.transportFailed(msg.conn, msg.err)
+		}
+		if m.canPollTerminals() {
+			m.setSpaces(c, msg.spaces, msg.terminals)
 		}
 		return m, nil
 	case tea.WindowSizeMsg:
@@ -644,19 +695,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.loadTerminals()
 		}
 		m.terminals = append(m.terminals, msg.terminal)
-		return m.startAttach(msg.terminal)
+		return m.startAttach(msg.conn, msg.terminal)
 	case terminalCreatedMsg:
-		if msg.conn != m.conn || msg.seq != m.seq {
+		// The stamp alone identifies the request: from All Spaces the
+		// owning connection is the chosen Space's, not the screen's.
+		if msg.seq != m.seq {
 			return m, nil
 		}
 		m.loading = false
 		if msg.err != nil {
 			return m, tea.Batch(m.requestFailed(msg.conn, "creating terminal", msg.err), m.loadTerminals())
 		}
-		// The new terminal is the newest, so it takes the next number
-		// until the list reloads.
-		m.terminals = append(m.terminals, msg.terminal)
-		return m.startAttach(msg.terminal)
+		// The new terminal is the newest of its Space, so it takes the
+		// next number there until the list reloads.
+		if c := m.connection(msg.conn); m.allSpaces && c != nil {
+			c.terminals = append(slices.Clone(c.terminals), msg.terminal)
+		} else {
+			m.terminals = append(m.terminals, msg.terminal)
+		}
+		return m.startAttach(msg.conn, msg.terminal)
 	case deletedMsg:
 		if msg.seq != m.seq {
 			return m, nil
@@ -736,7 +793,9 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case screenSpaces:
 		return m.handleSpacesKey(key)
 	case screenTerminals:
-		return m.handleTerminalsKey(key)
+		return m.handleTerminalsKey(msg)
+	case screenSpaceChooser:
+		return m.handleSpaceChooserKey(key)
 	case screenDirectories:
 		return m.handleDirectoryKey(msg)
 	case screenDestination:
@@ -772,14 +831,17 @@ func (m model) handleSpacesKey(key string) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	case "j", "down":
-		m.selectedSpace = moveSelection(spaceRefs(m.rows()), m.selectedSpace, 1)
+		m.selectedSpace = moveSelection(m.spaceKeys(), m.selectedSpace, 1)
 	case "k", "up":
-		m.selectedSpace = moveSelection(spaceRefs(m.rows()), m.selectedSpace, -1)
+		m.selectedSpace = moveSelection(m.spaceKeys(), m.selectedSpace, -1)
 	case "r":
 		return m, m.loadSpaces()
 	case "c":
 		return m.showConnections()
 	case "enter":
+		if m.selectedSpace == allSpaces {
+			return m.showAllSpaces()
+		}
 		row, ok := m.findRow(m.selectedSpace)
 		if !ok {
 			return m, nil
@@ -793,6 +855,10 @@ func (m model) handleSpacesKey(key string) (tea.Model, tea.Cmd) {
 	case "n":
 		return m.newSpace()
 	case "d":
+		if m.selectedSpace == allSpaces {
+			m.fail("All Spaces is not a Space; open it to delete its Terminals")
+			return m, nil
+		}
 		row, ok := m.findRow(m.selectedSpace)
 		if !ok || m.loading {
 			return m, nil
@@ -805,7 +871,7 @@ func (m model) handleSpacesKey(key string) (tea.Model, tea.Cmd) {
 			m.fail(m.unavailable(m.connection(row.conn)))
 			return m, nil
 		}
-		m.confirm = &confirmation{kind: "space", conn: row.conn, id: row.space.ID, name: row.space.Name, count: m.connection(row.conn).counts[row.space.ID]}
+		m.confirm = &confirmation{kind: "space", conn: row.conn, id: row.space.ID, name: row.space.Name, count: row.terminals}
 	}
 	return m, nil
 }
@@ -855,43 +921,142 @@ func (m model) handleDestinationKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleTerminalsKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
+// handleTerminalsKey drives both terminal views — one Space's list and
+// All Spaces — which differ only in where n creates.
+func (m model) handleTerminalsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.searching {
+		return m.handleSearchKey(msg)
+	}
+	rows := m.results()
+	switch key := msg.String(); key {
 	case "q":
 		return m, tea.Quit
 	case "j", "down":
-		m.selectedTerminal = moveSelection(terminalIDs(m.terminals), m.selectedTerminal, 1)
+		m.selectedTerminal = moveSelection(terminalRefs(rows), m.selectedTerminal, 1)
 	case "k", "up":
-		m.selectedTerminal = moveSelection(terminalIDs(m.terminals), m.selectedTerminal, -1)
+		m.selectedTerminal = moveSelection(terminalRefs(rows), m.selectedTerminal, -1)
 	case "r":
 		return m, m.loadTerminals()
 	case "esc", "h":
 		return m.showSpaces()
+	case "/":
+		m.searching = true
 	case "enter":
-		if terminal, ok := m.findTerminal(m.selectedTerminal); ok && !m.loading {
-			return m.startAttach(terminal)
-		}
+		return m.attachSelected()
 	case "n":
-		if !m.loading {
-			return m, m.createTerminal()
+		if m.loading {
+			return m, nil
 		}
+		if m.allSpaces {
+			return m.chooseSpace()
+		}
+		return m, m.createTerminal(spaceRef{conn: m.conn, id: m.space.ID})
 	case "d":
-		if terminal, ok := m.findTerminal(m.selectedTerminal); ok && !m.loading {
-			m.confirm = &confirmation{kind: "terminal", conn: m.conn, id: terminal.ID, name: m.label(terminal)}
+		row, ok := m.selectedRow()
+		if !ok || m.loading {
+			return m, nil
 		}
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		if !row.ready {
+			m.fail(m.unavailable(m.connection(row.conn)))
+			return m, nil
+		}
+		m.confirm = &confirmation{kind: "terminal", conn: row.conn, id: row.terminal.ID, name: m.label(row.conn, row.terminal)}
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "0":
 		// The number is the row's, as held in the current list: after a
 		// delete elsewhere since the last refresh the user still gets the
-		// terminal they were looking at.
+		// terminal they were looking at. 0 is row ten.
 		if m.loading {
 			return m, nil
 		}
 		number := int(key[0] - '0')
-		if number > len(m.terminals) {
+		if number == 0 {
+			number = 10
+		}
+		if number > len(rows) {
 			m.fail(fmt.Sprintf("no terminal %d", number))
 			return m, nil
 		}
-		return m.startAttach(m.terminals[number-1])
+		return m.startAttach(rows[number-1].conn, rows[number-1].terminal)
+	}
+	return m, nil
+}
+
+// handleSearchKey is the terminal screen's search mode: every printable
+// key is query text, so the list's letters and digits act on nothing, and
+// each edit selects the best match. '?' is help here as everywhere.
+func (m model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.searching, m.query = false, ""
+		m.selectedTerminal = keepSelection(nil, terminalRefs(m.results()), m.selectedTerminal)
+		return m, nil
+	case "up", "ctrl+p":
+		m.selectedTerminal = moveSelection(terminalRefs(m.results()), m.selectedTerminal, -1)
+		return m, nil
+	case "down", "ctrl+n":
+		m.selectedTerminal = moveSelection(terminalRefs(m.results()), m.selectedTerminal, 1)
+		return m, nil
+	case "enter":
+		return m.attachSelected()
+	case "backspace":
+		if runes := []rune(m.query); len(runes) > 0 {
+			m.setQuery(string(runes[:len(runes)-1]))
+		}
+		return m, nil
+	}
+	if msg.Text != "" && msg.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper|tea.ModHyper) == 0 {
+		m.setQuery(m.query + msg.Text)
+	}
+	return m, nil
+}
+
+func (m *model) setQuery(query string) {
+	m.query = query
+	m.selectedTerminal = keepSelection(nil, terminalRefs(m.results()), terminalRef{})
+}
+
+func (m model) attachSelected() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok || m.loading {
+		return m, nil
+	}
+	return m.startAttach(row.conn, row.terminal)
+}
+
+// chooseSpace starts creation from All Spaces, where no one Space is
+// implied: the Space is chosen first, starting from the selected
+// Terminal's.
+func (m model) chooseSpace() (tea.Model, tea.Cmd) {
+	m.chosenSpace = spaceRef{}
+	if row, ok := m.selectedRow(); ok {
+		m.chosenSpace = spaceRef{conn: row.conn, id: row.space.ID}
+	}
+	m.chosenSpace = keepSelection(nil, spaceRefs(m.rows()), m.chosenSpace)
+	m.screen = screenSpaceChooser
+	return m, nil
+}
+
+func (m model) handleSpaceChooserKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "q":
+		return m, tea.Quit
+	case "j", "down":
+		m.chosenSpace = moveSelection(spaceRefs(m.rows()), m.chosenSpace, 1)
+	case "k", "up":
+		m.chosenSpace = moveSelection(spaceRefs(m.rows()), m.chosenSpace, -1)
+	case "esc", "h":
+		m.screen = screenTerminals
+	case "enter":
+		row, ok := m.findRow(m.chosenSpace)
+		if !ok {
+			return m, nil
+		}
+		if !row.ready {
+			m.fail(m.unavailable(m.connection(row.conn)))
+			return m, nil
+		}
+		m.screen = screenTerminals
+		return m, m.createTerminal(m.chosenSpace)
 	}
 	return m, nil
 }
@@ -968,9 +1133,20 @@ func (m *model) typeDirectory(text string) {
 }
 
 func (m *model) enterSpace(conn string, space api.Space) {
-	m.conn, m.space = conn, space
+	m.conn, m.space, m.allSpaces = conn, space, false
 	m.screen = screenTerminals
-	m.terminals, m.selectedTerminal, m.message = nil, "", ""
+	m.terminals, m.selectedTerminal, m.message = nil, terminalRef{}, ""
+	m.searching, m.query = false, ""
+}
+
+// showAllSpaces opens every Space's Terminals as one list. Its rows are
+// what the connections last loaded, so they show at once while each
+// connection reloads on its own.
+func (m model) showAllSpaces() (tea.Model, tea.Cmd) {
+	m.enterSpace("", api.Space{})
+	m.allSpaces = true
+	m.selectedTerminal = keepSelection(nil, terminalRefs(m.results()), terminalRef{})
+	return m, m.loadSpaces()
 }
 
 func (m model) showSpaces() (tea.Model, tea.Cmd) {
@@ -985,19 +1161,20 @@ func (m *model) leaveScreen() {
 	m.seq++
 	m.loading = false
 	m.message = ""
+	m.searching, m.query = false, ""
 }
 
-// startAttach hands the TTY to terminal's session on the current
-// connection. Only a running terminal on a ready connection is attached,
+// startAttach hands the TTY to terminal's session on the connection that
+// owns it. Only a running terminal on a ready connection is attached,
 // whatever path led here — a create that settled as exited or
 // unreachable is refused with its status, not handed to ssh.
-func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
-	m.selectedTerminal = terminal.ID
+func (m model) startAttach(conn string, terminal api.Terminal) (tea.Model, tea.Cmd) {
+	m.selectedTerminal = terminalRef{conn: conn, id: terminal.ID}
 	if terminal.Status != api.TerminalRunning {
-		m.fail(m.refusal(terminal))
+		m.fail(m.refusal(conn, terminal))
 		return m, m.loadTerminals()
 	}
-	c := m.current()
+	c := m.connection(conn)
 	if c == nil || c.status != connReady {
 		m.fail(m.unavailable(c))
 		return m, nil
@@ -1012,7 +1189,6 @@ func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 	// again. Its result must not redraw stale state after this handoff.
 	m.seq++
 	m.attached = true
-	conn := m.conn
 	return m, m.execProcess(cmd, func(err error) tea.Msg {
 		return attachEndedMsg{conn: conn, terminal: terminal, err: err}
 	})
@@ -1021,27 +1197,33 @@ func (m model) startAttach(terminal api.Terminal) (tea.Model, tea.Cmd) {
 // attachEnded is the return from an attachment. Exit zero is a detach;
 // transport loss in remote mode starts the same-terminal retry; any other
 // exit is reported and not retried. Every path asks for the terminal size
-// again: it may have changed while the child held the TTY.
+// again: it may have changed while the child held the TTY. The view the
+// attachment left returns in normal mode: a search ends with it.
 func (m model) attachEnded(msg attachEndedMsg) (tea.Model, tea.Cmd) {
 	m.attached = false
 	m.screen = screenTerminals
-	m.selectedTerminal = msg.terminal.ID
-	c := m.current()
+	m.searching, m.query = false, ""
+	m.selectedTerminal = terminalRef{conn: msg.conn, id: msg.terminal.ID}
+	c := m.connection(msg.conn)
 	switch {
 	case msg.err == nil:
 		m.message = ""
 	case c != nil && c.session.TransportLoss != nil && c.session.TransportLoss(msg.err):
 		m.generation++
-		m.reconnect = &reconnect{terminal: msg.terminal, delay: reconnectMin, generation: m.generation}
-		m.notify("connection lost, reconnecting to " + m.label(msg.terminal))
+		m.reconnect = &reconnect{conn: msg.conn, terminal: msg.terminal, delay: reconnectMin, generation: m.generation}
+		m.notify("connection lost, reconnecting to " + m.label(msg.conn, msg.terminal))
 		return m, tea.Batch(requestWindowSize, m.tick(reconnectMin, reconnectTickMsg{generation: m.generation}))
 	default:
-		m.fail(fmt.Sprintf("attachment to %s ended: %v", m.label(msg.terminal), msg.err))
+		m.fail(fmt.Sprintf("attachment to %s ended: %v", m.label(msg.conn, msg.terminal), msg.err))
 	}
 	// Keep the last list visible and usable while refreshing on return.
 	// A routine detach should neither flash a loading label nor make the
 	// next attachment wait for an API round trip. Explicit loads and
 	// mutations still use the loading gate; failures still reach the view.
+	// All Spaces has exactly that in its background read.
+	if m.allSpaces {
+		return m, tea.Batch(requestWindowSize, m.pollSpaces())
+	}
 	refresh := m.loadTerminals()
 	m.loading = false
 	return m, tea.Batch(requestWindowSize, refresh)
@@ -1062,7 +1244,7 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		if errors.As(msg.err, &problem) && (problem.Status == http.StatusNotFound || problem.Status == http.StatusUnauthorized) {
 			// The terminal is gone, or the token no longer works: neither
 			// heals by waiting.
-			return stop(m.describe(m.current(), "reconnecting to "+m.label(r.terminal), msg.err))
+			return stop(m.describe(m.connection(r.conn), "reconnecting to "+m.label(r.conn, r.terminal), msg.err))
 		}
 		// Unreachable, or answering with a transient failure: wait
 		// longer, up to the cap.
@@ -1071,10 +1253,10 @@ func (m model) reconnectPolled(msg reconnectPolledMsg) (tea.Model, tea.Cmd) {
 		return m, m.tick(r.delay, reconnectTickMsg{generation: r.generation})
 	}
 	if msg.terminal.Status != api.TerminalRunning {
-		return stop(m.refusal(msg.terminal))
+		return stop(m.refusal(r.conn, msg.terminal))
 	}
 	m.reconnect = nil
-	return m.startAttach(msg.terminal)
+	return m.startAttach(r.conn, msg.terminal)
 }
 
 // describe renders a request failure for the screen. Route-level 404s
@@ -1100,8 +1282,8 @@ func (m model) describe(c *connection, action string, err error) string {
 	return action + ": " + err.Error()
 }
 
-func (m model) refusal(terminal api.Terminal) string {
-	label := m.label(terminal)
+func (m model) refusal(conn string, terminal api.Terminal) string {
+	label := m.label(conn, terminal)
 	if terminal.Status == api.TerminalExited && terminal.ExitCode != nil {
 		return fmt.Sprintf("%s has exited with code %d; only running terminals can be attached", label, *terminal.ExitCode)
 	}
@@ -1111,9 +1293,10 @@ func (m model) refusal(terminal api.Terminal) string {
 // label is the terminal's row label in the current list — `2:nvim`,
 // `4:api` — or its bare name or process when it is not listed (a
 // terminal the picker no longer shows).
-func (m model) label(terminal api.Terminal) string {
-	for i, listed := range m.terminals {
-		if listed.ID == terminal.ID {
+func (m model) label(conn string, terminal api.Terminal) string {
+	ref := terminalRef{conn: conn, id: terminal.ID}
+	for i, row := range m.results() {
+		if row.ref() == ref {
 			return cli.Label(i+1, terminal)
 		}
 	}
@@ -1121,11 +1304,13 @@ func (m model) label(terminal api.Terminal) string {
 }
 
 // spaceRow is one line of the Spaces table: a Space with the connection
-// that serves it, and whether that connection can act on it now.
+// that serves it, whether that connection can act on it now, and how many
+// Terminals it holds.
 type spaceRow struct {
-	conn  string
-	ready bool
-	space api.Space
+	conn      string
+	ready     bool
+	space     api.Space
+	terminals int
 }
 
 // rows is the Spaces table: every connection's Spaces in connection
@@ -1134,10 +1319,22 @@ func (m model) rows() []spaceRow {
 	var rows []spaceRow
 	for _, c := range m.connections {
 		for _, space := range c.spaces {
-			rows = append(rows, spaceRow{conn: c.name, ready: c.status == connReady, space: space})
+			count := 0
+			for _, terminal := range c.terminals {
+				if terminal.SpaceID == space.ID {
+					count++
+				}
+			}
+			rows = append(rows, spaceRow{conn: c.name, ready: c.status == connReady, space: space, terminals: count})
 		}
 	}
 	return rows
+}
+
+// spaceKeys are the Spaces table's selectable rows: the All Spaces entry,
+// then every Space.
+func (m model) spaceKeys() []spaceRef {
+	return append([]spaceRef{allSpaces}, spaceRefs(m.rows())...)
 }
 
 func (m model) findRow(ref spaceRef) (spaceRow, bool) {
@@ -1149,9 +1346,11 @@ func (m model) findRow(ref spaceRef) (spaceRow, bool) {
 	return spaceRow{}, false
 }
 
-// setSpaces installs a connection's loaded space list: the Default Space
-// first, then newest-first, with the table's selection kept by reference
-// or moved to the adjacent row when its Space is gone.
+// setSpaces installs a connection's loaded Spaces and Terminals: the
+// Default Space first, then newest-first, and the Terminals in number
+// order. Every table the connection feeds — Spaces, the Space chooser,
+// All Spaces — keeps its selection by reference, or moves it to the
+// adjacent row when its resource is gone.
 func (m *model) setSpaces(c *connection, spaces []api.Space, terminals []api.Terminal) {
 	spaces = append([]api.Space(nil), spaces...)
 	sort.SliceStable(spaces, func(i, j int) bool {
@@ -1160,26 +1359,81 @@ func (m *model) setSpaces(c *connection, spaces []api.Space, terminals []api.Ter
 		}
 		return spaces[i].CreatedAt.After(spaces[j].CreatedAt)
 	})
-	counts := map[string]int{}
-	for _, terminal := range terminals {
-		counts[terminal.SpaceID]++
+	beforeSpaces, beforeTerminals := m.spaceKeys(), terminalRefs(m.results())
+	c.spaces, c.terminals = spaces, numberOrder(terminals)
+	m.selectedSpace = keepSelection(beforeSpaces, m.spaceKeys(), m.selectedSpace)
+	m.chosenSpace = keepSelection(beforeSpaces[1:], spaceRefs(m.rows()), m.chosenSpace)
+	if m.allSpaces {
+		m.selectedTerminal = keepSelection(beforeTerminals, terminalRefs(m.results()), m.selectedTerminal)
 	}
-	before := spaceRefs(m.rows())
-	c.spaces, c.counts = spaces, counts
-	m.selectedSpace = keepSelection(before, spaceRefs(m.rows()), m.selectedSpace)
 }
 
-// setTerminals installs a loaded terminal list in number order — oldest
-// first, newest at the bottom, so row N is terminal N; on first entry
-// row one is selected, afterwards the selection is kept by ID or moved
-// to the adjacent row.
+// setTerminals installs a Space's loaded terminal list; on first entry
+// row one is selected, afterwards the selection is kept by reference or
+// moved to the adjacent row.
 func (m *model) setTerminals(terminals []api.Terminal) {
+	before := terminalRefs(m.results())
+	m.terminals = numberOrder(terminals)
+	m.selectedTerminal = keepSelection(before, terminalRefs(m.results()), m.selectedTerminal)
+}
+
+// numberOrder is a terminal list oldest first, newest at the bottom, so
+// within a Space row N is terminal N.
+func numberOrder(terminals []api.Terminal) []api.Terminal {
 	terminals = append([]api.Terminal(nil), terminals...)
 	sort.SliceStable(terminals, func(i, j int) bool {
 		return terminals[i].CreatedAt.Before(terminals[j].CreatedAt)
 	})
-	m.selectedTerminal = keepSelection(terminalIDs(m.terminals), terminalIDs(terminals), m.selectedTerminal)
-	m.terminals = terminals
+	return terminals
+}
+
+// terminalRow is one line of a terminal view: a Terminal with the Space
+// and connection that own it, and whether that connection can act on it
+// now.
+type terminalRow struct {
+	conn     string
+	ready    bool
+	space    api.Space
+	terminal api.Terminal
+}
+
+func (r terminalRow) ref() terminalRef { return terminalRef{conn: r.conn, id: r.terminal.ID} }
+
+// terminalRows is the terminal screen's list in its normal order: the
+// Space's Terminals in number order, or for All Spaces every Space's, the
+// Spaces in their table's order.
+func (m model) terminalRows() []terminalRow {
+	var rows []terminalRow
+	if !m.allSpaces {
+		c := m.current()
+		for _, terminal := range m.terminals {
+			rows = append(rows, terminalRow{conn: m.conn, ready: c != nil && c.status == connReady, space: m.space, terminal: terminal})
+		}
+		return rows
+	}
+	for _, c := range m.connections {
+		for _, space := range c.spaces {
+			for _, terminal := range c.terminals {
+				if terminal.SpaceID == space.ID {
+					rows = append(rows, terminalRow{conn: c.name, ready: c.status == connReady, space: space, terminal: terminal})
+				}
+			}
+		}
+	}
+	return rows
+}
+
+// results are the rows the terminal screen shows and numbers: every row,
+// or under a query its matches, best first.
+func (m model) results() []terminalRow { return searchRows(m.terminalRows(), m.query) }
+
+func (m model) selectedRow() (terminalRow, bool) {
+	for _, row := range m.results() {
+		if row.ref() == m.selectedTerminal {
+			return row, true
+		}
+	}
+	return terminalRow{}, false
 }
 
 // filteredEntries is the listing under the current filter; an absolute
@@ -1201,15 +1455,6 @@ func (m model) filteredEntries() []api.DirectoryEntry {
 func (m *model) reselectDirectory() {
 	names := entryNames(m.filteredEntries())
 	m.selectedDir = keepSelection(nil, names, m.selectedDir)
-}
-
-func (m model) findTerminal(id string) (api.Terminal, bool) {
-	for _, terminal := range m.terminals {
-		if terminal.ID == id {
-			return terminal, true
-		}
-	}
-	return api.Terminal{}, false
 }
 
 // keepSelection keeps selected when it is still listed; otherwise it
@@ -1256,12 +1501,12 @@ func spaceRefs(rows []spaceRow) []spaceRef {
 	return refs
 }
 
-func terminalIDs(terminals []api.Terminal) []string {
-	ids := make([]string, len(terminals))
-	for i, terminal := range terminals {
-		ids[i] = terminal.ID
+func terminalRefs(rows []terminalRow) []terminalRef {
+	refs := make([]terminalRef, len(rows))
+	for i, row := range rows {
+		refs[i] = row.ref()
 	}
-	return ids
+	return refs
 }
 
 func entryNames(entries []api.DirectoryEntry) []string {
